@@ -11,6 +11,7 @@ import re
 import json
 import os
 import ast
+import glob as glob_module
 import math
 import logging
 import time
@@ -291,15 +292,26 @@ _BLOCKED_ARGS = frozenset({
 })
 
 
+def _expand_arg(arg: str) -> list:
+    """Expand ~ and globs in a single argument (like the shell would)."""
+    # Tilde expansion
+    if arg.startswith("~"):
+        arg = str(Path.home()) + arg[1:]
+    # Glob expansion (*, ?, [...])
+    if any(c in arg for c in ("*", "?", "[")):
+        matches = sorted(glob_module.glob(arg))
+        return matches if matches else [arg]
+    return [arg]
+
+
 def run_command(command: str) -> str:
-    """Run whitelisted shell commands (read-only, 10s timeout, pipes allowed)."""
+    """Run whitelisted shell commands (read-only, 30s timeout, pipes allowed)."""
     try:
         # Pre-process: strip stderr redirects (handled at Python level)
         cleaned = re.sub(r'2>\s*/dev/null', '', command)
 
         # Block dangerous shell operators (but NOT pipes — we handle those safely)
         for bad in ["&&", "||", ";", "`", "$(", ">>", ">"]:
-            # Skip > check if it's part of 2>&1 (harmless, we just ignore stderr merge)
             if bad == ">" and "2>&1" in cleaned:
                 cleaned = cleaned.replace("2>&1", "")
                 continue
@@ -312,15 +324,19 @@ def run_command(command: str) -> str:
         for stage in stages:
             if not stage:
                 continue
-            parts = shlex.split(stage)
-            if not parts:
+            raw_parts = shlex.split(stage)
+            if not raw_parts:
                 return "Error: Empty command in pipe chain"
-            if parts[0] not in SAFE_COMMANDS:
-                return (f"Error: '{parts[0]}' is not allowed.\n"
+            if raw_parts[0] not in SAFE_COMMANDS:
+                return (f"Error: '{raw_parts[0]}' is not allowed.\n"
                         f"Allowed: {', '.join(sorted(SAFE_COMMANDS))}")
-            if any(arg in _BLOCKED_ARGS for arg in parts):
+            if any(arg in _BLOCKED_ARGS for arg in raw_parts):
                 return "Error: Blocked keyword detected"
-            parsed_stages.append(parts)
+            # Expand ~ and globs in arguments (cmd name stays as-is)
+            expanded = [raw_parts[0]]
+            for arg in raw_parts[1:]:
+                expanded.extend(_expand_arg(arg))
+            parsed_stages.append(expanded)
 
         if not parsed_stages:
             return "Error: Empty command"
@@ -328,7 +344,7 @@ def run_command(command: str) -> str:
         # Execute as a safe pipe chain (no shell=True)
         home = str(Path.home())
         run_env = {**os.environ, "LANG": "en_US.UTF-8"}
-        suppress_stderr = "2>" in command  # original command had stderr redirect
+        suppress_stderr = "2>" in command
         prev_stdout = None
 
         for i, parts in enumerate(parsed_stages):
@@ -337,7 +353,7 @@ def run_command(command: str) -> str:
                 input=prev_stdout,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL if suppress_stderr else subprocess.PIPE,
-                text=True, timeout=10,
+                text=True, timeout=30,
                 cwd=home, env=run_env,
             )
             prev_stdout = proc.stdout
@@ -349,7 +365,7 @@ def run_command(command: str) -> str:
             output = output[:5000] + "\n... (truncated at 5000 chars)"
         return output.strip() or "(no output)"
     except subprocess.TimeoutExpired:
-        return "Error: Command timed out (10s limit)"
+        return "Error: Command timed out (30s limit)"
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -380,19 +396,20 @@ Core behavior:
 Available tools:
 1. `get_current_time` -- No arguments. Returns current date/time.
 2. `list_directory` -- Args: "path" (string). List files in a directory.
-3. `get_system_info` -- No arguments. Returns OS, disk, uptime info.
+3. `get_system_info` -- No arguments. Returns OS, disk usage, RAM, uptime. **Use this first for disk space / system questions.**
 4. `search_files` -- Args: "pattern" (glob), "directory" (string, default "~"). Find files by name.
 5. `read_file` -- Args: "path" (string), "max_lines" (int, default 100). Read a text file.
-6. `run_command` -- Args: "command" (string). Run a safe shell command. Pipes are supported (e.g. "du -d 1 -h ~ | sort -rh | head -n 10"). Supports 2>/dev/null for stderr suppression.
+6. `run_command` -- Args: "command" (string). Run a safe shell command. Pipes supported (e.g. "du -d 1 -h ~ | sort -rh | head -n 10"). Tilde (~) and globs (* ?) are expanded automatically. Supports 2>/dev/null.
 7. `calculate` -- Args: "expression" (string). Safe math evaluator. Supports +, -, *, /, **, %, sqrt(), log(), sin(), cos(), pi, e, etc.
 
 Tool call format:
 <tool_call>{{"name": "tool_name", "arguments": {{"key": "value"}}}}</tool_call>
 
 Tool rules:
-- Use tools proactively when the user asks about their system, files, processes, time, calculations, or anything requiring real data.
-- You may chain multiple tool calls across turns to complete a task. After receiving a tool result, if you need more data, call another tool immediately — do NOT ask the user to continue.
-- Always use the `calculate` tool for arithmetic instead of computing in your head.
+- Use the most specific tool first (e.g. `get_system_info` for disk/RAM questions, not `run_command`).
+- You may chain tool calls across turns. After a result, call another tool if needed — do NOT ask the user to continue.
+- If a tool returns an error or "(no output)", try a DIFFERENT approach or tool — do NOT retry the same command with minor variations.
+- Always use `calculate` for arithmetic instead of computing in your head.
 - Do NOT call tools for greetings, general knowledge, coding, or image analysis.
 """
 
@@ -800,14 +817,14 @@ def bot_action(history: List, max_tokens: int, thinking_on: bool):
                 yield final
                 return
 
-        # ── Multi-step tool loop (auto-continue up to 5 rounds) ──
-        MAX_TOOL_ROUNDS = 5
+        # ── Multi-step tool loop (auto-continue, max 3 rounds) ──
+        MAX_TOOL_ROUNDS = 3
         current_text = text
+        consecutive_failures = 0
 
         for tool_round in range(MAX_TOOL_ROUNDS):
             tool_req = extract_tool_call(current_text)
             if not tool_req:
-                # No tool call — this is the final answer
                 final.append({"role": "assistant", "content": current_text})
                 break
 
@@ -823,6 +840,10 @@ def bot_action(history: List, max_tokens: int, thinking_on: bool):
                     logger.error(f"Tool execution error: {e}")
                     tool_result = f"Error executing tool '{tool_name}': {str(e)}"
 
+            # Track consecutive failures to avoid retry loops
+            is_failure = tool_result in ("(no output)", "") or tool_result.startswith("Error:")
+            consecutive_failures = consecutive_failures + 1 if is_failure else 0
+
             final.append(gr.ChatMessage(
                 role="assistant",
                 content=f"`{tool_name}({tool_args})` → `{tool_result}`",
@@ -830,13 +851,23 @@ def bot_action(history: List, max_tokens: int, thinking_on: bool):
             ))
             yield final
 
-            # Ask model for next step (non-streaming, usually fast)
+            # If 2+ consecutive failures, stop retrying and ask for final answer
+            failure_note = ""
+            if consecutive_failures >= 2:
+                failure_note = (
+                    " IMPORTANT: Multiple tool calls have failed. Do NOT retry. "
+                    "Give your best answer with the information you already have, "
+                    "or explain what went wrong."
+                )
+                logger.warning(f"Tool loop: {consecutive_failures} consecutive failures, forcing final answer")
+
             synthesis_history = final + [
                 {"role": "assistant", "content": current_text},
                 {"role": "user", "content": (
                     f"Tool result for {tool_name}: {tool_result}\n\n"
                     "Use this result to continue. If you need more data, "
-                    "call another tool. Otherwise give the final answer."
+                    "call a DIFFERENT tool or a different approach. "
+                    "Otherwise give the final answer." + failure_note
                 )},
             ]
             raw_next = call_model(synthesis_history, "", max_tokens, enable_thinking=False)
@@ -847,9 +878,13 @@ def bot_action(history: List, max_tokens: int, thinking_on: bool):
 
             _, next_text = parse_thinking(raw_next)
             current_text = next_text
-            logger.info(f"Tool round {tool_round + 1}: checking for follow-up tool call")
+            logger.info(f"Tool round {tool_round + 1}: failures={consecutive_failures}")
+
+            # Force exit after consecutive failures
+            if consecutive_failures >= 2:
+                final.append({"role": "assistant", "content": current_text})
+                break
         else:
-            # Exhausted max rounds
             if current_text:
                 final.append({"role": "assistant", "content": current_text})
 
