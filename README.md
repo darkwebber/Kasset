@@ -17,29 +17,23 @@ Run a fully private, multimodal AI chat on your Mac. No cloud, no API keys, no d
 
 > **Requirements:** macOS with Apple Silicon (M1/M2/M3/M4), Python 3.10+, ~6GB RAM free
 
-### One-command setup
-
 ```bash
-git clone https://github.com/YOUR_USERNAME/qwen-studio.git
-cd qwen-studio
-chmod +x setup.sh && ./setup.sh
+git clone https://github.com/darkwebber/Local-Studio.git
+cd Local-Studio
+./start.sh
 ```
 
-### Start
+That's it. `start.sh` handles everything:
+1. Creates a virtual environment (first run only)
+2. Installs all dependencies
+3. Starts the model server (port 7861)
+4. Waits for the model to load
+5. Starts the chat UI (port 7860)
+6. Opens at **http://localhost:7860**
 
-```bash
-# Terminal 1 — model server (loads the model, takes ~30s first time)
-source venv/bin/activate
-python model_server.py
+Press **Ctrl+C** to stop both servers cleanly.
 
-# Terminal 2 — web UI
-source venv/bin/activate
-python app.py
-```
-
-Open **http://localhost:7860** in your browser.
-
-> **First run?** The model (~5GB) downloads automatically from Hugging Face on first launch.
+> **First run?** The model (~5GB) downloads automatically from Hugging Face. Subsequent starts are much faster.
 
 ## Built-in Tools
 
@@ -64,7 +58,7 @@ The model **automatically chains** multiple tool calls to complete complex tasks
 - **No destructive ops** — `rm`, `sudo`, `kill`, `shutdown`, `mv`, `cp` are blocked
 - **No shell injection** — redirects (`>`), chaining (`;`, `&&`), backticks, `$()` are blocked
 - **Path sandboxing** — file access restricted to home directory and temp folders
-- **Timeouts** — all commands have a 10-second timeout
+- **Timeouts** — all commands have a 30-second timeout
 - **Output limits** — command output capped at 5000 characters
 
 ## Architecture
