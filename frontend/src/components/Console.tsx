@@ -463,20 +463,27 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
               loadChatList();
               soundDone();
             } else if (data.type === "error") {
-              console.error(data.data);
-              setIsGenerating(false);
+              // Show error as a visible message instead of crashing
+              const errText = typeof data.data === "string" ? data.data : JSON.stringify(data.data);
+              segments = [...segments, { kind: "text" as const, content: `⚠️ ${errText}` }];
+              const finalText = segments.filter((s) => s.kind === "text").map((s) => (s as TextSegment).content).join("\n\n");
+              setMessages((prev) => [...prev, { role: "assistant", content: finalText, segments: [...segments] }]);
               setStreamSegments([]);
+              setIsGenerating(false);
               soundError();
             }
-          } catch (e) {
-            console.error("Failed to parse SSE line", line, e);
+          } catch {
+            // Skip unparseable SSE lines silently
           }
         }
       }
     } catch (error) {
-      console.error(error);
-      setIsGenerating(false);
+      // Network / fetch error — show inline
+      const errMsg = error instanceof Error ? error.message : "Connection failed";
+      setMessages((prev) => [...prev, { role: "assistant", content: `⚠️ ${errMsg}` }]);
       setStreamSegments([]);
+      setIsGenerating(false);
+      soundError();
     }
   };
 

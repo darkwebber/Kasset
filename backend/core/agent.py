@@ -197,7 +197,7 @@ class Agent:
         })
         
         # Max rounds of tool calling
-        MAX_TOOL_ROUNDS = 3
+        MAX_TOOL_ROUNDS = 8
         consecutive_failures = 0
         
         current_history = list(base_history)
@@ -299,7 +299,12 @@ class Agent:
                 yield json.dumps({"type": "done", "data": final_text})
                 break
         else:
-            yield json.dumps({"type": "error", "data": "Max tool rounds reached."})
+            # Hit max rounds — do a final summarizing generation instead of erroring
+            current_history.append({"role": "user", "content": "You have reached the maximum number of tool rounds. Please give your best final answer now with the information you have gathered so far."})
+            final_res = self.model_client.generate(current_history, max_tokens=self.config.suggested_tokens, thinking=False)
+            _, final_text = parse_thinking(final_res)
+            yield json.dumps({"type": "token", "data": final_text})
+            yield json.dumps({"type": "done", "data": final_text})
         
         # Post-conversation: extract user memories
         try:
