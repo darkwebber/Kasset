@@ -2,22 +2,21 @@
 
 import { useEffect, useState } from "react";
 import Console from "@/components/Console";
+import CartridgeCarousel from "@/components/CartridgeCarousel";
 import { useCartridgeStore } from "@/stores/cartridgeStore";
 
 export default function Home() {
-  const { loadAvailableCartridges, loadActiveStack } = useCartridgeStore();
+  const { loadAvailableCartridges, activeConfig } = useCartridgeStore();
   const [isBooting, setIsBooting] = useState(true);
+  const [showCarousel, setShowCarousel] = useState(true);
 
   useEffect(() => {
     const init = async () => {
       await loadAvailableCartridges();
-      await loadActiveStack(["general-assistant"]);
-      
-      // Simulate boot sequence duration
       setTimeout(() => setIsBooting(false), 2000);
     };
     init();
-  }, [loadAvailableCartridges, loadActiveStack]);
+  }, [loadAvailableCartridges]);
 
   if (isBooting) {
     return (
@@ -31,8 +30,12 @@ export default function Home() {
   }
 
   return (
-    <main className="w-full h-screen flex items-center justify-center p-4">
-      <Console />
+    <main className="w-full h-screen flex items-center justify-center p-4 relative overflow-hidden">
+      {showCarousel || !activeConfig ? (
+        <CartridgeCarousel onSelect={() => setShowCarousel(false)} />
+      ) : (
+        <Console onChangeCartridge={() => setShowCarousel(true)} />
+      )}
     </main>
   );
 }

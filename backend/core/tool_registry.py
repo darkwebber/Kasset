@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from .sandbox import execute_python_sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -259,6 +260,12 @@ def run_command(command: str) -> str:
 # ──────────────────────────────────────────
 # REGISTRY
 # ──────────────────────────────────────────
+def execute_python(code: str) -> str:
+    """Execute Python code in a sandbox. Captures stdout/stderr and matplotlib plots."""
+    result = execute_python_sandbox(code)
+    return result  # Returns dict; agent.py handles structured output
+
+
 AVAILABLE_TOOLS = {
     "get_current_time": get_current_time,
     "list_directory": list_directory,
@@ -267,6 +274,7 @@ AVAILABLE_TOOLS = {
     "read_file": read_file,
     "run_command": run_command,
     "calculate": calculate,
+    "execute_python": execute_python,
 }
 
 def execute_tool(name: str, args: dict) -> str:

@@ -50,10 +50,32 @@ class Agent:
         self.model_client = model_client
         self.config = config
         
+    TOOL_DESCRIPTIONS = {
+        "get_current_time": {"desc": "Get the current local date and time.", "params": {}},
+        "list_directory": {"desc": "List directory contents with file sizes.", "params": {"path": "Directory path (default: '.')"}},
+        "get_system_info": {"desc": "Get system overview: OS, hardware, disk, uptime.", "params": {}},
+        "search_files": {"desc": "Search for files matching a glob pattern (max 50 results).", "params": {"pattern": "Glob pattern to match", "directory": "Directory to search (default: '~')"}},
+        "read_file": {"desc": "Read a text file (max 200 lines / 50KB).", "params": {"path": "File path to read", "max_lines": "Max lines to read (default: 100)"}},
+        "run_command": {"desc": "Run whitelisted read-only shell commands (30s timeout, pipes allowed).", "params": {"command": "Shell command to run"}},
+        "calculate": {"desc": "Evaluate a math expression safely.", "params": {"expression": "Math expression to evaluate"}},
+        "execute_python": {"desc": "Execute Python code in a sandbox. Captures stdout/stderr and matplotlib plots. pandas (pd), numpy (np), and matplotlib.pyplot (plt) are pre-imported.", "params": {"code": "Python code to execute"}},
+    }
+
     def _build_system_message(self) -> Dict[str, str]:
-        # Append available tools context to the base merged prompt
-        tools_desc = "\nAvailable tools:\n" + "\n".join(f"- {t}" for t in self.config.tools)
-        return {"role": "system", "content": self.config.merged_prompt + tools_desc}
+        # Build detailed tool descriptions for the model
+        tool_lines = []
+        for t in self.config.tools:
+            info = self.TOOL_DESCRIPTIONS.get(t, {"desc": t, "params": {}})
+            params_str = ", ".join(f'{k}: {v}' for k, v in info["params"].items())
+            tool_lines.append(f"- **{t}**({params_str}): {info['desc']}")
+        
+        tools_block = (
+            "\n\n## Available Tools\n"
+            "To use a tool, wrap the call in XML tags like this:\n"
+            '<tool_call>{"name": "tool_name", "arguments": {"param": "value"}}</tool_call>\n\n'
+            + "\n".join(tool_lines)
+        )
+        return {"role": "system", "content": self.config.merged_prompt + tools_block}
 
     def chat_stream(
         self, 
@@ -124,13 +146,28 @@ class Agent:
             
             if tool_name not in self.config.tools:
                 tool_result = f"Error: Tool '{tool_name}' is not enabled in this cartridge."
+                sandbox_images = []
             else:
-                tool_result = execute_tool(tool_name, tool_args)
+                raw_result = execute_tool(tool_name, tool_args)
+                # Sandbox returns a dict with 'output' and 'images'
+                if isinstance(raw_result, dict) and "images" in raw_result:
+                    tool_result = raw_result["output"]
+                    sandbox_images = raw_result.get("images", [])
+                else:
+                    tool_result = str(raw_result)
+                    sandbox_images = []
                 
             yield json.dumps({
                 "type": "tool_result", 
                 "data": {"name": tool_name, "result": tool_result}
             })
+            
+            # Send sandbox images as separate events
+            if sandbox_images:
+                yield json.dumps({
+                    "type": "sandbox_images",
+                    "data": sandbox_images
+                })
             
             # Failure tracking
             is_failure = tool_result in ("(no output)", "") or str(tool_result).startswith("Error:")

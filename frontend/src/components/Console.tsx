@@ -7,19 +7,24 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
+import FileExplorer from "./explorer/FileExplorer";
+import { FolderOpen, X } from "lucide-react";
 
 interface Message {
   role: "user" | "assistant" | "system";
   content: string;
+  images?: string[]; // base64 sandbox plot images
 }
 
-export default function Console() {
+export default function Console({ onChangeCartridge }: { onChangeCartridge: () => void }) {
   const { activeConfig } = useCartridgeStore();
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [thinkingContent, setThinkingContent] = useState("");
   const [activeTool, setActiveTool] = useState<{name: string, args: any} | null>(null);
+  const [showExplorer, setShowExplorer] = useState(false);
+  const [attachedFile, setAttachedFile] = useState<string | null>(null);
   
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -37,11 +42,26 @@ export default function Console() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || isGenerating || !activeConfig) return;
+    if (!input.trim() && !attachedFile) return;
+    if (isGenerating || !activeConfig) return;
 
-    const userMsg = { role: "user" as const, content: input.trim() };
+    let userContent = input.trim();
+    if (attachedFile) {
+      // If it's an image, the backend needs it separately.
+      // For now, we'll append a text note if it's a file, or if we build full vision we send it differently.
+      // Let's assume the user just wants the model to know about the file for now.
+      userContent = userContent ? `${userContent}\n[Attached file: ${attachedFile}]` : `[Attached file: ${attachedFile}]`;
+    }
+
+    const userMsg = { role: "user" as const, content: userContent };
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
+    
+    // We'll pass the image path directly to the backend if it's an image
+    const isImage = attachedFile?.match(/\.(jpg|jpeg|png|webp)$/i);
+    const imagePath = isImage ? attachedFile : undefined;
+    
+    setAttachedFile(null);
     setIsGenerating(true);
     setThinkingContent("");
     setActiveTool(null);
@@ -53,6 +73,7 @@ export default function Console() {
         body: JSON.stringify({
           cartridge_ids: activeConfig.active_cartridge_ids,
           messages: [...messages, userMsg],
+          image_path: imagePath
         }),
       });
 
@@ -92,8 +113,13 @@ export default function Console() {
             } else if (data.type === "tool_start") {
               setActiveTool(data.data);
             } else if (data.type === "tool_result") {
-              // Add a visual marker in the chat for the tool execution
-              currentAssistantMessage += `\n\n> 🔧 **${data.data.name}**\n> \`\`\`\n> ${data.data.result}\n> \`\`\`\n\n`;
+              const resultText = data.data.result;
+              const toolName = data.data.name;
+              if (toolName === "execute_python") {
+                currentAssistantMessage += `\n\n> **SANDBOX** \`${toolName}\`\n> ${resultText.split('\n').join('\n> ')}\n\n`;
+              } else {
+                currentAssistantMessage += `\n\n> 🔧 **${toolName}**\n> \`\`\`\n> ${resultText}\n> \`\`\`\n\n`;
+              }
               setMessages((prev) => {
                 const newMsgs = [...prev];
                 if (newMsgs[newMsgs.length - 1].role === "assistant") {
@@ -102,6 +128,17 @@ export default function Console() {
                 return newMsgs;
               });
               setActiveTool(null);
+            } else if (data.type === "sandbox_images") {
+              // Append sandbox plot images to the current assistant message
+              const imgs = data.data as string[];
+              setMessages((prev) => {
+                const newMsgs = [...prev];
+                const lastMsg = newMsgs[newMsgs.length - 1];
+                if (lastMsg && lastMsg.role === "assistant") {
+                  lastMsg.images = [...(lastMsg.images || []), ...imgs];
+                }
+                return [...newMsgs];
+              });
             } else if (data.type === "done") {
               setIsGenerating(false);
               setThinkingContent("");
@@ -120,7 +157,6 @@ export default function Console() {
     }
   };
 
-  // Apply theme variables
   const themeStyle = activeConfig ? {
     "--accent": activeConfig.theme.accent_color,
     "--tint": activeConfig.theme.screen_tint,
@@ -133,6 +169,13 @@ export default function Console() {
       className="w-full max-w-5xl h-[90vh] bg-[var(--color-console-bezel)] rounded-3xl p-6 md:p-10 shadow-2xl flex flex-col border border-white/5 relative"
       style={themeStyle}
     >
+      {showExplorer && (
+        <FileExplorer 
+          onSelect={(path) => { setAttachedFile(path); setShowExplorer(false); }} 
+          onClose={() => setShowExplorer(false)} 
+        />
+      )}
+
       {/* Hardware Accents */}
       <div className="absolute top-4 left-6 flex gap-2">
         <div className="w-3 h-3 rounded-full bg-red-500 opacity-80" />
@@ -143,8 +186,15 @@ export default function Console() {
       {/* Cartridge Slot */}
       <div className="absolute top-4 right-8 flex items-center gap-3">
         <div className="text-xs uppercase tracking-widest text-white/40">Active Cartridge</div>
-        <div className="bg-black/40 border border-white/10 px-4 py-1.5 rounded text-[var(--accent)] text-glow font-bold text-sm tracking-wider shadow-inner">
+        <div className="bg-black/40 border border-white/10 px-4 py-1.5 rounded text-[var(--accent)] text-glow font-bold text-sm tracking-wider shadow-inner flex items-center gap-2">
           {activeConfig ? activeConfig.active_cartridge_ids[0].toUpperCase() : "NO CARTRIDGE"}
+          <button 
+            onClick={onChangeCartridge}
+            className="ml-2 hover:text-white transition-colors"
+            title="Eject Cartridge"
+          >
+            ⏏
+          </button>
         </div>
       </div>
 
@@ -166,12 +216,27 @@ export default function Console() {
                 {msg.role === "user" ? (
                   msg.content
                 ) : (
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm, remarkMath]}
-                    rehypePlugins={[rehypeKatex]}
-                  >
-                    {msg.content}
-                  </ReactMarkdown>
+                  <>
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm, remarkMath]}
+                      rehypePlugins={[rehypeKatex]}
+                    >
+                      {msg.content}
+                    </ReactMarkdown>
+                    {msg.images && msg.images.length > 0 && (
+                      <div className="mt-3 space-y-3">
+                        {msg.images.map((src, imgIdx) => (
+                          <div key={imgIdx} className="border border-[var(--accent)]/20 rounded-lg overflow-hidden bg-black/60 p-1">
+                            <img 
+                              src={src} 
+                              alt={`Sandbox plot ${imgIdx + 1}`}
+                              className="w-full max-w-lg rounded"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -207,9 +272,25 @@ export default function Console() {
       </div>
 
       {/* Input Area */}
-      <div className="mt-6 bg-black/60 rounded-xl p-2 border border-white/10 shadow-inner">
+      <div className="mt-6 bg-black/60 rounded-xl p-2 border border-white/10 shadow-inner flex flex-col gap-2">
+        {attachedFile && (
+          <div className="flex items-center gap-2 px-3 py-1 bg-white/5 w-fit rounded border border-white/10 text-xs text-white/70">
+            <span className="truncate max-w-xs">{attachedFile}</span>
+            <button onClick={() => setAttachedFile(null)} className="hover:text-red-400">
+              <X size={14} />
+            </button>
+          </div>
+        )}
         <form onSubmit={handleSubmit} className="flex items-center">
-          <div className="text-[var(--accent)] px-3 text-xl font-bold">{">"}</div>
+          <button 
+            type="button" 
+            onClick={() => setShowExplorer(true)}
+            className="p-2 text-white/50 hover:text-[var(--accent)] transition-colors"
+            title="Browse File System"
+          >
+            <FolderOpen size={20} />
+          </button>
+          <div className="text-[var(--accent)] px-2 text-xl font-bold">{">"}</div>
           <input
             type="text"
             value={input}
@@ -221,7 +302,7 @@ export default function Console() {
           />
           <button 
             type="submit"
-            disabled={isGenerating || !input.trim() || !activeConfig}
+            disabled={isGenerating || (!input.trim() && !attachedFile) || !activeConfig}
             className="px-6 py-2 bg-[var(--accent)] text-black font-bold uppercase tracking-widest rounded mx-1 hover:bg-white transition-colors disabled:opacity-30"
           >
             Send

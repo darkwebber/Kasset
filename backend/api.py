@@ -6,6 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from pathlib import Path
 from .core.cartridge_loader import CartridgeLoader
 from .core.agent import Agent
 from .model_server import ModelClient # Refactored MLX wrapper
@@ -33,7 +34,48 @@ class ChatRequest(BaseModel):
     messages: List[dict]
     image_path: Optional[str] = None
 
+class FSRequest(BaseModel):
+    path: str = str(Path.home())
+
 # --- Endpoints ---
+@app.post("/api/fs/list")
+def list_filesystem(request: FSRequest):
+    """List directory contents for the frontend file browser."""
+    try:
+        p = Path(request.path).expanduser().resolve()
+        if not p.exists() or not p.is_dir():
+            return {"error": "Invalid directory"}
+            
+        items = []
+        # Add parent directory if not root
+        if p != p.parent:
+            items.append({"name": "..", "path": str(p.parent), "type": "dir"})
+            
+        # Try to list contents
+        try:
+            for entry in p.iterdir():
+                if entry.name.startswith("."): # skip hidden
+                    continue
+                is_dir = entry.is_dir()
+                items.append({
+                    "name": entry.name,
+                    "path": str(entry),
+                    "type": "dir" if is_dir else "file",
+                    "size": entry.stat().st_size if not is_dir else 0
+                })
+        except PermissionError:
+            return {"error": "Permission denied"}
+            
+        # Sort directories first, then alphabetically
+        items.sort(key=lambda x: (0 if x["name"] == ".." else (1 if x["type"] == "dir" else 2), x["name"].lower()))
+        
+        return {
+            "current_path": str(p),
+            "items": items
+        }
+    except Exception as e:
+        return {"error": str(e)}, 400
+
 @app.get("/api/cartridges")
 def get_cartridges():
     """Returns all available cartridges."""
