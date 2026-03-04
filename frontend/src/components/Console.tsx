@@ -1,19 +1,35 @@
 "use client";
 
 import { useCartridgeStore } from "@/stores/cartridgeStore";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
+import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import FileExplorer from "./explorer/FileExplorer";
-import { FolderOpen, X } from "lucide-react";
+import { FolderOpen, X, Copy, Check } from "lucide-react";
 
 interface Message {
   role: "user" | "assistant" | "system";
   content: string;
   images?: string[]; // base64 sandbox plot images
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+      className="absolute top-2 right-2 p-1.5 rounded bg-white/5 hover:bg-white/10 text-white/40 hover:text-white/80 transition-all opacity-0 group-hover:opacity-100"
+      title="Copy code"
+    >
+      {copied ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
+    </button>
+  );
 }
 
 export default function Console({ onChangeCartridge }: { onChangeCartridge: () => void }) {
@@ -25,8 +41,60 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
   const [activeTool, setActiveTool] = useState<{name: string, args: any} | null>(null);
   const [showExplorer, setShowExplorer] = useState(false);
   const [attachedFile, setAttachedFile] = useState<string | null>(null);
+  const [contextInfo, setContextInfo] = useState<{message_count: number, estimated_tokens: number, max_tokens: number} | null>(null);
   
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  // Custom Markdown components with syntax highlighting
+  const mdComponents = useMemo<Components>(() => ({
+    code({ className, children, ...props }) {
+      const match = /language-(\w+)/.exec(className || "");
+      const codeStr = String(children).replace(/\n$/, "");
+      if (match) {
+        return (
+          <div className="relative group my-3">
+            <div className="flex items-center justify-between px-4 py-1.5 bg-white/5 border-b border-white/5 rounded-t-md">
+              <span className="text-[10px] uppercase tracking-widest text-white/30 font-mono">{match[1]}</span>
+            </div>
+            <CopyButton text={codeStr} />
+            <SyntaxHighlighter
+              style={vscDarkPlus}
+              language={match[1]}
+              PreTag="div"
+              customStyle={{
+                margin: 0,
+                borderRadius: "0 0 6px 6px",
+                background: "rgba(0,0,0,0.6)",
+                fontSize: "13px",
+                border: "1px solid rgba(255,255,255,0.06)",
+                borderTop: "none",
+              }}
+              codeTagProps={{ style: { fontFamily: "var(--font-mono), monospace" } }}
+            >
+              {codeStr}
+            </SyntaxHighlighter>
+          </div>
+        );
+      }
+      return (
+        <code className={className} {...props}>
+          {children}
+        </code>
+      );
+    },
+    // Improve table rendering
+    table({ children }) {
+      return <div className="overflow-x-auto my-4"><table>{children}</table></div>;
+    },
+    // Better blockquote
+    blockquote({ children }) {
+      return (
+        <blockquote className="border-l-2 border-[var(--accent)]/40 pl-4 my-3 text-white/60 italic">
+          {children}
+        </blockquote>
+      );
+    },
+  }), []);
 
   // Auto-add boot message
   useEffect(() => {
@@ -96,7 +164,9 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
           try {
             const data = JSON.parse(line.substring(6));
             
-            if (data.type === "think_token") {
+            if (data.type === "context_info") {
+              setContextInfo(data.data);
+            } else if (data.type === "think_token") {
               setThinkingContent((prev) => prev + data.data);
             } else if (data.type === "token") {
               currentAssistantMessage += data.data;
@@ -177,15 +247,31 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
       )}
 
       {/* Hardware Accents */}
-      <div className="absolute top-4 left-6 flex gap-2">
-        <div className="w-3 h-3 rounded-full bg-red-500 opacity-80" />
-        <div className={`w-3 h-3 rounded-full ${isGenerating ? "bg-[var(--accent)] animate-pulse crt-glow" : "bg-white/20"}`} />
-        <div className={`w-3 h-3 rounded-full ${activeTool ? "bg-blue-400 animate-pulse crt-glow" : "bg-white/20"}`} />
+      <div className="absolute top-4 left-6 flex items-center gap-3">
+        <div className="flex gap-2">
+          <div className="w-3 h-3 rounded-full bg-red-500 opacity-80" />
+          <div className={`w-3 h-3 rounded-full ${isGenerating ? "bg-[var(--accent)] animate-pulse crt-glow" : "bg-white/20"}`} />
+          <div className={`w-3 h-3 rounded-full ${activeTool ? "bg-blue-400 animate-pulse crt-glow" : "bg-white/20"}`} />
+        </div>
+        {contextInfo && (
+          <div className="flex items-center gap-2 ml-2" title={`${contextInfo.estimated_tokens} / ${contextInfo.max_tokens} tokens`}>
+            <div className="w-24 h-1.5 bg-black/40 rounded-full overflow-hidden border border-white/5">
+              <div 
+                className="h-full rounded-full transition-all duration-500"
+                style={{
+                  width: `${Math.min(100, (contextInfo.estimated_tokens / contextInfo.max_tokens) * 100)}%`,
+                  background: contextInfo.estimated_tokens / contextInfo.max_tokens > 0.8 ? '#ef4444' : 
+                              contextInfo.estimated_tokens / contextInfo.max_tokens > 0.5 ? '#eab308' : 'var(--accent)',
+                }}
+              />
+            </div>
+            <span className="text-[9px] text-white/30 font-mono">{messages.length} msg</span>
+          </div>
+        )}
       </div>
       
       {/* Cartridge Slot */}
       <div className="absolute top-4 right-8 flex items-center gap-3">
-        <div className="text-xs uppercase tracking-widest text-white/40">Active Cartridge</div>
         <div className="bg-black/40 border border-white/10 px-4 py-1.5 rounded text-[var(--accent)] text-glow font-bold text-sm tracking-wider shadow-inner flex items-center gap-2">
           {activeConfig ? activeConfig.active_cartridge_ids[0].toUpperCase() : "NO CARTRIDGE"}
           <button 
@@ -220,6 +306,7 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm, remarkMath]}
                       rehypePlugins={[rehypeKatex]}
+                      components={mdComponents}
                     >
                       {msg.content}
                     </ReactMarkdown>

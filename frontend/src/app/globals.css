@@ -99,35 +99,68 @@
 .prose-crt {
   @apply text-gray-300 font-mono text-sm leading-relaxed;
 }
-.prose-crt p { @apply mb-4; }
+.prose-crt p { @apply mb-3 last:mb-0; }
 .prose-crt strong {
   font-weight: 700;
   color: white;
-  text-shadow: 0 0 8px var(--glow);
+  text-shadow: 0 0 6px var(--glow);
 }
+.prose-crt em { @apply text-white/80; }
 .prose-crt a { @apply text-[var(--accent)] underline decoration-dashed underline-offset-4 hover:bg-[var(--accent)] hover:text-black transition-colors; }
-.prose-crt code { @apply font-mono bg-black/50 px-1.5 py-0.5 rounded border border-[var(--accent)]/30 text-[var(--accent)]; }
-.prose-crt pre {
-  @apply bg-black/80 border border-[var(--accent)]/30 p-4 rounded-md my-4 overflow-x-auto;
+
+/* Inline code — NOT syntax-highlighted blocks */
+.prose-crt > p code,
+.prose-crt > li code,
+.prose-crt > blockquote code {
+  @apply font-mono bg-black/50 px-1.5 py-0.5 rounded border border-[var(--accent)]/20 text-[var(--accent)] text-[13px];
 }
-.prose-crt pre::-webkit-scrollbar {
-  width: 12px;
-}
-.prose-crt pre::-webkit-scrollbar-track {
-  background: rgba(0,0,0,0.5);
-  border-left: 1px solid rgba(255,255,255,0.1);
-}
-.prose-crt pre::-webkit-scrollbar-thumb {
-  background: var(--accent);
-  opacity: 0.5;
-  border: 1px solid rgba(0,0,0,0.8);
-}
-.prose-crt pre code { @apply bg-transparent border-0 p-0 text-gray-300 shadow-none text-[13px]; }
-.prose-crt ul { @apply list-none pl-4 space-y-2 mb-4 relative; }
+
+/* Lists */
+.prose-crt ul { @apply list-none pl-4 space-y-1.5 mb-3 relative; }
 .prose-crt ul li { @apply relative; }
-.prose-crt ul li::before { content: "> "; color: var(--accent); position: absolute; left: -1.2rem; }
-.prose-crt ol { @apply list-decimal pl-6 space-y-2 mb-4 marker:text-[var(--accent)]; }
-.prose-crt h1, .prose-crt h2, .prose-crt h3 { @apply text-[var(--accent)] font-sans mt-8 mb-4 uppercase tracking-widest; }
-.prose-crt table { @apply w-full border-collapse border border-[var(--accent)]/30 mb-4; }
-.prose-crt th { @apply border border-[var(--accent)]/30 p-2 text-left bg-[var(--accent)]/10 text-[var(--accent)]; }
-.prose-crt td { @apply border border-[var(--accent)]/30 p-2; }
+.prose-crt ul li::before { content: "›"; color: var(--accent); position: absolute; left: -1rem; font-weight: bold; }
+.prose-crt ol { @apply list-decimal pl-6 space-y-1.5 mb-3 marker:text-[var(--accent)]; }
+
+/* Headings */
+.prose-crt h1 { @apply text-[var(--accent)] font-sans mt-6 mb-3 text-xl uppercase tracking-widest; }
+.prose-crt h2 { @apply text-[var(--accent)] font-sans mt-5 mb-3 text-lg uppercase tracking-wider; }
+.prose-crt h3 { @apply text-[var(--accent)] font-sans mt-4 mb-2 text-base uppercase tracking-wide; }
+.prose-crt h4 { @apply text-white/90 font-sans mt-3 mb-2 text-sm font-bold; }
+
+/* Tables */
+.prose-crt table { @apply w-full border-collapse border border-[var(--accent)]/20 mb-4 text-[13px]; }
+.prose-crt th { @apply border border-[var(--accent)]/20 px-3 py-2 text-left bg-[var(--accent)]/10 text-[var(--accent)] font-bold text-xs uppercase tracking-wider; }
+.prose-crt td { @apply border border-[var(--accent)]/20 px-3 py-2; }
+.prose-crt tr:hover td { background: rgba(255,255,255,0.02); }
+
+/* Horizontal rule */
+.prose-crt hr { @apply my-6 border-[var(--accent)]/15; }
+
+/* KaTeX / LaTeX styling */
+.prose-crt .katex { @apply text-white; font-size: 1.05em; }
+.prose-crt .katex-display { @apply my-4 overflow-x-auto; }
+.prose-crt .katex-display > .katex { @apply text-[var(--accent)]; }
+.prose-crt .katex .mord,
+.prose-crt .katex .mbin,
+.prose-crt .katex .mrel,
+.prose-crt .katex .mopen,
+.prose-crt .katex .mclose,
+.prose-crt .katex .mpunct,
+.prose-crt .katex .minner { color: inherit; }
+.prose-crt .katex-display .katex-html { @apply py-2; }
+
+/* Scrollbar for overflow */
+.prose-crt .katex-display::-webkit-scrollbar,
+.prose-crt .overflow-x-auto::-webkit-scrollbar {
+  height: 6px;
+}
+.prose-crt .katex-display::-webkit-scrollbar-track,
+.prose-crt .overflow-x-auto::-webkit-scrollbar-track {
+  background: rgba(0,0,0,0.3);
+}
+.prose-crt .katex-display::-webkit-scrollbar-thumb,
+.prose-crt .overflow-x-auto::-webkit-scrollbar-thumb {
+  background: var(--accent);
+  opacity: 0.4;
+  border-radius: 3px;
+}

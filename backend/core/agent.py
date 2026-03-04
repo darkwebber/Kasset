@@ -42,6 +42,13 @@ def extract_tool_call(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 class Agent:
+    # Rough chars-per-token estimate for context budgeting
+    CHARS_PER_TOKEN = 3.5
+    # Reserve tokens for generation output
+    GENERATION_RESERVE = 4096
+    # Max context window (conservative estimate for most models)
+    MAX_CONTEXT_TOKENS = 28000
+
     def __init__(self, model_client, config):
         """
         model_client: object with a .stream_generate() method
@@ -49,6 +56,67 @@ class Agent:
         """
         self.model_client = model_client
         self.config = config
+
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        """Rough token count estimate from character length."""
+        return max(1, int(len(text) / Agent.CHARS_PER_TOKEN))
+
+    def _trim_context(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """
+        Trim conversation history to fit within context budget.
+        Strategy: Always keep system message + last N messages that fit.
+        If tool results are very large, truncate them.
+        """
+        budget = self.MAX_CONTEXT_TOKENS - self.GENERATION_RESERVE - self.config.suggested_tokens
+
+        # Always keep the system message (index 0)
+        if not messages:
+            return messages
+
+        system_msg = messages[0] if messages[0]["role"] == "system" else None
+        history = messages[1:] if system_msg else list(messages)
+
+        # First pass: truncate very long tool result messages
+        MAX_TOOL_RESULT_CHARS = 3000
+        trimmed_history = []
+        for msg in history:
+            content = msg["content"]
+            if msg["role"] == "user" and content.startswith("Tool result for ") and len(content) > MAX_TOOL_RESULT_CHARS:
+                content = content[:MAX_TOOL_RESULT_CHARS] + "\n... (output truncated)"
+            trimmed_history.append({**msg, "content": content})
+
+        # Calculate system message cost
+        system_cost = self._estimate_tokens(system_msg["content"]) if system_msg else 0
+        remaining_budget = budget - system_cost
+
+        if remaining_budget <= 0:
+            logger.warning("System prompt alone exceeds context budget")
+            remaining_budget = 2000  # fallback minimum
+
+        # Build from most recent, adding messages until budget exhausted
+        selected = []
+        used = 0
+        for msg in reversed(trimmed_history):
+            msg_tokens = self._estimate_tokens(msg["content"])
+            if used + msg_tokens > remaining_budget:
+                break
+            selected.insert(0, msg)
+            used += msg_tokens
+
+        # If we trimmed messages, add a context note
+        dropped = len(trimmed_history) - len(selected)
+        result = []
+        if system_msg:
+            result.append(system_msg)
+        if dropped > 0:
+            result.append({
+                "role": "system",
+                "content": f"[Context note: {dropped} earlier messages were trimmed to fit context window. Focus on the recent conversation.]"
+            })
+            logger.info(f"Context trimmed: dropped {dropped} messages, keeping {len(selected)}")
+        result.extend(selected)
+        return result
         
     TOOL_DESCRIPTIONS = {
         "get_current_time": {"desc": "Get the current local date and time.", "params": {}},
@@ -87,6 +155,21 @@ class Agent:
         Yields JSON strings containing SSE events: { "type": "...", "data": ... }
         """
         base_history = [self._build_system_message()] + history
+        
+        # Trim context to fit within budget
+        base_history = self._trim_context(base_history)
+        
+        # Emit context info for frontend
+        total_chars = sum(len(m["content"]) for m in base_history)
+        est_tokens = self._estimate_tokens(" ".join(m["content"] for m in base_history))
+        yield json.dumps({
+            "type": "context_info",
+            "data": {
+                "message_count": len(history),
+                "estimated_tokens": est_tokens,
+                "max_tokens": self.MAX_CONTEXT_TOKENS,
+            }
+        })
         
         # Max rounds of tool calling
         MAX_TOOL_ROUNDS = 3

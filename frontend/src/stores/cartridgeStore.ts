@@ -17,6 +17,10 @@ export interface CartridgeConfig {
   version: string;
   tags: string[];
   role: string;
+  theme: {
+    accent_color: string;
+    glow_color: string;
+  };
 }
 
 export interface LoadedConfig {

@@ -85,7 +85,11 @@ class CartridgeLoader:
                 "author": c.author,
                 "version": c.version,
                 "tags": c.tags,
-                "role": c.stacking.role
+                "role": c.stacking.role,
+                "theme": {
+                    "accent_color": c.theme.accent_color,
+                    "glow_color": c.theme.glow_color,
+                },
             }
             for c in self.registry.values()
         ]
