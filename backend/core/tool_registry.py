@@ -266,6 +266,54 @@ def execute_python(code: str) -> str:
     return result  # Returns dict; agent.py handles structured output
 
 
+def execute_cpp(code: str, stdin_input: str = "") -> str:
+    """Compile and run C++ code. Returns compilation errors or program output."""
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src_path = os.path.join(tmpdir, "main.cpp")
+            bin_path = os.path.join(tmpdir, "main")
+
+            with open(src_path, "w") as f:
+                f.write(code)
+
+            # Find compiler
+            compiler = None
+            for cc in ["g++", "clang++"]:
+                if shutil.which(cc):
+                    compiler = cc
+                    break
+            if not compiler:
+                return "Error: No C++ compiler found (g++ or clang++ required)"
+
+            # Compile
+            compile_result = subprocess.run(
+                [compiler, "-std=c++17", "-O2", "-o", bin_path, src_path],
+                capture_output=True, text=True, timeout=30
+            )
+            if compile_result.returncode != 0:
+                return f"Compilation Error:\n{compile_result.stderr.strip()}"
+
+            # Run
+            run_result = subprocess.run(
+                [bin_path],
+                input=stdin_input if stdin_input else None,
+                capture_output=True, text=True, timeout=30
+            )
+            output = ""
+            if run_result.stdout:
+                output += run_result.stdout
+            if run_result.stderr:
+                output += ("\nStderr:\n" + run_result.stderr) if output else run_result.stderr
+            if run_result.returncode != 0:
+                output += f"\n(exit code: {run_result.returncode})"
+            return output.strip() if output.strip() else "(no output)"
+
+    except subprocess.TimeoutExpired:
+        return "Error: Execution timed out (30s limit)"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
 AVAILABLE_TOOLS = {
     "get_current_time": get_current_time,
     "list_directory": list_directory,
@@ -275,6 +323,7 @@ AVAILABLE_TOOLS = {
     "run_command": run_command,
     "calculate": calculate,
     "execute_python": execute_python,
+    "execute_cpp": execute_cpp,
 }
 
 def execute_tool(name: str, args: dict) -> str:

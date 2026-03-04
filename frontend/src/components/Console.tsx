@@ -57,6 +57,7 @@ const TOOL_META: Record<string, { icon: React.ReactNode; label: string; color: s
   read_file:       { icon: <FileText size={13} />,   label: "Reading file",       color: "#60a5fa" },
   run_command:     { icon: <Terminal size={13} />,    label: "Running command",    color: "#a78bfa" },
   execute_python:  { icon: <Play size={13} />,        label: "Running Python",     color: "#34d399" },
+  execute_cpp:     { icon: <Play size={13} />,        label: "Running C++",        color: "#38bdf8" },
   search_files:    { icon: <Search size={13} />,      label: "Searching files",    color: "#fbbf24" },
   list_directory:  { icon: <FolderOpen size={13} />,  label: "Listing directory",  color: "#fb923c" },
   calculate:       { icon: <Calculator size={13} />,  label: "Calculating",        color: "#f472b6" },
@@ -124,14 +125,14 @@ function ToolCallCard({ segment }: { segment: ToolCallSegment }) {
   const [expanded, setExpanded] = useState(false);
   const meta = getToolMeta(segment.name);
   const isRunning = segment.status === "running";
+  const hasImages = segment.images && segment.images.length > 0;
 
   const formatArgs = (args: Record<string, any>) => {
     const entries = Object.entries(args);
     if (entries.length === 0) return null;
-    // Show the primary argument value inline
-    const [firstKey, firstVal] = entries[0];
+    const [, firstVal] = entries[0];
     const valStr = typeof firstVal === "string" ? firstVal : JSON.stringify(firstVal);
-    return { key: firstKey, value: valStr, extra: entries.length > 1 ? entries.length - 1 : 0 };
+    return { value: valStr, extra: entries.length > 1 ? entries.length - 1 : 0 };
   };
 
   const argInfo = formatArgs(segment.args);
@@ -167,21 +168,23 @@ function ToolCallCard({ segment }: { segment: ToolCallSegment }) {
         )}
       </button>
 
-      {/* Expanded result */}
+      {/* Expanded text result */}
       {expanded && segment.result && (
         <div className="px-3 pb-2.5 pt-0">
           <div className="bg-black/40 rounded border border-white/5 p-2.5 text-[11px] text-white/50 font-mono max-h-48 overflow-y-auto crt-scroll whitespace-pre-wrap leading-relaxed">
             {segment.result}
           </div>
-          {segment.images && segment.images.length > 0 && (
-            <div className="mt-2 space-y-2">
-              {segment.images.map((src, i) => (
-                <div key={i} className="border border-white/5 rounded overflow-hidden bg-black/60 p-1">
-                  <img src={src} alt={`Output ${i + 1}`} className="w-full max-w-lg rounded" />
-                </div>
-              ))}
+        </div>
+      )}
+
+      {/* Images always visible inline — not hidden behind expand */}
+      {hasImages && (
+        <div className="px-3 pb-3 space-y-2">
+          {segment.images!.map((src, i) => (
+            <div key={i} className="rounded-lg overflow-hidden bg-black/60 border border-white/5">
+              <img src={src} alt={`Plot ${i + 1}`} className="w-full rounded-lg" />
             </div>
-          )}
+          ))}
         </div>
       )}
     </div>
@@ -431,20 +434,16 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
               });
               soundToolStart();
             } else if (data.type === "tool_result") {
+              const imgs = data.data.images || [];
               updateLastSegment((s) => ({
                 ...s,
                 result: data.data.result,
+                images: imgs.length > 0 ? [...((s as ToolCallSegment).images || []), ...imgs] : (s as ToolCallSegment).images,
                 status: "done",
               } as ToolCallSegment));
               soundToolDone();
               // Reset accumulated text for next round of generation
               rawAccumulated = "";
-            } else if (data.type === "sandbox_images") {
-              const imgs = data.data as string[];
-              updateLastSegment((s) => ({
-                ...s,
-                images: [...((s as ToolCallSegment).images || []), ...imgs],
-              } as ToolCallSegment));
             } else if (data.type === "done") {
               // Finalize: collapse any open thinking
               const lastIdx = segments.length - 1;

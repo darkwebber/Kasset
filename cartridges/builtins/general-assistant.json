@@ -15,7 +15,8 @@
     "read_file",
     "run_command",
     "calculate",
-    "execute_python"
+    "execute_python",
+    "execute_cpp"
   ],
   "theme": {
     "accent_color": "#00ff88",

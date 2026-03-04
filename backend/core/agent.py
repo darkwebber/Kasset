@@ -148,6 +148,7 @@ class Agent:
         "run_command": {"desc": "Run whitelisted read-only shell commands (30s timeout, pipes allowed).", "params": {"command": "Shell command to run"}},
         "calculate": {"desc": "Evaluate a math expression safely.", "params": {"expression": "Math expression to evaluate"}},
         "execute_python": {"desc": "Execute Python code in a sandbox. Captures stdout/stderr and matplotlib plots. pandas (pd), numpy (np), and matplotlib.pyplot (plt) are pre-imported.", "params": {"code": "Python code to execute"}},
+        "execute_cpp": {"desc": "Compile and run C++ code (C++17, g++/clang++). Returns compilation errors or program output.", "params": {"code": "C++ source code", "stdin_input": "(optional) stdin input for the program"}},
     }
 
     def _build_system_message(self) -> Dict[str, str]:
@@ -267,15 +268,8 @@ class Agent:
                 
             yield json.dumps({
                 "type": "tool_result", 
-                "data": {"name": tool_name, "result": tool_result}
+                "data": {"name": tool_name, "result": tool_result, "images": sandbox_images}
             })
-            
-            # Send sandbox images as separate events
-            if sandbox_images:
-                yield json.dumps({
-                    "type": "sandbox_images",
-                    "data": sandbox_images
-                })
             
             # Failure tracking
             is_failure = tool_result in ("(no output)", "") or str(tool_result).startswith("Error:")
