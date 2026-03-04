@@ -48,7 +48,7 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
   const [chatId, setChatId] = useState<string | null>(null);
   const { setActiveChatId, loadChatList } = useChatStore();
   
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   const handleLoadChat = (loadedMessages: any[], cartridgeIds: string[]) => {
     setMessages(loadedMessages);
@@ -124,9 +124,11 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
     }
   }, [activeConfig, messages.length]);
 
-  // Auto-scroll
+  // Auto-scroll — scroll the container itself, NOT scrollIntoView which moves ancestors
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
   }, [messages, thinkingContent, activeTool]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -337,7 +339,7 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
 
       {/* Screen Area */}
       <div className="flex-1 min-h-0 mt-6 rounded-2xl border-4 border-black/80 crt-screen p-6 overflow-hidden flex flex-col relative">
-        <div className="flex-1 min-h-0 overflow-y-auto crt-scroll pr-4 space-y-6">
+        <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto crt-scroll pr-4 space-y-6">
           {messages.map((msg, idx) => (
             <div 
               key={idx} 
@@ -392,7 +394,6 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
             </div>
           )}
 
-          <div ref={bottomRef} />
         </div>
 
         {/* Tool overlay */}
