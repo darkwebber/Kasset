@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Cartridge",
+  "description": "A cartridge configuration for the Cartridge Console AI interface",
+  "type": "object",
+  "required": ["id", "name", "description", "icon", "author", "version", "tags", "system_prompt", "tools"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]+$",
+      "description": "Unique slug identifier (e.g., 'code-pilot')"
+    },
+    "name": {
+      "type": "string",
+      "maxLength": 40,
+      "description": "Display name"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 120,
+      "description": "One-line description"
+    },
+    "long_description": {
+      "type": "string",
+      "description": "Detailed markdown description for store listing"
+    },
+    "icon": {
+      "type": "string",
+      "description": "Emoji or URL to pixel art icon"
+    },
+    "author": {
+      "type": "string",
+      "description": "Creator name"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semantic version (e.g., '1.0.0')"
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "description": "Category tags for discovery"
+    },
+    "system_prompt": {
+      "type": "string",
+      "description": "The core instruction for the model"
+    },
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "get_current_time",
+          "list_directory",
+          "get_system_info",
+          "search_files",
+          "read_file",
+          "run_command",
+          "calculate"
+        ]
+      },
+      "description": "Which tools this cartridge enables"
+    },
+    "theme": {
+      "type": "object",
+      "properties": {
+        "accent_color": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "description": "Primary accent color (hex)"
+        },
+        "screen_tint": {
+          "type": "string",
+          "description": "Subtle overlay color for the screen area (rgba)"
+        },
+        "scanline_intensity": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "CRT scanline opacity (0 = off, 1 = heavy)"
+        },
+        "glow_color": {
+          "type": "string",
+          "description": "Color of the screen edge glow"
+        },
+        "boot_animation": {
+          "type": "string",
+          "enum": ["terminal", "glitch", "fade", "matrix", "scan"],
+          "description": "Animation style when cartridge loads"
+        }
+      },
+      "additionalProperties": false
+    },
+    "boot_message": {
+      "type": "string",
+      "description": "First message shown when cartridge loads"
+    },
+    "stacking": {
+      "type": "object",
+      "properties": {
+        "stackable": {
+          "type": "boolean",
+          "default": true
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 50,
+          "description": "Higher = loaded later, takes precedence"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["primary", "auxiliary"],
+          "default": "primary"
+        },
+        "conflicts_with": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Cartridge IDs that cannot be loaded together"
+        },
+        "requires": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Cartridge IDs that must be loaded for this to work"
+        },
+        "merge_strategy": {
+          "type": "string",
+          "enum": ["append", "prepend", "replace"],
+          "default": "append",
+          "description": "How this cartridge's prompt merges with others"
+        }
+      },
+      "additionalProperties": false
+    },
+    "workflows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "description", "steps"],
+        "properties": {
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "steps": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      },
+      "description": "Predefined multi-step sequences"
+    },
+    "memory_enabled": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether to persist state across sessions"
+    },
+    "suggested_tokens": {
+      "type": "integer",
+      "minimum": 256,
+      "maximum": 32768,
+      "description": "Recommended max token setting"
+    },
+    "suggested_thinking": {
+      "type": "boolean",
+      "description": "Whether CoT should be on by default"
+    }
+  },
+  "additionalProperties": false
+}
