@@ -336,8 +336,8 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
       </div>
 
       {/* Screen Area */}
-      <div className="flex-1 mt-6 rounded-2xl border-4 border-black/80 crt-screen p-6 overflow-hidden flex flex-col relative">
-        <div className="flex-1 overflow-y-auto crt-scroll pr-4 space-y-6">
+      <div className="flex-1 min-h-0 mt-6 rounded-2xl border-4 border-black/80 crt-screen p-6 overflow-hidden flex flex-col relative">
+        <div className="flex-1 min-h-0 overflow-y-auto crt-scroll pr-4 space-y-6">
           {messages.map((msg, idx) => (
             <div 
               key={idx} 
