@@ -3,6 +3,7 @@ import logging
 import re
 from typing import List, Dict, Any, Generator, Tuple, Optional
 from .tool_registry import execute_tool
+from .persistence import user_memory, prompt_cache, chat_store
 
 logger = logging.getLogger(__name__)
 
@@ -104,15 +105,35 @@ class Agent:
             selected.insert(0, msg)
             used += msg_tokens
 
-        # If we trimmed messages, add a context note
-        dropped = len(trimmed_history) - len(selected)
+        # If we trimmed messages, try to include a summary of what was dropped
+        dropped_msgs = trimmed_history[:len(trimmed_history) - len(selected)]
+        dropped = len(dropped_msgs)
         result = []
         if system_msg:
             result.append(system_msg)
         if dropped > 0:
+            # Check if we have a cached summary for these messages
+            cached = prompt_cache.get_summary(dropped_msgs)
+            if cached:
+                summary_text = cached
+            else:
+                # Build a lightweight summary from dropped messages
+                summary_parts = []
+                for msg in dropped_msgs:
+                    role = msg["role"]
+                    content = msg["content"][:150]
+                    if role == "user" and not content.startswith("Tool result"):
+                        summary_parts.append(f"User: {content}")
+                    elif role == "assistant":
+                        summary_parts.append(f"Assistant: {content}")
+                summary_text = "; ".join(summary_parts[-6:])  # Keep last 6 summaries
+                if summary_text:
+                    prompt_cache.store_summary(dropped_msgs, summary_text)
+
+            context_note = f"[Earlier conversation summary ({dropped} messages): {summary_text}]" if summary_text else f"[{dropped} earlier messages trimmed]"
             result.append({
                 "role": "system",
-                "content": f"[Context note: {dropped} earlier messages were trimmed to fit context window. Focus on the recent conversation.]"
+                "content": context_note
             })
             logger.info(f"Context trimmed: dropped {dropped} messages, keeping {len(selected)}")
         result.extend(selected)
@@ -143,7 +164,11 @@ class Agent:
             '<tool_call>{"name": "tool_name", "arguments": {"param": "value"}}</tool_call>\n\n'
             + "\n".join(tool_lines)
         )
-        return {"role": "system", "content": self.config.merged_prompt + tools_block}
+        
+        # Inject user memory if available
+        memory_block = user_memory.get_context_block()
+        
+        return {"role": "system", "content": self.config.merged_prompt + tools_block + memory_block}
 
     def chat_stream(
         self, 
@@ -275,3 +300,20 @@ class Agent:
                 break
         else:
             yield json.dumps({"type": "error", "data": "Max tool rounds reached."})
+        
+        # Post-conversation: extract user memories
+        try:
+            extracted = user_memory.extract_memories_from_conversation(history)
+            new_memories = []
+            for mem_type, mem_content in extracted:
+                mem = user_memory.add(mem_content, memory_type=mem_type, source="auto")
+                if mem.get("hits", 1) == 1:  # Only report newly created
+                    new_memories.append(mem)
+            if new_memories:
+                yield json.dumps({
+                    "type": "memory_update",
+                    "data": [{"content": m["content"], "type": m["type"]} for m in new_memories]
+                })
+                logger.info(f"Extracted {len(new_memories)} new memories from conversation")
+        except Exception as e:
+            logger.warning(f"Memory extraction failed: {e}")

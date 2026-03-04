@@ -11,7 +11,9 @@ import "katex/dist/katex.min.css";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import FileExplorer from "./explorer/FileExplorer";
-import { FolderOpen, X, Copy, Check } from "lucide-react";
+import ChatDrawer from "./ChatDrawer";
+import { useChatStore } from "@/stores/chatStore";
+import { FolderOpen, X, Copy, Check, History, Plus } from "lucide-react";
 
 interface Message {
   role: "user" | "assistant" | "system";
@@ -40,10 +42,29 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
   const [thinkingContent, setThinkingContent] = useState("");
   const [activeTool, setActiveTool] = useState<{name: string, args: any} | null>(null);
   const [showExplorer, setShowExplorer] = useState(false);
+  const [showDrawer, setShowDrawer] = useState(false);
   const [attachedFile, setAttachedFile] = useState<string | null>(null);
   const [contextInfo, setContextInfo] = useState<{message_count: number, estimated_tokens: number, max_tokens: number} | null>(null);
+  const [chatId, setChatId] = useState<string | null>(null);
+  const { setActiveChatId, loadChatList } = useChatStore();
   
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  const handleLoadChat = (loadedMessages: any[], cartridgeIds: string[]) => {
+    setMessages(loadedMessages);
+    setContextInfo(null);
+    setThinkingContent("");
+    setActiveTool(null);
+  };
+
+  const handleNewChat = () => {
+    setMessages([]);
+    setChatId(null);
+    setActiveChatId(null);
+    setContextInfo(null);
+    setThinkingContent("");
+    setActiveTool(null);
+  };
 
   // Custom Markdown components with syntax highlighting
   const mdComponents = useMemo<Components>(() => ({
@@ -141,7 +162,8 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
         body: JSON.stringify({
           cartridge_ids: activeConfig.active_cartridge_ids,
           messages: [...messages, userMsg],
-          image_path: imagePath
+          image_path: imagePath,
+          chat_id: chatId,
         }),
       });
 
@@ -164,8 +186,14 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
           try {
             const data = JSON.parse(line.substring(6));
             
-            if (data.type === "context_info") {
+            if (data.type === "chat_id") {
+              setChatId(data.data);
+              setActiveChatId(data.data);
+            } else if (data.type === "context_info") {
               setContextInfo(data.data);
+            } else if (data.type === "memory_update") {
+              // New memories were learned - could show a subtle notification
+              console.log("New memories learned:", data.data);
             } else if (data.type === "think_token") {
               setThinkingContent((prev) => prev + data.data);
             } else if (data.type === "token") {
@@ -212,6 +240,7 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
             } else if (data.type === "done") {
               setIsGenerating(false);
               setThinkingContent("");
+              loadChatList(); // Refresh saved chats list
             } else if (data.type === "error") {
               console.error(data.data);
               setIsGenerating(false);
@@ -246,6 +275,14 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
         />
       )}
 
+      {showDrawer && (
+        <ChatDrawer
+          onLoadChat={handleLoadChat}
+          onNewChat={handleNewChat}
+          onClose={() => { setShowDrawer(false); loadChatList(); }}
+        />
+      )}
+
       {/* Hardware Accents */}
       <div className="absolute top-4 left-6 flex items-center gap-3">
         <div className="flex gap-2">
@@ -270,8 +307,22 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
         )}
       </div>
       
-      {/* Cartridge Slot */}
-      <div className="absolute top-4 right-8 flex items-center gap-3">
+      {/* Cartridge Slot + Chat Controls */}
+      <div className="absolute top-4 right-8 flex items-center gap-2">
+        <button
+          onClick={handleNewChat}
+          className="p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 transition-all"
+          title="New Chat"
+        >
+          <Plus size={16} />
+        </button>
+        <button
+          onClick={() => setShowDrawer(true)}
+          className="p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 transition-all"
+          title="Chat History & Memory"
+        >
+          <History size={16} />
+        </button>
         <div className="bg-black/40 border border-white/10 px-4 py-1.5 rounded text-[var(--accent)] text-glow font-bold text-sm tracking-wider shadow-inner flex items-center gap-2">
           {activeConfig ? activeConfig.active_cartridge_ids[0].toUpperCase() : "NO CARTRIDGE"}
           <button 

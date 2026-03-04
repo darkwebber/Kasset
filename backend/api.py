@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from pathlib import Path
 from .core.cartridge_loader import CartridgeLoader
 from .core.agent import Agent
+from .core.persistence import chat_store, user_memory, ChatStore
 from .model_server import ModelClient # Refactored MLX wrapper
 
 logger = logging.getLogger(__name__)
@@ -33,9 +34,17 @@ class ChatRequest(BaseModel):
     cartridge_ids: List[str]
     messages: List[dict]
     image_path: Optional[str] = None
+    chat_id: Optional[str] = None  # For persistence
 
 class FSRequest(BaseModel):
     path: str = str(Path.home())
+
+class MemoryRequest(BaseModel):
+    content: str
+    memory_type: str = "fact"
+
+class MemoryUpdateRequest(BaseModel):
+    content: str
 
 # --- Endpoints ---
 @app.post("/api/fs/list")
@@ -97,15 +106,94 @@ async def chat_stream(request: ChatRequest):
     try:
         config = cartridge_loader.load_stack(request.cartridge_ids)
         agent = Agent(model_client, config)
+        
+        # Generate or reuse chat_id
+        chat_id = request.chat_id or ChatStore.generate_id()
 
         async def event_generator():
+            # Send chat_id to frontend so it can track this conversation
+            yield f"data: {json.dumps({'type': 'chat_id', 'data': chat_id})}\n\n"
+            
             for event_json in agent.chat_stream(request.messages, request.image_path):
                 yield f"data: {event_json}\n\n"
+            
+            # Auto-save conversation after streaming completes
+            try:
+                chat_store.save(chat_id, request.messages, request.cartridge_ids)
+            except Exception as e:
+                logger.warning(f"Auto-save failed: {e}")
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
     except Exception as e:
         logger.error(f"Chat error: {e}")
         return {"error": str(e)}, 500
+
+
+# ═══════════════════════════════════════════
+# CHAT PERSISTENCE ENDPOINTS
+# ═══════════════════════════════════════════
+
+@app.get("/api/chats")
+def list_chats():
+    """List all saved conversations."""
+    return {"chats": chat_store.list_all()}
+
+@app.get("/api/chats/{chat_id}")
+def get_chat(chat_id: str):
+    """Load a specific conversation."""
+    chat = chat_store.load(chat_id)
+    if not chat:
+        return {"error": "Chat not found"}, 404
+    return {"chat": chat}
+
+@app.post("/api/chats/{chat_id}/save")
+async def save_chat(chat_id: str, request: Request):
+    """Explicitly save/update a conversation."""
+    body = await request.json()
+    meta = chat_store.save(
+        chat_id,
+        body.get("messages", []),
+        body.get("cartridge_ids", []),
+        title=body.get("title", ""),
+    )
+    return {"saved": meta}
+
+@app.delete("/api/chats/{chat_id}")
+def delete_chat(chat_id: str):
+    """Delete a saved conversation."""
+    ok = chat_store.delete(chat_id)
+    return {"deleted": ok}
+
+
+# ═══════════════════════════════════════════
+# USER MEMORY ENDPOINTS
+# ═══════════════════════════════════════════
+
+@app.get("/api/memory")
+def get_memories():
+    """Get all user memories."""
+    return {"memories": user_memory.get_all(active_only=False)}
+
+@app.post("/api/memory")
+def add_memory(request: MemoryRequest):
+    """Manually add a user memory."""
+    mem = user_memory.add(request.content, memory_type=request.memory_type, source="manual")
+    return {"memory": mem}
+
+@app.put("/api/memory/{memory_id}")
+def update_memory(memory_id: str, request: MemoryUpdateRequest):
+    """Update a user memory."""
+    mem = user_memory.update(memory_id, request.content)
+    if not mem:
+        return {"error": "Memory not found"}, 404
+    return {"memory": mem}
+
+@app.delete("/api/memory/{memory_id}")
+def delete_memory(memory_id: str):
+    """Delete a user memory."""
+    ok = user_memory.remove(memory_id)
+    return {"deleted": ok}
+
 
 if __name__ == "__main__":
     import uvicorn
