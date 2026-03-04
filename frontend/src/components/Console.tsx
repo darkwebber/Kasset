@@ -1,7 +1,7 @@
 "use client";
 
 import { useCartridgeStore } from "@/stores/cartridgeStore";
-import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -13,13 +13,63 @@ import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import FileExplorer from "./explorer/FileExplorer";
 import ChatDrawer from "./ChatDrawer";
 import { useChatStore } from "@/stores/chatStore";
-import { FolderOpen, X, Copy, Check, History, Plus } from "lucide-react";
+import { FolderOpen, X, Copy, Check, History, Plus, ChevronDown, ChevronRight, Wrench, Terminal, FileText, Clock, Play, Search, Calculator } from "lucide-react";
+
+// ═══════════════════════════════════════════
+// TYPES — structured message segments
+// ═══════════════════════════════════════════
+
+interface ToolCallSegment {
+  kind: "tool";
+  name: string;
+  args: Record<string, any>;
+  result?: string;
+  images?: string[];
+  status: "running" | "done" | "error";
+}
+
+interface ThinkingSegment {
+  kind: "thinking";
+  content: string;
+  durationMs?: number;
+  collapsed: boolean;
+}
+
+interface TextSegment {
+  kind: "text";
+  content: string;
+}
+
+type Segment = ToolCallSegment | ThinkingSegment | TextSegment;
 
 interface Message {
   role: "user" | "assistant" | "system";
   content: string;
-  images?: string[]; // base64 sandbox plot images
+  segments?: Segment[];
 }
+
+// ═══════════════════════════════════════════
+// TOOL ICONS & LABELS
+// ═══════════════════════════════════════════
+
+const TOOL_META: Record<string, { icon: React.ReactNode; label: string; color: string }> = {
+  read_file:       { icon: <FileText size={13} />,   label: "Reading file",       color: "#60a5fa" },
+  run_command:     { icon: <Terminal size={13} />,    label: "Running command",    color: "#a78bfa" },
+  execute_python:  { icon: <Play size={13} />,        label: "Running Python",     color: "#34d399" },
+  search_files:    { icon: <Search size={13} />,      label: "Searching files",    color: "#fbbf24" },
+  list_directory:  { icon: <FolderOpen size={13} />,  label: "Listing directory",  color: "#fb923c" },
+  calculate:       { icon: <Calculator size={13} />,  label: "Calculating",        color: "#f472b6" },
+  get_current_time:{ icon: <Clock size={13} />,       label: "Getting time",       color: "#38bdf8" },
+  get_system_info: { icon: <Terminal size={13} />,    label: "System info",        color: "#818cf8" },
+};
+
+function getToolMeta(name: string) {
+  return TOOL_META[name] || { icon: <Wrench size={13} />, label: name, color: "#94a3b8" };
+}
+
+// ═══════════════════════════════════════════
+// SUB-COMPONENTS
+// ═══════════════════════════════════════════
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -34,27 +84,146 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+function ThinkingBlock({ segment, onToggle }: { segment: ThinkingSegment; onToggle: () => void }) {
+  const isStreaming = !segment.durationMs;
+  const durationStr = segment.durationMs ? `${(segment.durationMs / 1000).toFixed(1)}s` : null;
+
+  return (
+    <div className="my-2">
+      <button
+        onClick={onToggle}
+        className="flex items-center gap-2 text-[11px] font-mono text-white/30 hover:text-white/50 transition-colors group"
+      >
+        {segment.collapsed
+          ? <ChevronRight size={12} className="text-white/20" />
+          : <ChevronDown size={12} className="text-white/20" />
+        }
+        {isStreaming ? (
+          <>
+            <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse" />
+            <span className="text-[var(--accent)]/60">Thinking...</span>
+          </>
+        ) : (
+          <>
+            <Clock size={11} className="text-white/20" />
+            <span>Thought for {durationStr}</span>
+          </>
+        )}
+      </button>
+      {!segment.collapsed && (
+        <div className="ml-5 mt-1.5 pl-3 border-l border-white/5 text-[11px] text-white/25 font-mono leading-relaxed max-h-40 overflow-y-auto crt-scroll whitespace-pre-wrap">
+          {segment.content}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ToolCallCard({ segment }: { segment: ToolCallSegment }) {
+  const [expanded, setExpanded] = useState(false);
+  const meta = getToolMeta(segment.name);
+  const isRunning = segment.status === "running";
+
+  const formatArgs = (args: Record<string, any>) => {
+    const entries = Object.entries(args);
+    if (entries.length === 0) return null;
+    // Show the primary argument value inline
+    const [firstKey, firstVal] = entries[0];
+    const valStr = typeof firstVal === "string" ? firstVal : JSON.stringify(firstVal);
+    return { key: firstKey, value: valStr, extra: entries.length > 1 ? entries.length - 1 : 0 };
+  };
+
+  const argInfo = formatArgs(segment.args);
+
+  return (
+    <div className="my-2 rounded-lg border overflow-hidden transition-all"
+      style={{ borderColor: `${meta.color}20` }}
+    >
+      {/* Header */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-2.5 px-3 py-2 text-left transition-all hover:bg-white/[0.02]"
+      >
+        <div className="flex items-center justify-center w-6 h-6 rounded-md"
+          style={{ background: `${meta.color}15`, color: meta.color }}
+        >
+          {isRunning ? <span className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" /> : meta.icon}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium" style={{ color: meta.color }}>
+              {isRunning ? meta.label + "..." : meta.label}
+            </span>
+            {argInfo && (
+              <span className="text-[10px] text-white/25 font-mono truncate max-w-[300px]">
+                {argInfo.value.length > 60 ? argInfo.value.slice(0, 60) + "..." : argInfo.value}
+              </span>
+            )}
+          </div>
+        </div>
+        {segment.result && (
+          <ChevronDown size={12} className={`text-white/20 transition-transform ${expanded ? "rotate-0" : "-rotate-90"}`} />
+        )}
+      </button>
+
+      {/* Expanded result */}
+      {expanded && segment.result && (
+        <div className="px-3 pb-2.5 pt-0">
+          <div className="bg-black/40 rounded border border-white/5 p-2.5 text-[11px] text-white/50 font-mono max-h-48 overflow-y-auto crt-scroll whitespace-pre-wrap leading-relaxed">
+            {segment.result}
+          </div>
+          {segment.images && segment.images.length > 0 && (
+            <div className="mt-2 space-y-2">
+              {segment.images.map((src, i) => (
+                <div key={i} className="border border-white/5 rounded overflow-hidden bg-black/60 p-1">
+                  <img src={src} alt={`Output ${i + 1}`} className="w-full max-w-lg rounded" />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Strip raw tags from content for clean display */
+function cleanContent(text: string): string {
+  let c = text;
+  c = c.replace(/<think>[\s\S]*?<\/think>/gi, "");
+  c = c.replace(/<think>[\s\S]*$/gi, "");
+  c = c.replace(/<\/think>/gi, "");
+  c = c.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, "");
+  c = c.replace(/<tool_call>[\s\S]*$/gi, "");
+  c = c.replace(/<\/tool_call>/gi, "");
+  return c.trim();
+}
+
+// ═══════════════════════════════════════════
+// MAIN CONSOLE COMPONENT
+// ═══════════════════════════════════════════
+
 export default function Console({ onChangeCartridge }: { onChangeCartridge: () => void }) {
   const { activeConfig } = useCartridgeStore();
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [thinkingContent, setThinkingContent] = useState("");
-  const [activeTool, setActiveTool] = useState<{name: string, args: any} | null>(null);
   const [showExplorer, setShowExplorer] = useState(false);
   const [showDrawer, setShowDrawer] = useState(false);
   const [attachedFile, setAttachedFile] = useState<string | null>(null);
   const [contextInfo, setContextInfo] = useState<{message_count: number, estimated_tokens: number, max_tokens: number} | null>(null);
   const [chatId, setChatId] = useState<string | null>(null);
+  // Streaming state — not part of messages until finalized
+  const [streamSegments, setStreamSegments] = useState<Segment[]>([]);
   const { setActiveChatId, loadChatList } = useChatStore();
   
   const scrollRef = useRef<HTMLDivElement>(null);
+  const thinkStartRef = useRef<number>(0);
 
-  const handleLoadChat = (loadedMessages: any[], cartridgeIds: string[]) => {
+  const handleLoadChat = (loadedMessages: any[], _cartridgeIds: string[]) => {
     setMessages(loadedMessages);
     setContextInfo(null);
-    setThinkingContent("");
-    setActiveTool(null);
+    setStreamSegments([]);
   };
 
   const handleNewChat = () => {
@@ -62,11 +231,9 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
     setChatId(null);
     setActiveChatId(null);
     setContextInfo(null);
-    setThinkingContent("");
-    setActiveTool(null);
+    setStreamSegments([]);
   };
 
-  // Custom Markdown components with syntax highlighting
   const mdComponents = useMemo<Components>(() => ({
     code({ className, children, ...props }) {
       const match = /language-(\w+)/.exec(className || "");
@@ -97,17 +264,11 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
           </div>
         );
       }
-      return (
-        <code className={className} {...props}>
-          {children}
-        </code>
-      );
+      return <code className={className} {...props}>{children}</code>;
     },
-    // Improve table rendering
     table({ children }) {
       return <div className="overflow-x-auto my-4"><table>{children}</table></div>;
     },
-    // Better blockquote
     blockquote({ children }) {
       return (
         <blockquote className="border-l-2 border-[var(--accent)]/40 pl-4 my-3 text-white/60 italic">
@@ -124,12 +285,12 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
     }
   }, [activeConfig, messages.length]);
 
-  // Auto-scroll — scroll the container itself, NOT scrollIntoView which moves ancestors
+  // Auto-scroll
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages, thinkingContent, activeTool]);
+  }, [messages, streamSegments]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -138,24 +299,41 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
 
     let userContent = input.trim();
     if (attachedFile) {
-      // If it's an image, the backend needs it separately.
-      // For now, we'll append a text note if it's a file, or if we build full vision we send it differently.
-      // Let's assume the user just wants the model to know about the file for now.
       userContent = userContent ? `${userContent}\n[Attached file: ${attachedFile}]` : `[Attached file: ${attachedFile}]`;
     }
 
-    const userMsg = { role: "user" as const, content: userContent };
+    const userMsg: Message = { role: "user", content: userContent };
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     
-    // We'll pass the image path directly to the backend if it's an image
     const isImage = attachedFile?.match(/\.(jpg|jpeg|png|webp)$/i);
     const imagePath = isImage ? attachedFile : undefined;
     
     setAttachedFile(null);
     setIsGenerating(true);
-    setThinkingContent("");
-    setActiveTool(null);
+    setStreamSegments([]);
+
+    // Mutable ref for segments during streaming
+    let segments: Segment[] = [];
+    let rawAccumulated = "";
+
+    const pushSegment = (seg: Segment) => {
+      segments = [...segments, seg];
+      setStreamSegments([...segments]);
+    };
+
+    const updateLastSegment = (updater: (s: Segment) => Segment) => {
+      if (segments.length === 0) return;
+      segments = [...segments.slice(0, -1), updater(segments[segments.length - 1])];
+      setStreamSegments([...segments]);
+    };
+
+    const getOrCreateTextSegment = (): number => {
+      const last = segments[segments.length - 1];
+      if (last && last.kind === "text") return segments.length - 1;
+      pushSegment({ kind: "text", content: "" });
+      return segments.length - 1;
+    };
 
     try {
       const response = await fetch("http://127.0.0.1:7861/api/chat", {
@@ -173,7 +351,6 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      let currentAssistantMessage = "";
 
       while (true) {
         const { value, done } = await reader.read();
@@ -194,58 +371,80 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
             } else if (data.type === "context_info") {
               setContextInfo(data.data);
             } else if (data.type === "memory_update") {
-              // New memories were learned - could show a subtle notification
               console.log("New memories learned:", data.data);
             } else if (data.type === "think_token") {
-              setThinkingContent((prev) => prev + data.data);
-            } else if (data.type === "token") {
-              currentAssistantMessage += data.data;
-              // Keep updating the last message
-              setMessages((prev) => {
-                const newMsgs = [...prev];
-                if (newMsgs[newMsgs.length - 1].role === "assistant") {
-                  newMsgs[newMsgs.length - 1].content = currentAssistantMessage;
-                } else {
-                  newMsgs.push({ role: "assistant", content: currentAssistantMessage });
-                }
-                return newMsgs;
-              });
-            } else if (data.type === "tool_start") {
-              setActiveTool(data.data);
-            } else if (data.type === "tool_result") {
-              const resultText = data.data.result;
-              const toolName = data.data.name;
-              if (toolName === "execute_python") {
-                currentAssistantMessage += `\n\n> **SANDBOX** \`${toolName}\`\n> ${resultText.split('\n').join('\n> ')}\n\n`;
+              const last = segments[segments.length - 1];
+              if (!last || last.kind !== "thinking") {
+                thinkStartRef.current = Date.now();
+                pushSegment({ kind: "thinking", content: data.data, collapsed: false });
               } else {
-                currentAssistantMessage += `\n\n> 🔧 **${toolName}**\n> \`\`\`\n> ${resultText}\n> \`\`\`\n\n`;
+                updateLastSegment((s) => ({ ...s, content: (s as ThinkingSegment).content + data.data }));
               }
-              setMessages((prev) => {
-                const newMsgs = [...prev];
-                if (newMsgs[newMsgs.length - 1].role === "assistant") {
-                  newMsgs[newMsgs.length - 1].content = currentAssistantMessage;
+            } else if (data.type === "think_end") {
+              const duration = Date.now() - thinkStartRef.current;
+              updateLastSegment((s) => ({
+                ...s,
+                durationMs: duration,
+                collapsed: true,
+              }));
+            } else if (data.type === "token") {
+              rawAccumulated += data.data;
+              const cleanText = cleanContent(rawAccumulated);
+              if (cleanText) {
+                const last = segments[segments.length - 1];
+                if (last && last.kind === "text") {
+                  updateLastSegment(() => ({ kind: "text", content: cleanText }));
+                } else {
+                  pushSegment({ kind: "text", content: cleanText });
                 }
-                return newMsgs;
+              }
+            } else if (data.type === "tool_start") {
+              // Auto-collapse thinking when tool starts
+              const lastIdx = segments.length - 1;
+              if (lastIdx >= 0 && segments[lastIdx].kind === "thinking") {
+                const duration = Date.now() - thinkStartRef.current;
+                updateLastSegment((s) => ({ ...s, durationMs: duration, collapsed: true }));
+              }
+              pushSegment({
+                kind: "tool",
+                name: data.data.name,
+                args: data.data.args,
+                status: "running",
               });
-              setActiveTool(null);
+            } else if (data.type === "tool_result") {
+              updateLastSegment((s) => ({
+                ...s,
+                result: data.data.result,
+                status: "done",
+              } as ToolCallSegment));
+              // Reset accumulated text for next round of generation
+              rawAccumulated = "";
             } else if (data.type === "sandbox_images") {
-              // Append sandbox plot images to the current assistant message
               const imgs = data.data as string[];
-              setMessages((prev) => {
-                const newMsgs = [...prev];
-                const lastMsg = newMsgs[newMsgs.length - 1];
-                if (lastMsg && lastMsg.role === "assistant") {
-                  lastMsg.images = [...(lastMsg.images || []), ...imgs];
-                }
-                return [...newMsgs];
-              });
+              updateLastSegment((s) => ({
+                ...s,
+                images: [...((s as ToolCallSegment).images || []), ...imgs],
+              } as ToolCallSegment));
             } else if (data.type === "done") {
+              // Finalize: collapse any open thinking
+              const lastIdx = segments.length - 1;
+              if (lastIdx >= 0 && segments[lastIdx].kind === "thinking" && !(segments[lastIdx] as ThinkingSegment).durationMs) {
+                const duration = Date.now() - thinkStartRef.current;
+                updateLastSegment((s) => ({ ...s, durationMs: duration, collapsed: true }));
+              }
+              // Merge segments into a final assistant message
+              const finalText = segments
+                .filter((s) => s.kind === "text")
+                .map((s) => (s as TextSegment).content)
+                .join("\n\n");
+              setMessages((prev) => [...prev, { role: "assistant", content: finalText, segments: [...segments] }]);
+              setStreamSegments([]);
               setIsGenerating(false);
-              setThinkingContent("");
-              loadChatList(); // Refresh saved chats list
+              loadChatList();
             } else if (data.type === "error") {
               console.error(data.data);
               setIsGenerating(false);
+              setStreamSegments([]);
             }
           } catch (e) {
             console.error("Failed to parse SSE line", line, e);
@@ -255,8 +454,58 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
     } catch (error) {
       console.error(error);
       setIsGenerating(false);
+      setStreamSegments([]);
     }
   };
+
+  // ─── Render helper for segments ───
+  const renderSegments = (segs: Segment[], isLive: boolean) => (
+    <div className="space-y-1">
+      {segs.map((seg, i) => {
+        if (seg.kind === "thinking") {
+          return (
+            <ThinkingBlock
+              key={`think-${i}`}
+              segment={seg}
+              onToggle={() => {
+                if (isLive) {
+                  setStreamSegments((prev) => prev.map((s, j) =>
+                    j === i && s.kind === "thinking" ? { ...s, collapsed: !s.collapsed } : s
+                  ));
+                } else {
+                  setMessages((prev) => prev.map((msg) => {
+                    if (!msg.segments) return msg;
+                    return {
+                      ...msg,
+                      segments: msg.segments.map((s, j) =>
+                        j === i && s.kind === "thinking" ? { ...s, collapsed: !s.collapsed } : s
+                      ),
+                    };
+                  }));
+                }
+              }}
+            />
+          );
+        }
+        if (seg.kind === "tool") {
+          return <ToolCallCard key={`tool-${i}`} segment={seg} />;
+        }
+        if (seg.kind === "text" && seg.content.trim()) {
+          return (
+            <ReactMarkdown
+              key={`text-${i}`}
+              remarkPlugins={[remarkGfm, remarkMath]}
+              rehypePlugins={[rehypeKatex]}
+              components={mdComponents}
+            >
+              {seg.content}
+            </ReactMarkdown>
+          );
+        }
+        return null;
+      })}
+    </div>
+  );
 
   const themeStyle = activeConfig ? {
     "--accent": activeConfig.theme.accent_color,
@@ -290,7 +539,6 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
         <div className="flex gap-2">
           <div className="w-3 h-3 rounded-full bg-red-500 opacity-80" />
           <div className={`w-3 h-3 rounded-full ${isGenerating ? "bg-[var(--accent)] animate-pulse crt-glow" : "bg-white/20"}`} />
-          <div className={`w-3 h-3 rounded-full ${activeTool ? "bg-blue-400 animate-pulse crt-glow" : "bg-white/20"}`} />
         </div>
         {contextInfo && (
           <div className="flex items-center gap-2 ml-2" title={`${contextInfo.estimated_tokens} / ${contextInfo.max_tokens} tokens`}>
@@ -339,7 +587,7 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
 
       {/* Screen Area */}
       <div className="flex-1 min-h-0 mt-6 rounded-2xl border-4 border-black/80 crt-screen p-6 overflow-hidden flex flex-col relative">
-        <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto crt-scroll pr-4 space-y-6">
+        <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto crt-scroll pr-4 space-y-4">
           {messages.map((msg, idx) => (
             <div 
               key={idx} 
@@ -354,60 +602,30 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
               >
                 {msg.role === "user" ? (
                   msg.content
+                ) : msg.segments && msg.segments.length > 0 ? (
+                  renderSegments(msg.segments, false)
                 ) : (
-                  <>
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm, remarkMath]}
-                      rehypePlugins={[rehypeKatex]}
-                      components={mdComponents}
-                    >
-                      {msg.content}
-                    </ReactMarkdown>
-                    {msg.images && msg.images.length > 0 && (
-                      <div className="mt-3 space-y-3">
-                        {msg.images.map((src, imgIdx) => (
-                          <div key={imgIdx} className="border border-[var(--accent)]/20 rounded-lg overflow-hidden bg-black/60 p-1">
-                            <img 
-                              src={src} 
-                              alt={`Sandbox plot ${imgIdx + 1}`}
-                              className="w-full max-w-lg rounded"
-                            />
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </>
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm, remarkMath]}
+                    rehypePlugins={[rehypeKatex]}
+                    components={mdComponents}
+                  >
+                    {cleanContent(msg.content)}
+                  </ReactMarkdown>
                 )}
               </div>
             </div>
           ))}
 
-          {/* Thinking UI */}
-          {thinkingContent && (
+          {/* Live streaming segments */}
+          {streamSegments.length > 0 && (
             <div className="flex justify-start">
-              <div className="max-w-[85%] border border-[var(--accent)]/30 bg-black/40 rounded p-4 text-[var(--accent)]/70 text-sm font-mono opacity-80">
-                <div className="font-bold mb-2 uppercase tracking-widest flex items-center gap-2">
-                  <span className="animate-spin">◷</span> Processing...
-                </div>
-                <div className="whitespace-pre-wrap">{thinkingContent}</div>
+              <div className="max-w-[85%] prose-crt">
+                {renderSegments(streamSegments, true)}
               </div>
             </div>
           )}
-
         </div>
-
-        {/* Tool overlay */}
-        {activeTool && (
-          <div className="absolute bottom-6 right-6 bg-black/90 border border-blue-500/50 p-3 rounded text-blue-400 text-xs font-mono shadow-[0_0_20px_rgba(59,130,246,0.2)] z-50">
-            <div className="font-bold mb-1 flex items-center gap-2">
-              <span className="w-2 h-2 bg-blue-500 rounded-full animate-ping" />
-              EXECUTING: {activeTool.name}
-            </div>
-            <div className="opacity-70 truncate max-w-[200px]">
-              {JSON.stringify(activeTool.args)}
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Input Area */}
