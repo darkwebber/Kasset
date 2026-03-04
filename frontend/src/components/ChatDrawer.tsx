@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useCartridgeStore } from "@/stores/cartridgeStore";
 import { useChatStore } from "@/stores/chatStore";
-import { MessageSquare, Plus, Trash2, Brain, X, ChevronDown, ChevronRight } from "lucide-react";
+import { MessageSquare, Plus, Trash2, Brain, X, ChevronDown, ChevronRight, Filter } from "lucide-react";
+import { soundTick, soundNewChat } from "@/lib/sounds";
 
 interface ChatDrawerProps {
   onLoadChat: (messages: any[], cartridgeIds: string[]) => void;
@@ -11,21 +13,34 @@ interface ChatDrawerProps {
 }
 
 export default function ChatDrawer({ onLoadChat, onNewChat, onClose }: ChatDrawerProps) {
+  const { activeConfig } = useCartridgeStore();
   const {
     chatList, loadChatList, loadChat, deleteChat,
     memories, loadMemories, deleteMemory, addMemory,
   } = useChatStore();
 
   const [tab, setTab] = useState<"history" | "memory">("history");
+  const [showAll, setShowAll] = useState(false);
   const [newMemContent, setNewMemContent] = useState("");
   const [newMemType, setNewMemType] = useState("fact");
   const [showAddMem, setShowAddMem] = useState(false);
   const [expandedType, setExpandedType] = useState<string | null>(null);
 
+  const activeCartridgeId = activeConfig?.active_cartridge_ids?.[0] || "";
+
   useEffect(() => {
     loadChatList();
     loadMemories();
   }, [loadChatList, loadMemories]);
+
+  // Filter chats by current cartridge
+  const cartridgeChats = chatList.filter(
+    (c) => c.cartridge_ids?.[0] === activeCartridgeId
+  );
+  const otherChats = chatList.filter(
+    (c) => c.cartridge_ids?.[0] !== activeCartridgeId
+  );
+  const displayChats = showAll ? chatList : cartridgeChats;
 
   const handleLoadChat = async (chatId: string) => {
     const data = await loadChat(chatId);
@@ -36,6 +51,7 @@ export default function ChatDrawer({ onLoadChat, onNewChat, onClose }: ChatDrawe
   };
 
   const handleNewChat = () => {
+    soundNewChat();
     onNewChat();
     onClose();
   };
@@ -45,6 +61,7 @@ export default function ChatDrawer({ onLoadChat, onNewChat, onClose }: ChatDrawe
       addMemory(newMemContent.trim(), newMemType);
       setNewMemContent("");
       setShowAddMem(false);
+      soundTick();
     }
   };
 
@@ -53,6 +70,8 @@ export default function ChatDrawer({ onLoadChat, onNewChat, onClose }: ChatDrawe
     const d = new Date(iso);
     const now = new Date();
     const diff = now.getTime() - d.getTime();
+    if (diff < 60000) return "just now";
+    if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
     if (diff < 86400000) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     if (diff < 604800000) return d.toLocaleDateString([], { weekday: "short" });
     return d.toLocaleDateString([], { month: "short", day: "numeric" });
@@ -90,7 +109,7 @@ export default function ChatDrawer({ onLoadChat, onNewChat, onClose }: ChatDrawe
         <div className="flex items-center justify-between p-4 border-b border-white/10">
           <div className="flex gap-1">
             <button
-              onClick={() => setTab("history")}
+              onClick={() => { setTab("history"); soundTick(); }}
               className={`px-3 py-1.5 rounded text-xs font-bold uppercase tracking-wider transition-all ${
                 tab === "history" ? "bg-[var(--accent)] text-black" : "text-white/40 hover:text-white/70"
               }`}
@@ -99,7 +118,7 @@ export default function ChatDrawer({ onLoadChat, onNewChat, onClose }: ChatDrawe
               Chats
             </button>
             <button
-              onClick={() => setTab("memory")}
+              onClick={() => { setTab("memory"); soundTick(); }}
               className={`px-3 py-1.5 rounded text-xs font-bold uppercase tracking-wider transition-all ${
                 tab === "memory" ? "bg-[var(--accent)] text-black" : "text-white/40 hover:text-white/70"
               }`}
@@ -114,59 +133,107 @@ export default function ChatDrawer({ onLoadChat, onNewChat, onClose }: ChatDrawe
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto crt-scroll">
+        <div className="flex-1 overflow-y-auto crt-scroll min-h-0">
           {tab === "history" ? (
             <div className="p-2">
-              {/* New Chat Button */}
-              <button
-                onClick={handleNewChat}
-                className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg border border-dashed border-white/10 text-white/50 hover:text-[var(--accent)] hover:border-[var(--accent)]/30 transition-all text-sm mb-2"
-              >
-                <Plus size={16} />
-                <span className="font-mono text-xs uppercase tracking-wider">New Chat</span>
-              </button>
+              {/* New Chat + Filter Row */}
+              <div className="flex gap-1.5 mb-2">
+                <button
+                  onClick={handleNewChat}
+                  className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-dashed border-white/10 text-white/50 hover:text-[var(--accent)] hover:border-[var(--accent)]/30 transition-all"
+                >
+                  <Plus size={14} />
+                  <span className="font-mono text-[10px] uppercase tracking-wider">New Chat</span>
+                </button>
+                <button
+                  onClick={() => { setShowAll(!showAll); soundTick(); }}
+                  className={`flex items-center gap-1.5 px-2.5 py-2 rounded-lg border transition-all text-[10px] font-mono uppercase tracking-wider ${
+                    showAll
+                      ? "border-[var(--accent)]/30 text-[var(--accent)]"
+                      : "border-white/10 text-white/30 hover:text-white/50"
+                  }`}
+                  title={showAll ? "Showing all cartridges" : "Showing current cartridge only"}
+                >
+                  <Filter size={12} />
+                  {showAll ? "All" : activeCartridgeId.slice(0, 6).toUpperCase() || "ALL"}
+                </button>
+              </div>
+
+              {/* Cartridge context label */}
+              {!showAll && activeCartridgeId && (
+                <div className="px-3 py-1.5 mb-1">
+                  <span className="text-[9px] text-white/20 font-mono uppercase tracking-wider">
+                    {cartridgeChats.length} conversation{cartridgeChats.length !== 1 ? "s" : ""} with {activeCartridgeId}
+                    {otherChats.length > 0 && (
+                      <button
+                        onClick={() => setShowAll(true)}
+                        className="ml-2 text-[var(--accent)]/40 hover:text-[var(--accent)]/70 transition-colors"
+                      >
+                        +{otherChats.length} others
+                      </button>
+                    )}
+                  </span>
+                </div>
+              )}
 
               {/* Chat List */}
-              {chatList.length === 0 ? (
-                <div className="text-white/20 text-xs text-center py-8 font-mono">
-                  No saved conversations
+              {displayChats.length === 0 ? (
+                <div className="text-white/20 text-xs text-center py-8 font-mono space-y-2">
+                  <div>No conversations{!showAll ? ` with ${activeCartridgeId}` : ""}</div>
+                  {!showAll && otherChats.length > 0 && (
+                    <button
+                      onClick={() => setShowAll(true)}
+                      className="text-[var(--accent)]/40 hover:text-[var(--accent)] transition-colors text-[10px]"
+                    >
+                      Show all cartridges ({otherChats.length})
+                    </button>
+                  )}
                 </div>
               ) : (
-                <div className="space-y-1">
-                  {chatList.map((chat) => (
-                    <div
-                      key={chat.id}
-                      className="group flex items-start gap-2 px-3 py-2.5 rounded-lg hover:bg-white/5 cursor-pointer transition-all"
-                      onClick={() => handleLoadChat(chat.id)}
-                    >
-                      <MessageSquare size={14} className="text-white/20 mt-0.5 shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <div className="text-white/70 text-xs font-medium truncate">
-                          {chat.title}
-                        </div>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          <span className="text-[9px] text-white/20 font-mono">
-                            {chat.message_count} msg
-                          </span>
-                          <span className="text-[9px] text-white/20 font-mono">
-                            {formatDate(chat.updated_at)}
-                          </span>
-                          {chat.cartridge_ids?.[0] && (
-                            <span className="text-[8px] text-[var(--accent)]/40 font-mono uppercase">
-                              {chat.cartridge_ids[0]}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); deleteChat(chat.id); }}
-                        className="opacity-0 group-hover:opacity-100 text-white/20 hover:text-red-400 transition-all p-1"
-                        title="Delete chat"
+                <div className="space-y-0.5">
+                  {displayChats.map((chat) => {
+                    const isCurrentCartridge = chat.cartridge_ids?.[0] === activeCartridgeId;
+                    return (
+                      <div
+                        key={chat.id}
+                        className={`group flex items-start gap-2 px-3 py-2.5 rounded-lg cursor-pointer transition-all ${
+                          isCurrentCartridge
+                            ? "hover:bg-[var(--accent)]/5"
+                            : "hover:bg-white/5 opacity-60"
+                        }`}
+                        onClick={() => handleLoadChat(chat.id)}
                       >
-                        <Trash2 size={12} />
-                      </button>
-                    </div>
-                  ))}
+                        <MessageSquare size={14} className={`mt-0.5 shrink-0 ${isCurrentCartridge ? "text-[var(--accent)]/30" : "text-white/15"}`} />
+                        <div className="flex-1 min-w-0">
+                          <div className="text-white/70 text-xs font-medium truncate">
+                            {chat.title}
+                          </div>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <span className="text-[9px] text-white/20 font-mono">
+                              {chat.message_count} msg
+                            </span>
+                            <span className="text-[9px] text-white/20 font-mono">
+                              {formatDate(chat.updated_at)}
+                            </span>
+                            {showAll && chat.cartridge_ids?.[0] && (
+                              <span className={`text-[8px] font-mono uppercase ${
+                                isCurrentCartridge ? "text-[var(--accent)]/40" : "text-white/20"
+                              }`}>
+                                {chat.cartridge_ids[0]}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); deleteChat(chat.id); soundTick(); }}
+                          className="opacity-0 group-hover:opacity-100 text-white/20 hover:text-red-400 transition-all p-1"
+                          title="Delete chat"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -178,7 +245,7 @@ export default function ChatDrawer({ onLoadChat, onNewChat, onClose }: ChatDrawe
                   {memories.length} memories
                 </span>
                 <button
-                  onClick={() => setShowAddMem(!showAddMem)}
+                  onClick={() => { setShowAddMem(!showAddMem); soundTick(); }}
                   className="text-[10px] text-[var(--accent)]/60 hover:text-[var(--accent)] font-mono uppercase tracking-wider transition-colors"
                 >
                   {showAddMem ? "Cancel" : "+ Add"}
@@ -232,7 +299,7 @@ export default function ChatDrawer({ onLoadChat, onNewChat, onClose }: ChatDrawe
                     return (
                       <div key={type}>
                         <button
-                          onClick={() => setExpandedType(isExpanded ? null : type)}
+                          onClick={() => { setExpandedType(isExpanded ? null : type); soundTick(); }}
                           className="w-full flex items-center gap-2 px-3 py-2 rounded hover:bg-white/5 transition-all"
                         >
                           {isExpanded ? <ChevronDown size={12} className="text-white/30" /> : <ChevronRight size={12} className="text-white/30" />}
@@ -248,7 +315,7 @@ export default function ChatDrawer({ onLoadChat, onNewChat, onClose }: ChatDrawe
                                   {mem.content}
                                 </div>
                                 <button
-                                  onClick={() => deleteMemory(mem.id)}
+                                  onClick={() => { deleteMemory(mem.id); soundTick(); }}
                                   className="opacity-0 group-hover:opacity-100 text-white/20 hover:text-red-400 transition-all p-0.5 shrink-0"
                                 >
                                   <X size={10} />

@@ -13,7 +13,8 @@ import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import FileExplorer from "./explorer/FileExplorer";
 import ChatDrawer from "./ChatDrawer";
 import { useChatStore } from "@/stores/chatStore";
-import { FolderOpen, X, Copy, Check, History, Plus, ChevronDown, ChevronRight, Wrench, Terminal, FileText, Clock, Play, Search, Calculator } from "lucide-react";
+import { FolderOpen, X, Copy, Check, History, Plus, ChevronDown, ChevronRight, Wrench, Terminal, FileText, Clock, Play, Search, Calculator, Volume2, VolumeX } from "lucide-react";
+import { soundSend, soundThinkStart, soundThinkEnd, soundToolStart, soundToolDone, soundDone, soundError, soundNewChat, soundTick, soundCartridgeEject, isMuted, setMuted } from "@/lib/sounds";
 
 // ═══════════════════════════════════════════
 // TYPES — structured message segments
@@ -215,10 +216,23 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
   const [chatId, setChatId] = useState<string | null>(null);
   // Streaming state — not part of messages until finalized
   const [streamSegments, setStreamSegments] = useState<Segment[]>([]);
+  const [muted, setMutedState] = useState(false);
   const { setActiveChatId, loadChatList } = useChatStore();
   
   const scrollRef = useRef<HTMLDivElement>(null);
   const thinkStartRef = useRef<number>(0);
+
+  // Sync mute state on mount
+  useEffect(() => {
+    setMutedState(isMuted());
+  }, []);
+
+  const toggleMute = () => {
+    const next = !muted;
+    setMutedState(next);
+    setMuted(next);
+    if (!next) soundTick();
+  };
 
   const handleLoadChat = (loadedMessages: any[], _cartridgeIds: string[]) => {
     setMessages(loadedMessages);
@@ -227,6 +241,7 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
   };
 
   const handleNewChat = () => {
+    soundNewChat();
     setMessages([]);
     setChatId(null);
     setActiveChatId(null);
@@ -312,6 +327,7 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
     setAttachedFile(null);
     setIsGenerating(true);
     setStreamSegments([]);
+    soundSend();
 
     // Mutable ref for segments during streaming
     let segments: Segment[] = [];
@@ -377,6 +393,7 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
               if (!last || last.kind !== "thinking") {
                 thinkStartRef.current = Date.now();
                 pushSegment({ kind: "thinking", content: data.data, collapsed: false });
+                soundThinkStart();
               } else {
                 updateLastSegment((s) => ({ ...s, content: (s as ThinkingSegment).content + data.data }));
               }
@@ -387,6 +404,7 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
                 durationMs: duration,
                 collapsed: true,
               }));
+              soundThinkEnd();
             } else if (data.type === "token") {
               rawAccumulated += data.data;
               const cleanText = cleanContent(rawAccumulated);
@@ -411,12 +429,14 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
                 args: data.data.args,
                 status: "running",
               });
+              soundToolStart();
             } else if (data.type === "tool_result") {
               updateLastSegment((s) => ({
                 ...s,
                 result: data.data.result,
                 status: "done",
               } as ToolCallSegment));
+              soundToolDone();
               // Reset accumulated text for next round of generation
               rawAccumulated = "";
             } else if (data.type === "sandbox_images") {
@@ -441,10 +461,12 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
               setStreamSegments([]);
               setIsGenerating(false);
               loadChatList();
+              soundDone();
             } else if (data.type === "error") {
               console.error(data.data);
               setIsGenerating(false);
               setStreamSegments([]);
+              soundError();
             }
           } catch (e) {
             console.error("Failed to parse SSE line", line, e);
@@ -560,6 +582,13 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
       {/* Cartridge Slot + Chat Controls */}
       <div className="absolute top-4 right-8 flex items-center gap-2">
         <button
+          onClick={toggleMute}
+          className={`p-1.5 rounded transition-all ${muted ? "text-white/15" : "text-white/30 hover:text-[var(--accent)] hover:bg-white/5"}`}
+          title={muted ? "Unmute sounds" : "Mute sounds"}
+        >
+          {muted ? <VolumeX size={15} /> : <Volume2 size={15} />}
+        </button>
+        <button
           onClick={handleNewChat}
           className="p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 transition-all"
           title="New Chat"
@@ -567,7 +596,7 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
           <Plus size={16} />
         </button>
         <button
-          onClick={() => setShowDrawer(true)}
+          onClick={() => { setShowDrawer(true); soundTick(); }}
           className="p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 transition-all"
           title="Chat History & Memory"
         >
@@ -576,7 +605,7 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
         <div className="bg-black/40 border border-white/10 px-4 py-1.5 rounded text-[var(--accent)] text-glow font-bold text-sm tracking-wider shadow-inner flex items-center gap-2">
           {activeConfig ? activeConfig.active_cartridge_ids[0].toUpperCase() : "NO CARTRIDGE"}
           <button 
-            onClick={onChangeCartridge}
+            onClick={() => { soundCartridgeEject(); onChangeCartridge(); }}
             className="ml-2 hover:text-white transition-colors"
             title="Eject Cartridge"
           >

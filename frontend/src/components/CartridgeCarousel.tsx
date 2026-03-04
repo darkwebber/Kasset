@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useCartridgeStore } from "@/stores/cartridgeStore";
 import { motion, AnimatePresence } from "framer-motion";
+import { soundCartridgeInsert, soundTick } from "@/lib/sounds";
 
 export default function CartridgeCarousel({ onSelect }: { onSelect: () => void }) {
   const { availableCartridges, loadActiveStack } = useCartridgeStore();
@@ -17,11 +18,13 @@ export default function CartridgeCarousel({ onSelect }: { onSelect: () => void }
     if (isInserting || total === 0) return;
     setDirection(dir);
     setSelectedIndex((i) => (i + dir + total) % total);
+    soundTick();
   }, [isInserting, total]);
 
   const handleLoad = useCallback(async () => {
     if (isInserting || total === 0) return;
     setIsInserting(true);
+    soundCartridgeInsert();
     setTimeout(async () => {
       await loadActiveStack([availableCartridges[selectedIndex].id]);
       onSelect();
