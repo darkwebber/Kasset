@@ -1,7 +1,7 @@
 import json
 import logging
 import re
-from typing import List, Dict, Any, Generator, Tuple
+from typing import List, Dict, Any, Generator, Tuple, Optional
 from .tool_registry import execute_tool
 
 logger = logging.getLogger(__name__)

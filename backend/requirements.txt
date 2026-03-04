@@ -5,3 +5,5 @@ python-multipart>=0.0.6
 sse-starlette>=1.8.2
 mlx-vlm
 Pillow>=9.0.0
+torchvision
+torch
