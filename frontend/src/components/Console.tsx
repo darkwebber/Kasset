@@ -13,7 +13,7 @@ import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import FileExplorer from "./explorer/FileExplorer";
 import ChatDrawer from "./ChatDrawer";
 import { useChatStore } from "@/stores/chatStore";
-import { FolderOpen, X, Copy, Check, History, Plus, ChevronDown, ChevronRight, Wrench, Terminal, FileText, Clock, Play, Search, Calculator, Volume2, VolumeX } from "lucide-react";
+import { FolderOpen, X, Copy, Check, History, Plus, ChevronDown, ChevronRight, Wrench, Terminal, FileText, Clock, Play, Search, Calculator, Volume2, VolumeX, Square, RefreshCw, Pencil, Scissors, Trash2, CornerDownLeft } from "lucide-react";
 import { soundSend, soundThinkStart, soundThinkEnd, soundToolStart, soundToolDone, soundDone, soundError, soundNewChat, soundTick, soundCartridgeEject, isMuted, setMuted } from "@/lib/sounds";
 
 // ═══════════════════════════════════════════
@@ -222,8 +222,13 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
   const [muted, setMutedState] = useState(false);
   const { setActiveChatId, loadChatList } = useChatStore();
   
+  const [editingIdx, setEditingIdx] = useState<number | null>(null);
+  const [editingText, setEditingText] = useState("");
+  const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+
   const scrollRef = useRef<HTMLDivElement>(null);
   const thinkStartRef = useRef<number>(0);
+  const abortRef = useRef<AbortController | null>(null);
 
   // Sync mute state on mount
   useEffect(() => {
@@ -241,6 +246,7 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
     setMessages(loadedMessages);
     setContextInfo(null);
     setStreamSegments([]);
+    setEditingIdx(null);
   };
 
   const handleNewChat = () => {
@@ -250,6 +256,88 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
     setActiveChatId(null);
     setContextInfo(null);
     setStreamSegments([]);
+    setEditingIdx(null);
+  };
+
+  // ─── Stop generation ───
+  const handleStop = () => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+  };
+
+  // ─── Retry last assistant response ───
+  const handleRetry = (msgIdx: number) => {
+    if (isGenerating) return;
+    // Find the user message right before this assistant message
+    const assistantIdx = msgIdx;
+    if (assistantIdx < 1 || messages[assistantIdx]?.role !== "assistant") return;
+    const userIdx = assistantIdx - 1;
+    if (messages[userIdx]?.role !== "user") return;
+    // Truncate to just before the assistant message, then re-submit
+    const truncated = messages.slice(0, assistantIdx);
+    setMessages(truncated);
+    soundTick();
+    // Re-submit via a delayed call so state settles
+    setTimeout(() => {
+      submitFromMessages(truncated, messages[userIdx].content);
+    }, 50);
+  };
+
+  // ─── Edit a user message ───
+  const handleStartEdit = (idx: number) => {
+    if (isGenerating || messages[idx]?.role !== "user") return;
+    setEditingIdx(idx);
+    setEditingText(messages[idx].content);
+  };
+
+  const handleCancelEdit = () => {
+    setEditingIdx(null);
+    setEditingText("");
+  };
+
+  const handleConfirmEdit = () => {
+    if (editingIdx === null || !editingText.trim()) return;
+    // Truncate everything after the edited message and re-submit
+    const truncated = messages.slice(0, editingIdx);
+    const editedMsg: Message = { role: "user", content: editingText.trim() };
+    setMessages([...truncated, editedMsg]);
+    setEditingIdx(null);
+    setEditingText("");
+    soundTick();
+    setTimeout(() => {
+      submitFromMessages([...truncated, editedMsg], editedMsg.content);
+    }, 50);
+  };
+
+  // ─── Revert conversation to a specific message ───
+  const handleRevert = (idx: number) => {
+    if (isGenerating) return;
+    // Keep messages up to and including idx
+    setMessages(messages.slice(0, idx + 1));
+    setStreamSegments([]);
+    soundTick();
+  };
+
+  // ─── Delete a single message ───
+  const handleDeleteMessage = (idx: number) => {
+    if (isGenerating) return;
+    // Don't allow deleting if it's the boot message (idx 0, assistant)
+    if (idx === 0 && messages[0]?.role === "assistant") return;
+    setMessages((prev) => prev.filter((_, i) => i !== idx));
+    soundTick();
+  };
+
+  // ─── Copy assistant message content ───
+  const handleCopy = (idx: number) => {
+    const msg = messages[idx];
+    if (!msg) return;
+    const text = msg.content || msg.segments?.filter(s => s.kind === "text").map(s => (s as TextSegment).content).join("\n\n") || "";
+    navigator.clipboard.writeText(text);
+    setCopiedIdx(idx);
+    soundTick();
+    setTimeout(() => setCopiedIdx(null), 2000);
   };
 
   const mdComponents = useMemo<Components>(() => ({
@@ -310,29 +398,16 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
     }
   }, [messages, streamSegments]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim() && !attachedFile) return;
-    if (isGenerating || !activeConfig) return;
-
-    let userContent = input.trim();
-    if (attachedFile) {
-      userContent = userContent ? `${userContent}\n[Attached file: ${attachedFile}]` : `[Attached file: ${attachedFile}]`;
-    }
-
-    const userMsg: Message = { role: "user", content: userContent };
-    setMessages((prev) => [...prev, userMsg]);
-    setInput("");
-    
-    const isImage = attachedFile?.match(/\.(jpg|jpeg|png|webp)$/i);
-    const imagePath = isImage ? attachedFile : undefined;
-    
-    setAttachedFile(null);
+  // ─── Core streaming function (used by submit, retry, edit) ───
+  const submitFromMessages = async (msgHistory: Message[], _userContent: string, imagePath?: string) => {
+    if (!activeConfig) return;
     setIsGenerating(true);
     setStreamSegments([]);
     soundSend();
 
-    // Mutable ref for segments during streaming
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     let segments: Segment[] = [];
     let rawAccumulated = "";
 
@@ -347,20 +422,31 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
       setStreamSegments([...segments]);
     };
 
-    const getOrCreateTextSegment = (): number => {
-      const last = segments[segments.length - 1];
-      if (last && last.kind === "text") return segments.length - 1;
-      pushSegment({ kind: "text", content: "" });
-      return segments.length - 1;
+    const finalizeSegments = () => {
+      // Collapse any open thinking
+      const lastIdx = segments.length - 1;
+      if (lastIdx >= 0 && segments[lastIdx].kind === "thinking" && !(segments[lastIdx] as ThinkingSegment).durationMs) {
+        const duration = Date.now() - thinkStartRef.current;
+        segments = [...segments.slice(0, -1), { ...segments[lastIdx], durationMs: duration, collapsed: true }];
+      }
+      const finalText = segments
+        .filter((s) => s.kind === "text")
+        .map((s) => (s as TextSegment).content)
+        .join("\n\n");
+      setMessages((prev) => [...prev, { role: "assistant", content: finalText, segments: [...segments] }]);
+      setStreamSegments([]);
+      setIsGenerating(false);
+      abortRef.current = null;
     };
 
     try {
       const response = await fetch("http://127.0.0.1:7861/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           cartridge_ids: activeConfig.active_cartridge_ids,
-          messages: [...messages, userMsg],
+          messages: msgHistory,
           image_path: imagePath,
           chat_id: chatId,
         }),
@@ -420,7 +506,6 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
                 }
               }
             } else if (data.type === "tool_start") {
-              // Auto-collapse thinking when tool starts
               const lastIdx = segments.length - 1;
               if (lastIdx >= 0 && segments[lastIdx].kind === "thinking") {
                 const duration = Date.now() - thinkStartRef.current;
@@ -442,33 +527,15 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
                 status: "done",
               } as ToolCallSegment));
               soundToolDone();
-              // Reset accumulated text for next round of generation
               rawAccumulated = "";
             } else if (data.type === "done") {
-              // Finalize: collapse any open thinking
-              const lastIdx = segments.length - 1;
-              if (lastIdx >= 0 && segments[lastIdx].kind === "thinking" && !(segments[lastIdx] as ThinkingSegment).durationMs) {
-                const duration = Date.now() - thinkStartRef.current;
-                updateLastSegment((s) => ({ ...s, durationMs: duration, collapsed: true }));
-              }
-              // Merge segments into a final assistant message
-              const finalText = segments
-                .filter((s) => s.kind === "text")
-                .map((s) => (s as TextSegment).content)
-                .join("\n\n");
-              setMessages((prev) => [...prev, { role: "assistant", content: finalText, segments: [...segments] }]);
-              setStreamSegments([]);
-              setIsGenerating(false);
+              finalizeSegments();
               loadChatList();
               soundDone();
             } else if (data.type === "error") {
-              // Show error as a visible message instead of crashing
               const errText = typeof data.data === "string" ? data.data : JSON.stringify(data.data);
               segments = [...segments, { kind: "text" as const, content: `⚠️ ${errText}` }];
-              const finalText = segments.filter((s) => s.kind === "text").map((s) => (s as TextSegment).content).join("\n\n");
-              setMessages((prev) => [...prev, { role: "assistant", content: finalText, segments: [...segments] }]);
-              setStreamSegments([]);
-              setIsGenerating(false);
+              finalizeSegments();
               soundError();
             }
           } catch {
@@ -477,13 +544,46 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
         }
       }
     } catch (error) {
-      // Network / fetch error — show inline
+      if (error instanceof DOMException && error.name === "AbortError") {
+        // User stopped generation — finalize what we have so far
+        if (segments.length > 0) {
+          finalizeSegments();
+        } else {
+          setStreamSegments([]);
+          setIsGenerating(false);
+        }
+        soundTick();
+        return;
+      }
       const errMsg = error instanceof Error ? error.message : "Connection failed";
       setMessages((prev) => [...prev, { role: "assistant", content: `⚠️ ${errMsg}` }]);
       setStreamSegments([]);
       setIsGenerating(false);
+      abortRef.current = null;
       soundError();
     }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!input.trim() && !attachedFile) return;
+    if (isGenerating || !activeConfig) return;
+
+    let userContent = input.trim();
+    if (attachedFile) {
+      userContent = userContent ? `${userContent}\n[Attached file: ${attachedFile}]` : `[Attached file: ${attachedFile}]`;
+    }
+
+    const userMsg: Message = { role: "user", content: userContent };
+    const newMessages = [...messages, userMsg];
+    setMessages(newMessages);
+    setInput("");
+    
+    const isImage = attachedFile?.match(/\.(jpg|jpeg|png|webp)$/i);
+    const imagePath = isImage ? attachedFile ?? undefined : undefined;
+    setAttachedFile(null);
+
+    await submitFromMessages(newMessages, userContent, imagePath);
   };
 
   // ─── Render helper for segments ───
@@ -623,34 +723,132 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
       {/* Screen Area */}
       <div className="flex-1 min-h-0 mt-6 rounded-2xl border-4 border-black/80 crt-screen p-6 overflow-hidden flex flex-col relative">
         <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto crt-scroll pr-4 space-y-4">
-          {messages.map((msg, idx) => (
-            <div 
-              key={idx} 
-              className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-            >
+          {messages.map((msg, idx) => {
+            const isUser = msg.role === "user";
+            const isBot = msg.role === "assistant";
+            const isLast = idx === messages.length - 1;
+            const isBoot = idx === 0 && isBot;
+            const isEditing = editingIdx === idx;
+
+            return (
               <div 
-                className={`max-w-[85%] ${
-                  msg.role === "user" 
-                    ? "bg-[var(--accent)] text-black px-4 py-2 rounded-l-lg rounded-tr-lg font-medium shadow-[0_0_15px_var(--tint)]" 
-                    : "prose-crt"
-                }`}
+                key={idx} 
+                className={`group/msg flex ${isUser ? "justify-end" : "justify-start"}`}
               >
-                {msg.role === "user" ? (
-                  msg.content
-                ) : msg.segments && msg.segments.length > 0 ? (
-                  renderSegments(msg.segments, false)
-                ) : (
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm, remarkMath]}
-                    rehypePlugins={[rehypeKatex]}
-                    components={mdComponents}
+                <div className="relative max-w-[85%]">
+                  {/* Message bubble */}
+                  <div 
+                    className={
+                      isUser 
+                        ? "bg-[var(--accent)] text-black px-4 py-2 rounded-l-lg rounded-tr-lg font-medium shadow-[0_0_15px_var(--tint)]" 
+                        : "prose-crt"
+                    }
                   >
-                    {cleanContent(msg.content)}
-                  </ReactMarkdown>
-                )}
+                    {isUser ? (
+                      isEditing ? (
+                        <div className="flex flex-col gap-2 min-w-[200px]">
+                          <textarea
+                            value={editingText}
+                            onChange={(e) => setEditingText(e.target.value)}
+                            className="w-full bg-black/20 text-black border border-black/20 rounded px-2 py-1.5 text-sm font-mono resize-none outline-none"
+                            rows={Math.min(6, editingText.split("\n").length + 1)}
+                            autoFocus
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleConfirmEdit(); }
+                              if (e.key === "Escape") handleCancelEdit();
+                            }}
+                          />
+                          <div className="flex justify-end gap-1.5">
+                            <button
+                              onClick={handleCancelEdit}
+                              className="px-2 py-0.5 text-[10px] text-black/60 hover:text-black font-bold uppercase"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              onClick={handleConfirmEdit}
+                              className="px-2 py-0.5 text-[10px] bg-black/20 rounded text-black font-bold uppercase hover:bg-black/30"
+                            >
+                              <CornerDownLeft size={10} className="inline mr-1" />
+                              Submit
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        msg.content
+                      )
+                    ) : msg.segments && msg.segments.length > 0 ? (
+                      renderSegments(msg.segments, false)
+                    ) : (
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm, remarkMath]}
+                        rehypePlugins={[rehypeKatex]}
+                        components={mdComponents}
+                      >
+                        {cleanContent(msg.content)}
+                      </ReactMarkdown>
+                    )}
+                  </div>
+
+                  {/* Hover action buttons */}
+                  {!isGenerating && !isEditing && !isBoot && (
+                    <div className={`absolute ${isUser ? "left-0 -translate-x-full pr-1.5" : "right-0 translate-x-full pl-1.5"} top-0 opacity-0 group-hover/msg:opacity-100 transition-opacity flex flex-col gap-0.5`}>
+                      {/* Copy — assistant only */}
+                      {isBot && (
+                        <button
+                          onClick={() => handleCopy(idx)}
+                          className="p-1 rounded text-white/20 hover:text-white/60 hover:bg-white/5 transition-all"
+                          title="Copy response"
+                        >
+                          {copiedIdx === idx ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
+                        </button>
+                      )}
+                      {/* Retry — last assistant only */}
+                      {isBot && isLast && (
+                        <button
+                          onClick={() => handleRetry(idx)}
+                          className="p-1 rounded text-white/20 hover:text-white/60 hover:bg-white/5 transition-all"
+                          title="Regenerate response"
+                        >
+                          <RefreshCw size={12} />
+                        </button>
+                      )}
+                      {/* Edit — user only */}
+                      {isUser && (
+                        <button
+                          onClick={() => handleStartEdit(idx)}
+                          className="p-1 rounded text-white/20 hover:text-white/60 hover:bg-white/5 transition-all"
+                          title="Edit message"
+                        >
+                          <Pencil size={12} />
+                        </button>
+                      )}
+                      {/* Revert — truncate to here */}
+                      {!isLast && (
+                        <button
+                          onClick={() => handleRevert(idx)}
+                          className="p-1 rounded text-white/20 hover:text-white/60 hover:bg-white/5 transition-all"
+                          title="Revert to here (delete everything after)"
+                        >
+                          <Scissors size={12} />
+                        </button>
+                      )}
+                      {/* Delete single message */}
+                      {isUser && (
+                        <button
+                          onClick={() => handleDeleteMessage(idx)}
+                          className="p-1 rounded text-white/20 hover:text-red-400/60 hover:bg-white/5 transition-all"
+                          title="Delete message"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
 
           {/* Live streaming segments */}
           {streamSegments.length > 0 && (
@@ -692,13 +890,24 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
             placeholder={activeConfig ? "Enter command..." : "Insert cartridge to begin..."}
             autoFocus
           />
-          <button 
-            type="submit"
-            disabled={isGenerating || (!input.trim() && !attachedFile) || !activeConfig}
-            className="px-6 py-2 bg-[var(--accent)] text-black font-bold uppercase tracking-widest rounded mx-1 hover:bg-white transition-colors disabled:opacity-30"
-          >
-            Send
-          </button>
+          {isGenerating ? (
+            <button 
+              type="button"
+              onClick={handleStop}
+              className="px-5 py-2 bg-red-500/80 text-white font-bold uppercase tracking-widest rounded mx-1 hover:bg-red-500 transition-colors flex items-center gap-2"
+            >
+              <Square size={14} fill="currentColor" />
+              Stop
+            </button>
+          ) : (
+            <button 
+              type="submit"
+              disabled={(!input.trim() && !attachedFile) || !activeConfig}
+              className="px-6 py-2 bg-[var(--accent)] text-black font-bold uppercase tracking-widest rounded mx-1 hover:bg-white transition-colors disabled:opacity-30"
+            >
+              Send
+            </button>
+          )}
         </form>
       </div>
     </div>
