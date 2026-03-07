@@ -70,6 +70,11 @@ def extract_tool_call(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _fix_json_newlines(s: str) -> str:
+    """Escape raw newlines/tabs inside JSON strings that the model forgot to escape."""
+    return s.replace('\r\n', '\\n').replace('\r', '\\n').replace('\n', '\\n').replace('\t', '\\t')
+
+
 def _try_parse_tool_json(raw: str) -> Optional[Dict[str, Any]]:
     """Attempt to parse a tool call JSON from potentially messy model output."""
     raw = raw.strip()
@@ -84,7 +89,15 @@ def _try_parse_tool_json(raw: str) -> Optional[Dict[str, Any]]:
     except json.JSONDecodeError:
         pass
 
-    # Extract the first complete JSON object from the string
+    # Try with fixed newlines (model often puts raw newlines in code strings)
+    try:
+        obj = json.loads(_fix_json_newlines(raw))
+        if isinstance(obj, dict) and "name" in obj:
+            return obj
+    except json.JSONDecodeError:
+        pass
+
+    # Extract the first complete JSON object using brace-depth counting
     brace_depth = 0
     start = None
     for i, ch in enumerate(raw):
@@ -96,25 +109,62 @@ def _try_parse_tool_json(raw: str) -> Optional[Dict[str, Any]]:
             brace_depth -= 1
             if brace_depth == 0 and start is not None:
                 candidate = raw[start:i + 1]
-                try:
-                    obj = json.loads(candidate)
-                    if isinstance(obj, dict) and "name" in obj:
-                        return obj
-                except json.JSONDecodeError:
-                    pass
+                # Try raw first, then with newline fix
+                for attempt in (candidate, _fix_json_newlines(candidate)):
+                    try:
+                        obj = json.loads(attempt)
+                        if isinstance(obj, dict) and "name" in obj:
+                            return obj
+                    except json.JSONDecodeError:
+                        pass
                 start = None
 
-    # Last resort: try to find name and arguments with a more lenient approach
+    # Dedicated extraction for execute_python / execute_cpp — the most common failure
+    # The model generates {"name":"execute_python","arguments":{"code":"...raw multi-line code..."}}
     name_match = re.search(r'"name"\s*:\s*"(\w+)"', raw)
-    args_match = re.search(r'"arguments"\s*:\s*(\{[^}]*\})', raw, re.DOTALL)
-    if name_match and args_match:
-        try:
-            args = json.loads(args_match.group(1))
-            return {"name": name_match.group(1), "arguments": args}
-        except json.JSONDecodeError:
-            # Even more lenient: just extract what we can
-            logger.warning(f"Partial tool call parsed: name={name_match.group(1)}, args failed")
-            pass
+    if name_match:
+        tool_name = name_match.group(1)
+        # For code tools, extract the code string directly
+        if tool_name in ("execute_python", "execute_cpp"):
+            code_match = re.search(r'"code"\s*:\s*"', raw)
+            if code_match:
+                code_start = code_match.end()
+                # Scan for the closing quote of the code string (not preceded by \)
+                i = code_start
+                code_chars = []
+                while i < len(raw):
+                    if raw[i] == '\\' and i + 1 < len(raw):
+                        code_chars.append(raw[i:i+2])
+                        i += 2
+                    elif raw[i] == '"':
+                        break
+                    else:
+                        code_chars.append(raw[i])
+                        i += 1
+                code_value = ''.join(code_chars)
+                # Unescape what the model did escape, keep raw newlines as-is
+                code_value = code_value.replace('\\n', '\n').replace('\\t', '\t').replace('\\"', '"')
+                logger.info(f"Extracted code for {tool_name} ({len(code_value)} chars) via direct scan")
+                return {"name": tool_name, "arguments": {"code": code_value}}
+
+        # For other tools, try regex extraction of arguments
+        args_match = re.search(r'"arguments"\s*:\s*\{', raw)
+        if args_match:
+            # Extract from the opening brace using depth counting
+            depth = 0
+            astart = args_match.end() - 1
+            for i in range(astart, len(raw)):
+                if raw[i] == '{': depth += 1
+                elif raw[i] == '}': depth -= 1
+                if depth == 0:
+                    args_str = raw[astart:i+1]
+                    for attempt in (args_str, _fix_json_newlines(args_str)):
+                        try:
+                            args = json.loads(attempt)
+                            return {"name": tool_name, "arguments": args}
+                        except json.JSONDecodeError:
+                            pass
+                    break
 
     if '<tool_call>' in raw.lower() or '"name"' in raw:
         logger.warning(f"Failed to parse tool call from: {raw[:200]}")
@@ -416,8 +466,14 @@ class Agent:
             
             tool_req = extract_tool_call(text)
             if not tool_req:
-                # Final answer reached
-                yield json.dumps({"type": "done", "data": text})
+                # Final answer reached — strip any leftover tool_call XML that failed to parse
+                clean_text = re.sub(r'<tool_call>[\s\S]*?</tool_call>', '', text, flags=re.IGNORECASE)
+                clean_text = re.sub(r'<tool_call>[\s\S]*$', '', clean_text, flags=re.IGNORECASE)
+                clean_text = re.sub(r'<\|tool_call\|>[\s\S]*$', '', clean_text)
+                clean_text = clean_text.strip()
+                if not clean_text and text.strip():
+                    clean_text = text.strip()  # fallback to original if stripping removed everything
+                yield json.dumps({"type": "done", "data": clean_text})
                 break
                 
             # 3. Tool Execution Phase

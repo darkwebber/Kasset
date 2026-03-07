@@ -19,6 +19,8 @@ import { FolderOpen, X, Copy, Check, History, Plus, ChevronDown, ChevronRight, W
 import { soundSend, soundThinkStart, soundThinkEnd, soundToolStart, soundToolDone, soundDone, soundError, soundNewChat, soundTick, soundCartridgeEject, isMuted, setMuted } from "@/lib/sounds";
 import { getApiBase, isLocalClient } from "@/lib/api";
 import SnakeGame from "./SnakeGame";
+import dynamic from "next/dynamic";
+const MermaidDiagram = dynamic(() => import("./MermaidDiagram"), { ssr: false });
 
 // ═══════════════════════════════════════════
 // TYPES — structured message segments
@@ -531,6 +533,10 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
       const match = /language-(\w+)/.exec(className || "");
       const codeStr = String(children).replace(/\n$/, "");
       if (match) {
+        // Render mermaid diagrams as actual diagrams
+        if (match[1] === "mermaid") {
+          return <MermaidDiagram code={codeStr} />;
+        }
         return (
           <div className="relative group my-3">
             <div className="flex items-center justify-between px-4 py-1.5 bg-white/5 border-b border-white/5 rounded-t-md">
