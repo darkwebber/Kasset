@@ -1,6 +1,7 @@
 {
-  "name": "frontend",
-  "version": "0.1.0",
+  "name": "kasset-studio",
+  "version": "1.0.0",
+  "description": "Local AI assistant for Mac with swappable agent kassets, tool calling, and streaming — powered by Qwen on Apple Silicon",
   "private": true,
   "scripts": {
     "dev": "next dev",

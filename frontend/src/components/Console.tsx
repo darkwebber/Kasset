@@ -392,11 +392,42 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
     setAttachments([]);
   };
 
+  // ─── Render message to Markdown (for export/copy) ───
+  const messageToMarkdown = (msg: Message): string => {
+    if (msg.role === "user") return `**You:** ${msg.content}`;
+    if (!msg.segments || msg.segments.length === 0) return msg.content;
+    const parts: string[] = [];
+    for (const seg of msg.segments) {
+      if (seg.kind === "thinking") continue;
+      if (seg.kind === "text" && seg.content.trim()) {
+        parts.push(seg.content);
+      } else if (seg.kind === "tool") {
+        const tool = seg as ToolCallSegment;
+        const toolLabel = TOOL_DISPLAY[tool.name] || tool.name;
+        const code = tool.args?.code || tool.args?.command || tool.args?.query || tool.args?.expression || "";
+        if (code) {
+          const lang = tool.name === "execute_python" ? "python" : tool.name === "execute_cpp" ? "cpp" : tool.name === "run_command" ? "bash" : "";
+          parts.push(`> **${toolLabel}**\n\n\`\`\`${lang}\n${code}\n\`\`\``);
+        } else {
+          parts.push(`> **${toolLabel}**: \`${JSON.stringify(tool.args)}\``);
+        }
+        if (tool.result && tool.result !== "Code executed successfully (no output).") {
+          const preview = tool.result.length > 500 ? tool.result.slice(0, 500) + "\n..." : tool.result;
+          parts.push(`<details><summary>Output</summary>\n\n\`\`\`\n${preview}\n\`\`\`\n</details>`);
+        }
+        if (tool.images && tool.images.length > 0) {
+          parts.push(`*[${tool.images.length} visualization(s) generated]*`);
+        }
+      }
+    }
+    return parts.join("\n\n");
+  };
+
   // ─── Export chat as Markdown ───
   const handleExportChat = () => {
     if (messages.length === 0) return;
     const cartName = currentCartridge?.name || activeConfig?.active_cartridge_ids[0] || "chat";
-    const lines = messages.map(m => m.role === "user" ? `**You:** ${m.content}` : m.content).join("\n\n---\n\n");
+    const lines = messages.map(m => messageToMarkdown(m)).join("\n\n---\n\n");
     const md = `# ${cartName} — Chat Export\n\n${lines}\n`;
     const blob = new Blob([md], { type: "text/markdown" });
     const url = URL.createObjectURL(blob);
@@ -411,7 +442,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
   // ─── Copy full conversation to clipboard ───
   const handleCopyChat = () => {
     if (messages.length === 0) return;
-    const text = messages.map(m => `${m.role === "user" ? "You" : "Assistant"}: ${m.content}`).join("\n\n");
+    const text = messages.map(m => messageToMarkdown(m)).join("\n\n---\n\n");
     navigator.clipboard.writeText(text);
     soundTick();
   };
@@ -819,7 +850,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
             } else if (data.type === "context_info") {
               setContextInfo(data.data);
             } else if (data.type === "memory_update") {
-              console.log("New memories learned:", data.data);
+              // Memory update received (silent)
             } else if (data.type === "status") {
               // Only show status for non-trivial messages (skip generic "Generating...")
               const statusText = String(data.data);

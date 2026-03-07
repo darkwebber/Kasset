@@ -57,3 +57,16 @@ frontend/next-env.d.ts
 # These patterns catch anything accidentally created in-repo:
 *.sqlite
 *.db
+
+# ─── Sandbox / Runtime Artifacts ────────
+*.png
+!branding/*.png
+!frontend/src/app/icon.png
+*.jpg
+*.jpeg
+*.csv
+*.xlsx
+
+# ─── Chat Exports ───────────────────────
+*Chat Export*
+*chat-export*

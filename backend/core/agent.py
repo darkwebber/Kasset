@@ -358,8 +358,14 @@ class Agent:
         
         tools_block = (
             "\n\n## Available Tools\n"
-            "To use a tool, wrap the call in XML tags like this:\n"
-            '<tool_call>{"name": "tool_name", "arguments": {"param": "value"}}</tool_call>\n\n'
+            "Call tools using this EXACT format — one tool call per message:\n\n"
+            '```\n<tool_call>{"name": "tool_name", "arguments": {"param": "value"}}</tool_call>\n```\n\n'
+            "### Tool Call Rules (CRITICAL)\n"
+            "1. The JSON inside `<tool_call>` must be valid. For `code` arguments with multi-line code, use `\\n` for newlines and `\\\"` for quotes inside strings.\n"
+            '2. Call **ONE tool at a time**. After the `</tool_call>` tag, STOP generating text. Wait for the tool result before continuing.\n'
+            "3. Do NOT put any text after the `</tool_call>` closing tag.\n"
+            "4. Do NOT wrap tool calls in markdown code fences — just use the raw `<tool_call>` XML tags.\n"
+            "5. When a tool returns an image/plot, the user can already see it. Do NOT describe or recreate it — focus on insights.\n\n"
             + "\n".join(tool_lines)
         )
         
@@ -463,6 +469,13 @@ class Agent:
 
             # 2. Process complete generation
             thought, text = parse_thinking(accumulated)
+            
+            # Strip leading echo fragments from previous round (e.g. "code.", "intuitive.")
+            # The model often echoes the last word of its previous text when continuing after tool results
+            if tool_round > 0 and text:
+                frag_match = re.match(r'^(\S[^.\n]{0,28}\.)\s*\n\n', text)
+                if frag_match:
+                    text = text[frag_match.end():]
             
             tool_req = extract_tool_call(text)
             if not tool_req:

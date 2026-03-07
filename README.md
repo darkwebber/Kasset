@@ -32,8 +32,8 @@
 > **Requirements:** macOS with Apple Silicon (M1+), Python 3.10+, Node.js 18+, ~6GB RAM free
 
 ```bash
-git clone https://github.com/darkwebber/Local-Studio.git
-cd Local-Studio
+git clone https://github.com/darkwebber/kasset-studio.git
+cd kasset-studio
 chmod +x start.sh
 ./start.sh
 ```
