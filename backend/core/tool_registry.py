@@ -17,7 +17,7 @@ from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
 import markdownify
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 from .sandbox import execute_python_sandbox
 from .plugin_loader import plugin_loader
 

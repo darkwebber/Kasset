@@ -168,6 +168,13 @@ def apply_custom_matplotlib_style():
         pass
 
 
+def _get_workspace_dir() -> str:
+    """Return the agent workspace directory, creating it if needed."""
+    workspace = os.path.join(os.path.expanduser("~"), ".qwen-studio", "workspace")
+    os.makedirs(workspace, exist_ok=True)
+    return workspace
+
+
 def execute_python_sandbox(code: str) -> dict:
     """
     Executes Python code safely, capturing stdout/stderr and matplotlib plots.
@@ -176,6 +183,11 @@ def execute_python_sandbox(code: str) -> dict:
     """
     output_capture = io.StringIO()
     images = []
+
+    # Run in workspace dir so saved files don't clutter the repo
+    workspace = _get_workspace_dir()
+    prev_cwd = os.getcwd()
+    os.chdir(workspace)
 
     # Ensure custom style is applied before every execution
     apply_custom_matplotlib_style()
@@ -210,6 +222,8 @@ def execute_python_sandbox(code: str) -> dict:
 
     except Exception as e:
         output = output_capture.getvalue() + "\n" + traceback.format_exc()
+    finally:
+        os.chdir(prev_cwd)
 
     return {
         "output": output.strip(),

@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 echo ""
-echo "  🎮 Cartridge"
+echo "  🎮 Kasset"
 echo "  ═══════════════"
 echo "  Local AI Console"
 echo ""
@@ -123,6 +123,7 @@ mkdir -p "$HOME/.qwen-studio/chats"
 mkdir -p "$HOME/.qwen-studio/context/cartridges"
 mkdir -p "$HOME/.qwen-studio/cache"
 mkdir -p "$HOME/.qwen-studio/uploads"
+mkdir -p "$HOME/.qwen-studio/workspace"
 
 # ═══════════════════════════════════════════
 # PROCESS MANAGEMENT
@@ -189,7 +190,7 @@ echo ""
 LAN_IP=$(ipconfig getifaddr en0 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo "<your-ip>")
 
 echo "  ════════════════════════════════════════════"
-echo "  🎮 Cartridge is running!"
+echo "  🎮 Kasset is running!"
 echo ""
 echo "     Local:   http://localhost:3000"
 echo "     Network: http://$LAN_IP:3000"

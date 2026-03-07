@@ -740,7 +740,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
         segments = [...segments.slice(0, -1), { ...segments[lastIdx], durationMs: duration, collapsed: true }];
       }
       const finalText = segments
-        .filter((s) => s.kind === "text")
+        .filter((s) => s.kind === "text" && !(s as TextSegment).content.startsWith("⏳"))
         .map((s) => (s as TextSegment).content)
         .join("\n\n");
       setMessages((prev) => [...prev, { role: "assistant", content: finalText, segments: [...segments] }]);
@@ -815,12 +815,24 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
                 } else {
                   pushSegment({ kind: "text", content: cleanText });
                 }
+              } else if (rawAccumulated.includes("<tool_call>")) {
+                // Model is generating a tool call — show a preparing indicator
+                // so the UI doesn't look frozen while the code is being written
+                const last = segments[segments.length - 1];
+                if (!last || last.kind !== "text" || !(last as TextSegment).content.startsWith("⏳")) {
+                  pushSegment({ kind: "text", content: "⏳ Preparing tool call…" });
+                }
               }
             } else if (data.type === "tool_start") {
+              // Remove "⏳ Preparing..." placeholder if present
               const lastIdx = segments.length - 1;
-              if (lastIdx >= 0 && segments[lastIdx].kind === "thinking") {
+              if (lastIdx >= 0 && segments[lastIdx].kind === "text" && (segments[lastIdx] as TextSegment).content.startsWith("⏳")) {
+                segments = segments.slice(0, -1);
+              }
+              if (segments.length > 0 && segments[segments.length - 1].kind === "thinking") {
                 const duration = Date.now() - thinkStartRef.current;
-                updateLastSegment((s) => ({ ...s, durationMs: duration, collapsed: true }));
+                const thinkIdx = segments.length - 1;
+                segments = segments.map((s, j) => j === thinkIdx ? { ...s, durationMs: duration, collapsed: true } : s);
               }
               pushSegment({
                 kind: "tool",
@@ -905,6 +917,30 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
     const imagePath = imageAtt?.path;
 
     await submitFromMessages(newMessages, userContent, imagePath);
+  };
+
+  // ─── Render user message content with file attachment chips ───
+  const renderUserContent = (content: string) => {
+    const parts = content.split(/(\[Attached file: [^\]]+\])/g);
+    if (parts.length === 1) return content;
+    return (
+      <span>
+        {parts.map((part, i) => {
+          const match = part.match(/^\[Attached file: (.+)\]$/);
+          if (match) {
+            const filePath = match[1];
+            const fileName = filePath.split('/').pop() || filePath;
+            return (
+              <span key={i} className="inline-flex items-center gap-1 px-1.5 py-0.5 mx-0.5 rounded bg-black/20 text-black/80 text-[11px] font-mono align-middle">
+                <FileText size={11} className="shrink-0" />
+                {fileName}
+              </span>
+            );
+          }
+          return part ? <span key={i}>{part}</span> : null;
+        })}
+      </span>
+    );
   };
 
   // ─── Render helper for segments ───
@@ -1136,7 +1172,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
                           </div>
                         </div>
                       ) : (
-                        msg.content
+                        renderUserContent(msg.content)
                       )
                     ) : msg.segments && msg.segments.length > 0 ? (
                       renderSegments(msg.segments, false)
