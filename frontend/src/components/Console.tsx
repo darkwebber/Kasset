@@ -743,7 +743,20 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
         .filter((s) => s.kind === "text" && !(s as TextSegment).content.startsWith("⏳"))
         .map((s) => (s as TextSegment).content)
         .join("\n\n");
-      setMessages((prev) => [...prev, { role: "assistant", content: finalText, segments: [...segments] }]);
+      setMessages((prev) => {
+        const updated = [...prev, { role: "assistant" as const, content: finalText, segments: [...segments] }];
+        // Auto-save chat after response completes
+        const cid = chatIdRef.current;
+        if (cid && activeConfig) {
+          const saveable = updated.map(m => ({ role: m.role, content: m.content }));
+          fetch(`${getApiBase()}/api/chats/${cid}/save`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ messages: saveable, cartridge_ids: activeConfig.active_cartridge_ids }),
+          }).catch(e => console.error("Auto-save failed:", e));
+        }
+        return updated;
+      });
       setStreamSegments([]);
       setIsGenerating(false);
       abortRef.current = null;
@@ -788,7 +801,19 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
               setContextInfo(data.data);
             } else if (data.type === "memory_update") {
               console.log("New memories learned:", data.data);
+            } else if (data.type === "status") {
+              // Show backend status as a transient text segment
+              const last = segments[segments.length - 1];
+              if (!last || last.kind !== "text" || !(last as TextSegment).content.startsWith("⏳")) {
+                pushSegment({ kind: "text", content: `⏳ ${data.data}` });
+              } else {
+                updateLastSegment(() => ({ kind: "text", content: `⏳ ${data.data}` }));
+              }
             } else if (data.type === "think_token") {
+              // Remove any ⏳ status placeholder
+              if (segments.length > 0 && segments[segments.length - 1].kind === "text" && (segments[segments.length - 1] as TextSegment).content.startsWith("⏳")) {
+                segments = segments.slice(0, -1);
+              }
               const last = segments[segments.length - 1];
               if (!last || last.kind !== "thinking") {
                 thinkStartRef.current = Date.now();
@@ -809,6 +834,10 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
               rawAccumulated += data.data;
               const cleanText = cleanContent(rawAccumulated);
               if (cleanText) {
+                // Remove ⏳ status placeholder if present
+                if (segments.length > 0 && segments[segments.length - 1].kind === "text" && (segments[segments.length - 1] as TextSegment).content.startsWith("⏳")) {
+                  segments = segments.slice(0, -1);
+                }
                 const last = segments[segments.length - 1];
                 if (last && last.kind === "text") {
                   updateLastSegment(() => ({ kind: "text", content: cleanText }));
@@ -976,10 +1005,6 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
           return <ToolCallCard key={`tool-${i}`} segment={seg} />;
         }
         if (seg.kind === "text" && seg.content.trim()) {
-          if (isLive) {
-            // During streaming: use plain pre-formatted text for performance
-            return <div key={`text-${i}`} className="text-sm text-white/80 font-mono whitespace-pre-wrap leading-relaxed">{seg.content}</div>;
-          }
           return (
             <ReactMarkdown
               key={`text-${i}`}

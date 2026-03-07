@@ -38,13 +38,86 @@ def parse_thinking(raw: str) -> Tuple[str, str]:
     return "", raw.strip()
 
 def extract_tool_call(text: str) -> Optional[Dict[str, Any]]:
-    """Extract tool call JSON from <tool_call> tags."""
+    """Extract tool call JSON from model output. Handles multiple formats robustly."""
+    # 1. Standard: <tool_call>...</tool_call>
+    match = re.search(r"<tool_call>\s*(.*?)\s*</tool_call>", text, re.DOTALL | re.IGNORECASE)
+    if match:
+        return _try_parse_tool_json(match.group(1))
+
+    # 2. Unclosed tag: <tool_call>...{json}... (no closing tag — very common)
+    match = re.search(r"<tool_call>\s*(.*)", text, re.DOTALL | re.IGNORECASE)
+    if match:
+        result = _try_parse_tool_json(match.group(1))
+        if result:
+            return result
+
+    # 3. Alternative tag format: <|tool_call|>...<|/tool_call|>
+    match = re.search(r"<\|tool_call\|>\s*(.*?)(?:<\|/tool_call\|>|$)", text, re.DOTALL)
+    if match:
+        result = _try_parse_tool_json(match.group(1))
+        if result:
+            return result
+
+    # 4. Raw JSON with "name" and "arguments" keys (no tags at all)
+    match = re.search(r'\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"arguments"\s*:', text, re.DOTALL)
+    if match:
+        # Try to extract the full JSON object starting from this match
+        start = match.start()
+        result = _try_parse_tool_json(text[start:])
+        if result:
+            return result
+
+    return None
+
+
+def _try_parse_tool_json(raw: str) -> Optional[Dict[str, Any]]:
+    """Attempt to parse a tool call JSON from potentially messy model output."""
+    raw = raw.strip()
+    if not raw:
+        return None
+
+    # Try direct parse first
     try:
-        match = re.search(r"<tool_call>(.*?)</tool_call>", text, re.DOTALL | re.IGNORECASE)
-        if match:
-            return json.loads(match.group(1).strip())
-    except Exception as e:
-        logger.warning(f"Failed to parse tool call: {e}")
+        obj = json.loads(raw)
+        if isinstance(obj, dict) and "name" in obj:
+            return obj
+    except json.JSONDecodeError:
+        pass
+
+    # Extract the first complete JSON object from the string
+    brace_depth = 0
+    start = None
+    for i, ch in enumerate(raw):
+        if ch == '{':
+            if start is None:
+                start = i
+            brace_depth += 1
+        elif ch == '}':
+            brace_depth -= 1
+            if brace_depth == 0 and start is not None:
+                candidate = raw[start:i + 1]
+                try:
+                    obj = json.loads(candidate)
+                    if isinstance(obj, dict) and "name" in obj:
+                        return obj
+                except json.JSONDecodeError:
+                    pass
+                start = None
+
+    # Last resort: try to find name and arguments with a more lenient approach
+    name_match = re.search(r'"name"\s*:\s*"(\w+)"', raw)
+    args_match = re.search(r'"arguments"\s*:\s*(\{[^}]*\})', raw, re.DOTALL)
+    if name_match and args_match:
+        try:
+            args = json.loads(args_match.group(1))
+            return {"name": name_match.group(1), "arguments": args}
+        except json.JSONDecodeError:
+            # Even more lenient: just extract what we can
+            logger.warning(f"Partial tool call parsed: name={name_match.group(1)}, args failed")
+            pass
+
+    if '<tool_call>' in raw.lower() or '"name"' in raw:
+        logger.warning(f"Failed to parse tool call from: {raw[:200]}")
     return None
 
 def _extract_attachment_context(content: str) -> str:

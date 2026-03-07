@@ -345,20 +345,20 @@ export default function CartridgeCarousel({ onSelect, onOpenForge }: { onSelect:
                           <div className="font-bold font-sans text-center leading-tight text-xs tracking-tight" style={{ color: "#1a1a2e" }}>
                             {cart.name.toUpperCase()}
                           </div>
-                          <div className="text-zinc-500 text-[8px] text-center mt-1 font-mono leading-snug line-clamp-2">
+                          <div className="text-zinc-600 text-[9px] text-center mt-1 font-mono leading-snug line-clamp-2">
                             {cart.description}
                           </div>
                           <div className="mt-auto flex flex-wrap gap-1 justify-center pt-1.5">
                             {cart.tags.slice(0, 3).map(tag => (
-                              <span key={tag} className="text-[6px] px-1 py-0.5 rounded-full font-mono uppercase tracking-wider"
-                                style={{ background: `${cartAccent}18`, color: cartAccent, border: `1px solid ${cartAccent}30` }}>
+                              <span key={tag} className="text-[7px] px-1.5 py-0.5 rounded-full font-mono uppercase tracking-wider font-semibold"
+                                style={{ background: `${cartAccent}22`, color: '#1a1a2e', border: `1px solid ${cartAccent}40` }}>
                                 {tag}
                               </span>
                             ))}
                           </div>
                           <div className="flex justify-between items-end border-t border-black/10 pt-1 mt-1.5">
-                            <span className="text-[7px] text-black/40 font-bold uppercase">{cart.source === "user" ? "custom" : cart.role}</span>
-                            <span className="text-[7px] text-black/40 font-mono">v{cart.version}</span>
+                            <span className="text-[7px] text-black/50 font-bold uppercase">{cart.source === "user" ? "custom" : cart.role}</span>
+                            <span className="text-[7px] text-black/50 font-mono">v{cart.version}</span>
                           </div>
                         </div>
                         <div className="h-4 mx-auto w-3/4 rounded-b-sm flex justify-evenly items-center px-1 mt-1 mb-1"
