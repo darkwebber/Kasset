@@ -63,6 +63,7 @@ Kasset/
 │       ├── cartridge_loader.py # Cartridge loading, stacking & user CRUD
 │       ├── context_manager.py  # Multi-layer context management
 │       ├── persistence.py      # Chat storage & user memory
+│       ├── network_auth.py     # Network authentication (scrypt + sessions)
 │       ├── plugin_loader.py    # Custom tool plugin discovery & execution
 │       ├── sandbox.py          # Python execution sandbox
 │       └── tool_registry.py    # Built-in tools + plugin dispatch

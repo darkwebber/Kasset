@@ -1,5 +1,5 @@
 """
-Plugin Loader — discovers, validates, and executes custom tool plugins.
+Plugin Loader — discovers, validates, and executes custom tool plugins for Kasset.
 
 Tool Plugin Standard:
     ~/.qwen-studio/tools/<tool-id>/

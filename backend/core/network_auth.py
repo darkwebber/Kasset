@@ -1,5 +1,5 @@
 """
-Network Authentication for Qwen Studio.
+Network Authentication for Kasset.
 
 Security model:
 - On first boot, the local user sets a network access password.

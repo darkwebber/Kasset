@@ -16,7 +16,7 @@ from .model_server import ModelClient # Refactored MLX wrapper
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Cartridge API")
+app = FastAPI(title="Kasset API")
 
 # Allow any origin so LAN clients (e.g. mobile on same network) can connect
 app.add_middleware(
