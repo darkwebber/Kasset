@@ -32,7 +32,10 @@ interface ToolCallSegment {
   args: Record<string, any>;
   result?: string;
   images?: string[];
-  status: "running" | "done" | "error";
+  html?: string;
+  consentId?: string;
+  consentCommand?: string;
+  status: "running" | "done" | "error" | "consent" | "preparing";
 }
 
 interface ThinkingSegment {
@@ -155,11 +158,14 @@ const ThinkingBlock = React.memo(function ThinkingBlock({ segment, onToggle }: {
   );
 });
 
-const ToolCallCard = React.memo(function ToolCallCard({ segment }: { segment: ToolCallSegment }) {
+const ToolCallCard = React.memo(function ToolCallCard({ segment, onConsent }: { segment: ToolCallSegment; onConsent?: (id: string, approved: boolean) => void }) {
   const [expanded, setExpanded] = useState(false);
   const meta = getToolMeta(segment.name);
   const isRunning = segment.status === "running";
+  const isPreparing = segment.status === "preparing";
+  const isConsent = segment.status === "consent";
   const hasImages = segment.images && segment.images.length > 0;
+  const hasHtml = !!segment.html;
 
   const formatArgs = (args: Record<string, any>) => {
     const entries = Object.entries(args);
@@ -183,12 +189,12 @@ const ToolCallCard = React.memo(function ToolCallCard({ segment }: { segment: To
         <div className="flex items-center justify-center w-6 h-6 rounded-md"
           style={{ background: `${meta.color}15`, color: meta.color }}
         >
-          {isRunning ? <span className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" /> : meta.icon}
+          {isRunning || isPreparing ? <span className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" /> : meta.icon}
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-xs font-medium" style={{ color: meta.color }}>
-              {isRunning ? meta.label + "..." : meta.label}
+            <span className="text-xs font-medium" style={{ color: isConsent ? '#f59e0b' : meta.color }}>
+              {isPreparing ? "Writing code…" : isRunning ? meta.label + "..." : isConsent ? "Approval Required" : meta.label}
             </span>
             {argInfo && (
               <span className="text-[10px] text-white/25 font-mono truncate max-w-[300px]">
@@ -202,6 +208,16 @@ const ToolCallCard = React.memo(function ToolCallCard({ segment }: { segment: To
         )}
       </button>
 
+      {/* Live code preview during preparation */}
+      {isPreparing && segment.args?.code && (
+        <div className="px-3 pb-2.5">
+          <div className="bg-black/40 rounded border border-white/5 p-2.5 text-[11px] text-[var(--accent)]/60 font-mono max-h-48 overflow-y-auto crt-scroll whitespace-pre-wrap leading-relaxed">
+            {segment.args.code}
+            <span className="inline-block w-[2px] h-[14px] bg-[var(--accent)] animate-blink ml-0.5 align-text-bottom" />
+          </div>
+        </div>
+      )}
+
       {/* Expanded text result */}
       {expanded && segment.result && (
         <div className="px-3 pb-2.5 pt-0">
@@ -211,12 +227,55 @@ const ToolCallCard = React.memo(function ToolCallCard({ segment }: { segment: To
         </div>
       )}
 
+      {/* Consent approval buttons */}
+      {isConsent && segment.consentId && (
+        <div className="px-3 pb-3">
+          <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
+            <p className="text-[11px] text-white/60 mb-2">
+              This command requires your approval:
+            </p>
+            <code className="block text-[11px] text-amber-400/90 font-mono bg-black/30 rounded px-2 py-1.5 mb-3">
+              {segment.consentCommand || segment.args?.command || ''}
+            </code>
+            <div className="flex gap-2">
+              <button
+                onClick={() => onConsent?.(segment.consentId!, true)}
+                className="px-3 py-1.5 rounded-md text-[11px] font-medium bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 transition-colors"
+              >
+                Approve
+              </button>
+              <button
+                onClick={() => onConsent?.(segment.consentId!, false)}
+                className="px-3 py-1.5 rounded-md text-[11px] font-medium bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors"
+              >
+                Deny
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* HTML artifact (Plotly, custom tools) — rendered in sandboxed iframe */}
+      {hasHtml && (
+        <div className="px-3 pb-3">
+          <div className="rounded-lg overflow-hidden border border-white/5" style={{ background: '#0d1117' }}>
+            <iframe
+              srcDoc={segment.html}
+              sandbox="allow-scripts allow-same-origin"
+              className="w-full rounded-lg"
+              style={{ height: 500, border: 'none', background: '#0d1117' }}
+              title="Interactive visualization"
+            />
+          </div>
+        </div>
+      )}
+
       {/* Images always visible inline — not hidden behind expand */}
       {hasImages && (
         <div className="px-3 pb-3 space-y-2">
           {segment.images!.map((src, i) => (
             <div key={i} className="rounded-lg overflow-hidden bg-black/60 border border-white/5">
-              <img src={src} alt={`Plot ${i + 1}`} className="w-full rounded-lg" />
+              <img src={src} alt={`Plot ${i + 1}`} className="w-full max-h-[400px] object-contain rounded-lg" />
             </div>
           ))}
         </div>
@@ -636,7 +695,10 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
   useEffect(() => {
     if (scrollRef.current && pinnedToBottom.current && isGenerating) {
       requestAnimationFrame(() => {
-        if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        // Re-check pinnedToBottom inside rAF to handle race with user scroll
+        if (scrollRef.current && pinnedToBottom.current) {
+          scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        }
       });
     }
   }, [streamSegments, isGenerating]);
@@ -829,19 +891,23 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
+      let sseBuffer = "";
 
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
         
-        const chunk = decoder.decode(value);
-        const lines = chunk.split("\n\n");
+        sseBuffer += decoder.decode(value, { stream: true });
+        const events = sseBuffer.split("\n\n");
+        // Keep the last (potentially incomplete) chunk in the buffer
+        sseBuffer = events.pop() || "";
         
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
+        for (const line of events) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data: ")) continue;
           
           try {
-            const data = JSON.parse(line.substring(6));
+            const data = JSON.parse(trimmed.substring(6));
             
             if (data.type === "chat_id") {
               setChatId(data.data);
@@ -852,9 +918,8 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
             } else if (data.type === "memory_update") {
               // Memory update received (silent)
             } else if (data.type === "status") {
-              // Only show status for non-trivial messages (skip generic "Generating...")
               const statusText = String(data.data);
-              if (statusText !== "Generating..." && statusText.length > 0) {
+              if (statusText.length > 0) {
                 const last = segments[segments.length - 1];
                 if (!last || last.kind !== "text" || !(last as TextSegment).content.startsWith("⏳")) {
                   pushSegment({ kind: "text", content: `⏳ ${statusText}` });
@@ -898,46 +963,105 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
                   pushSegment({ kind: "text", content: cleanText });
                 }
               } else if (rawAccumulated.includes("<tool_call>") || rawAccumulated.includes("<tool_call")) {
-                // Model is generating a tool call — show a preparing indicator
-                // Replace any short fragment text (< 30 chars like "this.") with the indicator
+                // Extract partial tool call info for live code preview
+                const tagIdx = rawAccumulated.indexOf('<tool_call>');
+                const afterTag = tagIdx >= 0 ? rawAccumulated.substring(tagIdx + 11) : '';
+                const nameMatch = afterTag.match(/"name"\s*:\s*"([^"]+)"/);
+                const toolName = nameMatch ? nameMatch[1] : '';
+
+                // Try to extract partial code for Python/C++ tools
+                let partialCode = '';
+                if (toolName === 'execute_python' || toolName === 'execute_cpp') {
+                  const codeMatch = afterTag.match(/"code"\s*:\s*"([\s\S]*?)$/);
+                  if (codeMatch) {
+                    try {
+                      partialCode = codeMatch[1]
+                        .replace(/\\n/g, '\n').replace(/\\t/g, '\t')
+                        .replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+                      if (partialCode.endsWith('\\')) partialCode = partialCode.slice(0, -1);
+                    } catch { /* ignore partial parse */ }
+                  }
+                }
+
                 const last = segments[segments.length - 1];
-                if (last && last.kind === "text" && (last as TextSegment).content.length < 30 && !(last as TextSegment).content.startsWith("⏳")) {
-                  updateLastSegment(() => ({ kind: "text", content: "⏳ Preparing tool call…" }));
-                } else if (!last || last.kind !== "text" || !(last as TextSegment).content.startsWith("⏳")) {
-                  pushSegment({ kind: "text", content: "⏳ Preparing tool call…" });
+                if (last && last.kind === "tool" && (last as ToolCallSegment).status === "preparing") {
+                  updateLastSegment((s) => ({
+                    ...s,
+                    name: toolName || (s as ToolCallSegment).name,
+                    args: partialCode ? { code: partialCode } : (s as ToolCallSegment).args,
+                  } as ToolCallSegment));
+                } else {
+                  // Remove ⏳ placeholders and short fragments
+                  while (segments.length > 0) {
+                    const l = segments[segments.length - 1];
+                    if (l.kind === "text") {
+                      const txt = (l as TextSegment).content;
+                      if (txt.startsWith("⏳") || txt.length < 30) {
+                        segments = segments.slice(0, -1);
+                        continue;
+                      }
+                    }
+                    break;
+                  }
+                  pushSegment({
+                    kind: "tool",
+                    name: toolName || "preparing",
+                    args: partialCode ? { code: partialCode } : {},
+                    status: "preparing",
+                  });
                 }
               }
             } else if (data.type === "tool_start") {
-              // Remove transient segments: ⏳ placeholders or short text fragments (< 30 chars like "this.")
-              while (segments.length > 0) {
-                const last = segments[segments.length - 1];
-                if (last.kind === "text") {
-                  const txt = (last as TextSegment).content;
-                  if (txt.startsWith("⏳") || txt.length < 30) {
-                    segments = segments.slice(0, -1);
-                    continue;
+              // Check if last segment is a "preparing" tool — replace it seamlessly
+              const lastSeg = segments[segments.length - 1];
+              if (lastSeg && lastSeg.kind === "tool" && (lastSeg as ToolCallSegment).status === "preparing") {
+                updateLastSegment(() => ({
+                  kind: "tool" as const,
+                  name: data.data.name,
+                  args: data.data.args,
+                  status: "running" as const,
+                }));
+              } else {
+                // Remove transient segments: ⏳ placeholders or short text fragments (< 30 chars like "this.")
+                while (segments.length > 0) {
+                  const last = segments[segments.length - 1];
+                  if (last.kind === "text") {
+                    const txt = (last as TextSegment).content;
+                    if (txt.startsWith("⏳") || txt.length < 30) {
+                      segments = segments.slice(0, -1);
+                      continue;
+                    }
                   }
+                  break;
                 }
-                break;
+                if (segments.length > 0 && segments[segments.length - 1].kind === "thinking") {
+                  const duration = Date.now() - thinkStartRef.current;
+                  const thinkIdx = segments.length - 1;
+                  segments = segments.map((s, j) => j === thinkIdx ? { ...s, durationMs: duration, collapsed: true } : s);
+                }
+                pushSegment({
+                  kind: "tool",
+                  name: data.data.name,
+                  args: data.data.args,
+                  status: "running",
+                });
               }
-              if (segments.length > 0 && segments[segments.length - 1].kind === "thinking") {
-                const duration = Date.now() - thinkStartRef.current;
-                const thinkIdx = segments.length - 1;
-                segments = segments.map((s, j) => j === thinkIdx ? { ...s, durationMs: duration, collapsed: true } : s);
-              }
-              pushSegment({
-                kind: "tool",
-                name: data.data.name,
-                args: data.data.args,
-                status: "running",
-              });
               soundToolStart();
+            } else if (data.type === "consent_required") {
+              updateLastSegment((s) => ({
+                ...s,
+                consentId: data.data.id,
+                consentCommand: data.data.command,
+                status: "consent",
+              } as ToolCallSegment));
             } else if (data.type === "tool_result") {
               const imgs = data.data.images || [];
+              const htmlArtifact = data.data.html || "";
               updateLastSegment((s) => ({
                 ...s,
                 result: data.data.result,
                 images: imgs.length > 0 ? [...((s as ToolCallSegment).images || []), ...imgs] : (s as ToolCallSegment).images,
+                html: htmlArtifact || (s as ToolCallSegment).html,
                 status: "done",
               } as ToolCallSegment));
               soundToolDone();
@@ -1011,28 +1135,71 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
   };
 
   // ─── Render user message content with file attachment chips ───
+  const IMAGE_EXTS = /\.(jpe?g|png|gif|webp|bmp|svg|tiff?|heic|heif)$/i;
   const renderUserContent = (content: string) => {
     const parts = content.split(/(\[Attached file: [^\]]+\])/g);
     if (parts.length === 1) return content;
+    const textParts: React.ReactNode[] = [];
+    const imagePaths: string[] = [];
+    parts.forEach((part, i) => {
+      const match = part.match(/^\[Attached file: (.+)\]$/);
+      if (match) {
+        const filePath = match[1];
+        const fileName = filePath.split('/').pop() || filePath;
+        if (IMAGE_EXTS.test(fileName)) {
+          imagePaths.push(filePath);
+        }
+        textParts.push(
+          <span key={i} className="inline-flex items-center gap-1 px-1.5 py-0.5 mx-0.5 rounded bg-black/20 text-black/80 text-[11px] font-mono align-middle">
+            <FileText size={11} className="shrink-0" />
+            {fileName}
+          </span>
+        );
+      } else if (part) {
+        textParts.push(<span key={i}>{part}</span>);
+      }
+    });
     return (
-      <span>
-        {parts.map((part, i) => {
-          const match = part.match(/^\[Attached file: (.+)\]$/);
-          if (match) {
-            const filePath = match[1];
-            const fileName = filePath.split('/').pop() || filePath;
-            return (
-              <span key={i} className="inline-flex items-center gap-1 px-1.5 py-0.5 mx-0.5 rounded bg-black/20 text-black/80 text-[11px] font-mono align-middle">
-                <FileText size={11} className="shrink-0" />
-                {fileName}
-              </span>
-            );
-          }
-          return part ? <span key={i}>{part}</span> : null;
-        })}
-      </span>
+      <div>
+        <span>{textParts}</span>
+        {imagePaths.length > 0 && (
+          <div className="mt-2 space-y-2">
+            {imagePaths.map((p, i) => (
+              <div key={i} className="rounded-lg overflow-hidden border border-black/10 max-w-[280px]">
+                <img
+                  src={`${getApiBase()}/api/fs/read-image?path=${encodeURIComponent(p)}`}
+                  alt={p.split('/').pop() || 'Attached image'}
+                  className="w-full rounded-lg"
+                  loading="lazy"
+                />
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     );
   };
+
+  // ─── Consent handler for approve/deny buttons ───
+  const handleConsent = useCallback(async (consentId: string, approved: boolean) => {
+    try {
+      await fetch(`${getApiBase()}/api/tool/consent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: consentId, approved }),
+      });
+      // Update the segment to show it's been handled
+      setStreamSegments((prev) =>
+        prev.map((s) =>
+          s.kind === "tool" && (s as ToolCallSegment).consentId === consentId
+            ? { ...s, status: "running" as const, consentId: undefined } as ToolCallSegment
+            : s
+        )
+      );
+    } catch (e) {
+      console.error("Consent request failed:", e);
+    }
+  }, []);
 
   // ─── Render helper for segments ───
   const renderSegments = (segs: Segment[], isLive: boolean) => (
@@ -1064,7 +1231,20 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
           );
         }
         if (seg.kind === "tool") {
-          return <ToolCallCard key={`tool-${i}`} segment={seg} />;
+          return <ToolCallCard key={`tool-${i}`} segment={seg} onConsent={handleConsent} />;
+        }
+        if (seg.kind === "text" && (seg as TextSegment).content.startsWith("⏳")) {
+          const statusText = (seg as TextSegment).content.replace(/^⏳\s*/, '');
+          return (
+            <div key={`status-${i}`} className="flex items-center gap-2.5 py-2 text-[11px] font-mono text-white/30">
+              <div className="flex gap-1 items-center">
+                <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] dot-pulse" style={{ animationDelay: '0ms' }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] dot-pulse" style={{ animationDelay: '150ms' }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] dot-pulse" style={{ animationDelay: '300ms' }} />
+              </div>
+              <span>{statusText}</span>
+            </div>
+          );
         }
         if (seg.kind === "text" && seg.content.trim()) {
           return (
@@ -1227,6 +1407,22 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
           />
         ) : (
         <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto crt-scroll pr-2 sm:pr-4 space-y-3 sm:space-y-4">
+          {/* Compact tool info strip — always visible at top of chat */}
+          {activeConfig && activeConfig.tools.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1 pb-2 border-b border-white/[0.04] sticky top-0 z-10 bg-black/80 backdrop-blur-sm pt-1 -mt-1">
+              <span className="text-[9px] text-white/20 font-mono mr-1">Tools:</span>
+              {activeConfig.tools.map(toolId => {
+                const meta = getToolMeta(toolId);
+                const display = TOOL_DISPLAY[toolId] || toolId.replace(/_/g, " ");
+                return (
+                  <div key={toolId} className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-white/[0.02] border border-white/[0.04] text-[8px] font-mono">
+                    <span style={{ color: `${meta.color}66` }}>{meta.icon}</span>
+                    <span className="text-white/20">{display}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
           {messages.map((msg, idx) => {
             const isUser = msg.role === "user";
             const isBot = msg.role === "assistant";
@@ -1296,7 +1492,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
 
                   {/* Hover action buttons */}
                   {!isGenerating && !isEditing && !isBoot && (
-                    <div className={`absolute ${isUser ? "left-0 -translate-x-full pr-1.5" : "right-0 translate-x-full pl-1.5"} top-0 opacity-0 group-hover/msg:opacity-100 transition-opacity flex flex-col gap-0.5`}>
+                    <div className={`absolute ${isUser ? "left-0 -translate-x-full pr-1.5" : "right-0 translate-x-full pl-1.5"} top-0 opacity-30 sm:opacity-0 sm:group-hover/msg:opacity-100 transition-opacity flex flex-col gap-0.5`}>
                       {/* Copy — assistant only */}
                       {isBot && (
                         <button

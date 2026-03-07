@@ -44,6 +44,7 @@ def validate_image_file(image_path: str) -> Tuple[bool, str]:
             Path.home() / "Downloads",
             Path.home() / "Pictures",
             Path.home() / ".kasset" / "uploads",
+            Path.home() / ".kasset" / "workspace",
             Path(tempfile.gettempdir()).resolve(),
             Path("/tmp"),
             Path("/var/tmp"),

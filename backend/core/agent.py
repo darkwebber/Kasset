@@ -1,16 +1,34 @@
 import json
 import logging
 import re
+import uuid
+import threading
 from pathlib import Path
 from typing import List, Dict, Any, Generator, Tuple, Optional
-from .tool_registry import execute_tool
+from .tool_registry import execute_tool, run_approved_command
 from .plugin_loader import plugin_loader
+from .sandbox import _SHARED_GLOBALS as _sandbox_globals
 from .persistence import user_memory, prompt_cache, chat_store
 from .context_manager import (
     user_settings, SessionSummarizer, CartridgeContext, GlobalProfile
 )
 
 logger = logging.getLogger(__name__)
+
+# ─── Consent state for commands requiring user approval ───
+_consent_state: Dict[str, dict] = {}  # consent_id -> {"event": Event, "approved": bool}
+
+def approve_consent(consent_id: str):
+    """Called by api.py when user approves a command."""
+    if consent_id in _consent_state:
+        _consent_state[consent_id]["approved"] = True
+        _consent_state[consent_id]["event"].set()
+
+def deny_consent(consent_id: str):
+    """Called by api.py when user denies a command."""
+    if consent_id in _consent_state:
+        _consent_state[consent_id]["approved"] = False
+        _consent_state[consent_id]["event"].set()
 
 def parse_thinking(raw: str) -> Tuple[str, str]:
     """Extract thinking content from model output."""
@@ -530,11 +548,28 @@ class Agent:
         })
         
         # Max rounds of tool calling
-        MAX_TOOL_ROUNDS = 10
+        MAX_TOOL_ROUNDS = 6
         MAX_PARSE_RETRIES = 2
         consecutive_failures = 0
+        session_errors: List[str] = []  # Track errors to prevent repeats
         
         current_history = list(base_history)
+        
+        # Inject current working image context for multi-turn image editing
+        _cimg = _sandbox_globals.get('_current_image_path')
+        if _cimg and Path(_cimg).exists():
+            # Find last user message and append image context
+            for i in range(len(current_history) - 1, -1, -1):
+                if current_history[i].get('role') == 'user':
+                    current_history[i] = {
+                        **current_history[i],
+                        'content': current_history[i]['content'] + (
+                            f"\n[SYSTEM: The current working image from a previous edit is saved at: {_cimg}. "
+                            f"Use `img = img_load('{_cimg}')` or the persisted variable `_current_image` to continue editing. "
+                            f"Python variables from previous tool calls persist across executions.]"
+                        )
+                    }
+                    break
         
         for tool_round in range(MAX_TOOL_ROUNDS):
             # ── 1. Stream Model Generation ──
@@ -545,7 +580,7 @@ class Agent:
             
             for chunk in self.model_client.stream_generate(
                 messages=current_history,
-                image=image_path,
+                image=image_path if tool_round == 0 else None,
                 max_tokens=self.config.suggested_tokens,
                 thinking=self.config.suggested_thinking
             ):
@@ -578,6 +613,20 @@ class Agent:
                 if frag_match:
                     text = text[frag_match.end():]
             
+            # ── 2a. Detect output limit truncation and auto-continue ──
+            _truncated = False
+            if '<tool_call>' in text and '</tool_call>' not in text:
+                _truncated = True
+            elif text.count('```') % 2 != 0:
+                _truncated = True
+            
+            if _truncated and tool_round < MAX_TOOL_ROUNDS - 1:
+                logger.info(f"Detected truncated output (round {tool_round}), auto-continuing")
+                yield json.dumps({"type": "status", "data": "Continuing response…"})
+                current_history.append({"role": "assistant", "content": accumulated})
+                current_history.append({"role": "user", "content": "Your previous response was cut off mid-way due to output length limits. Continue EXACTLY from where you stopped. Do NOT repeat any content already written."})
+                continue
+
             tool_req = extract_tool_call(text)
 
             # ── 2b. Auto-retry on tool call parse failure ──
@@ -670,14 +719,34 @@ class Agent:
                     tool_result = str(raw_result)
                     sandbox_images = []
                     html_artifact = ""
-                
+
+            # ── Consent flow: pause stream and wait for user approval ──
+            if isinstance(tool_result, str) and "[CONSENT_REQUIRED]" in tool_result:
+                cmd_match = re.search(r'`([^`]+)`', tool_result)
+                cmd = cmd_match.group(1) if cmd_match else tool_args.get("command", "")
+                consent_id = str(uuid.uuid4())
+                event = threading.Event()
+                _consent_state[consent_id] = {"event": event, "approved": False}
+                yield json.dumps({"type": "consent_required", "data": {
+                    "id": consent_id, "command": cmd, "tool": tool_name
+                }})
+                event.wait(timeout=120)
+                state = _consent_state.pop(consent_id, {})
+                if state.get("approved"):
+                    approved_result = run_approved_command(cmd)
+                    tool_result = str(approved_result) if not isinstance(approved_result, dict) else approved_result.get("output", str(approved_result))
+                    sandbox_images = approved_result.get("images", []) if isinstance(approved_result, dict) else []
+                    html_artifact = approved_result.get("html", "") if isinstance(approved_result, dict) else ""
+                else:
+                    tool_result = "Command denied by user. Do NOT retry this command. Adjust your plan accordingly."
+
             result_data = {"name": tool_name, "result": tool_result, "images": sandbox_images}
             if html_artifact:
                 result_data["html"] = html_artifact
             yield json.dumps({"type": "tool_result", "data": result_data})
             
             # ── 4. Build enriched context for next round ──
-            is_failure = tool_result in ("(no output)", "") or str(tool_result).startswith("Error:")
+            is_failure = tool_result in ("(no output)", "") or str(tool_result).startswith("Error:") or "Traceback" in str(tool_result)
             consecutive_failures = consecutive_failures + 1 if is_failure else 0
             
             if consecutive_failures >= 3:
@@ -692,7 +761,23 @@ class Agent:
             else:
                 result_context = f"Tool result for {tool_name}: {tool_result}"
             if sandbox_images:
-                result_context += f"\n[{len(sandbox_images)} plot image(s) were generated and displayed to the user. Do NOT recreate or describe the plot — the user can already see it. Focus on analysis and insights.]"
+                _saved = _sandbox_globals.get('_current_image_path', '')
+                result_context += f"\n[{len(sandbox_images)} image(s) were generated and displayed to the user. Do NOT recreate or describe them — the user can already see them."
+                if _saved:
+                    result_context += f" The edited image is auto-saved at: {_saved}. For further edits, use `img = img_load('{_saved}')` or the persisted variable `_current_image`."
+                result_context += " Your task is likely complete. Provide a brief summary and STOP calling tools.]"
+            if html_artifact:
+                result_context += "\n[An interactive visualization was generated and displayed. Your task is likely complete. Summarize and STOP calling tools.]"
+            if tool_name == "execute_python" and "Traceback" in str(tool_result):
+                result_context += "\n[IMPORTANT: Fix ONLY the specific error in your code — do NOT rewrite from scratch. Make a minimal targeted edit to the failing line(s).]"
+            # Inject round counter so model knows budget
+            result_context += f"\n[Tool round {tool_round + 1}/{MAX_TOOL_ROUNDS}]"
+            # Inject error history to prevent repeats
+            if is_failure:
+                err_summary = f"{tool_name}({json.dumps(tool_args)[:80]}): {str(tool_result)[:120]}"
+                session_errors.append(err_summary)
+            if session_errors:
+                result_context += f"\n[Previous errors in this session — do NOT repeat these: {'; '.join(session_errors[-3:])}]"
             result_context += failure_note
                 
             # Append interaction to history — strip <tool_call> XML from assistant text

@@ -3,8 +3,8 @@ import json
 import time
 import logging
 from typing import List, Optional
-from fastapi import FastAPI, Request, UploadFile, File
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi import FastAPI, Request, UploadFile, File, Query
+from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
@@ -294,14 +294,34 @@ def list_filesystem(request: FSRequest):
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=400)
 
-@app.get("/api/cartridges")
-def get_cartridges():
-    """Returns all available cartridges."""
+@app.get("/api/fs/read-image")
+def read_image(path: str = Query(...)):
+    """Serve an image file for inline preview. Path must be within allowed roots."""
+    from .utils import validate_image_file
+    is_valid, msg = validate_image_file(path)
+    if not is_valid:
+        return JSONResponse({"error": msg}, status_code=403)
+    p = Path(path).expanduser().resolve()
+    if not p.exists():
+        return JSONResponse({"error": "File not found"}, status_code=404)
+    # Guess media type from extension
+    ext = p.suffix.lower()
+    media_types = {
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+        ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+        ".svg": "image/svg+xml", ".tiff": "image/tiff", ".tif": "image/tiff",
+        ".heic": "image/heic", ".heif": "image/heif",
+    }
+    return FileResponse(str(p), media_type=media_types.get(ext, "image/jpeg"))
+
+@app.get("/api/kassets")
+def get_kassets():
+    """Returns all available kassets."""
     return {"cartridges": cartridge_loader.list_available()}
 
-@app.post("/api/cartridges/load")
-def load_cartridge_stack(request: dict):
-    """Returns the merged config for a stack of cartridges."""
+@app.post("/api/kassets/load")
+def load_kasset_stack(request: dict):
+    """Returns the merged config for a stack of kassets."""
     cartridge_ids = request.get("cartridge_ids", ["general-assistant"])
     try:
         config = cartridge_loader.load_stack(cartridge_ids)
@@ -478,14 +498,14 @@ async def update_settings(section: str, request: Request):
 # CONTEXT MANAGEMENT
 # ═══════════════════════════════════════════
 
-@app.get("/api/context/cartridge/{cartridge_id}")
-def get_cartridge_context(cartridge_id: str):
-    """Get persistent context for a specific cartridge."""
+@app.get("/api/context/kasset/{cartridge_id}")
+def get_kasset_context(cartridge_id: str):
+    """Get persistent context for a specific kasset."""
     return {"context": CartridgeContext.load(cartridge_id)}
 
-@app.delete("/api/context/cartridge/{cartridge_id}")
-def clear_cartridge_context(cartridge_id: str):
-    """Clear persistent context for a specific cartridge."""
+@app.delete("/api/context/kasset/{cartridge_id}")
+def clear_kasset_context(cartridge_id: str):
+    """Clear persistent context for a specific kasset."""
     CartridgeContext.clear(cartridge_id)
     return {"cleared": True}
 
@@ -506,7 +526,22 @@ def clear_global_profile():
 # ═══════════════════════════════════════════
 
 from .core.tool_registry import run_approved_command, get_all_tool_ids, BUILTIN_TOOLS
+from .core.agent import approve_consent, deny_consent
 from .core.plugin_loader import plugin_loader, ToolManifest
+
+@app.post("/api/tool/consent")
+async def handle_consent(request: Request):
+    """Approve or deny a command that requires user consent. Unblocks the paused SSE stream."""
+    body = await request.json()
+    consent_id = body.get("id", "")
+    approved = body.get("approved", False)
+    if not consent_id:
+        return JSONResponse({"error": "No consent ID"}, status_code=400)
+    if approved:
+        approve_consent(consent_id)
+    else:
+        deny_consent(consent_id)
+    return {"ok": True}
 
 @app.post("/api/tool/run-approved")
 async def execute_approved(request: Request):
@@ -520,7 +555,7 @@ async def execute_approved(request: Request):
 
 
 # ═══════════════════════════════════════════
-# KASSET FORGE — Studio API
+# KASSET FORGE API
 # ═══════════════════════════════════════════
 
 @app.get("/api/forge/tools")
@@ -621,21 +656,21 @@ def forge_tool_meta():
     return {"meta": plugin_loader.get_tool_meta()}
 
 
-@app.get("/api/forge/cartridges/{cartridge_id}")
-def forge_get_cartridge(cartridge_id: str):
-    """Get full raw JSON for a cartridge (for editing)."""
+@app.get("/api/forge/kassets/{cartridge_id}")
+def forge_get_kasset(cartridge_id: str):
+    """Get full raw JSON for a kasset (for editing)."""
     raw = cartridge_loader.get_cartridge_raw(cartridge_id)
     if not raw:
-        return {"error": f"Cartridge '{cartridge_id}' not found"}
+        return {"error": f"Kasset '{cartridge_id}' not found"}
     return {
         "cartridge": raw,
         "source": cartridge_loader.get_cartridge_source(cartridge_id),
     }
 
 
-@app.post("/api/forge/cartridges")
-async def forge_save_cartridge(request: Request):
-    """Create or update a user cartridge. Body: full cartridge JSON."""
+@app.post("/api/forge/kassets")
+async def forge_save_kasset(request: Request):
+    """Create or update a user kasset. Body: full kasset JSON."""
     body = await request.json()
     try:
         saved = cartridge_loader.save_user_cartridge(body)
@@ -644,9 +679,9 @@ async def forge_save_cartridge(request: Request):
         return {"error": str(e)}
 
 
-@app.delete("/api/forge/cartridges/{cartridge_id}")
-def forge_delete_cartridge(cartridge_id: str):
-    """Delete a user cartridge."""
+@app.delete("/api/forge/kassets/{cartridge_id}")
+def forge_delete_kasset(cartridge_id: str):
+    """Delete a user kasset."""
     ok = cartridge_loader.delete_user_cartridge(cartridge_id)
     if not ok:
         return {"error": "Cannot delete (builtin or not found)"}
@@ -655,13 +690,13 @@ def forge_delete_cartridge(cartridge_id: str):
 
 @app.get("/api/forge/all-tool-ids")
 def forge_all_tool_ids():
-    """Return all available tool IDs (builtin + plugins) for cartridge editor."""
+    """Return all available tool IDs (builtin + plugins) for kasset editor."""
     return {"tool_ids": get_all_tool_ids()}
 
 
 @app.post("/api/forge/unlock-secret")
 def forge_unlock_secret():
-    """Unlock the secret cartridge (triggered by snake game)."""
+    """Unlock the secret kasset (triggered by snake game)."""
     secret_cartridge = {
         "id": "unfiltered-mode",
         "name": "Unfiltered Mode",

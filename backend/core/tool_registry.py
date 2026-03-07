@@ -337,8 +337,9 @@ def _execute_shell(command: str) -> str:
         )
 
         output = proc.stdout or ""
-        if not suppress_stderr and proc.returncode != 0 and proc.stderr:
-            output += f"\n[exit {proc.returncode}] {proc.stderr.strip()}"
+        if not suppress_stderr and proc.stderr and proc.stderr.strip():
+            prefix = f"[exit {proc.returncode}] " if proc.returncode != 0 else "[stderr] "
+            output += f"\n{prefix}{proc.stderr.strip()}"
 
         if len(output) > 8000:
             output = output[:8000] + "\n... (truncated)"

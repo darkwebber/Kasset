@@ -58,7 +58,7 @@ export const useCartridgeStore = create<CartridgeState>((set, get) => ({
 
   loadAvailableCartridges: async () => {
     try {
-      const res = await fetch(`${getApiBase()}/api/cartridges`);
+      const res = await fetch(`${getApiBase()}/api/kassets`);
       const data = await res.json();
       set({ availableCartridges: data.cartridges });
     } catch (error: any) {
@@ -69,7 +69,7 @@ export const useCartridgeStore = create<CartridgeState>((set, get) => ({
   loadActiveStack: async (cartridgeIds: string[]) => {
     set({ isLoading: true, error: null });
     try {
-      const res = await fetch(`${getApiBase()}/api/cartridges/load`, {
+      const res = await fetch(`${getApiBase()}/api/kassets/load`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ cartridge_ids: cartridgeIds }),

@@ -487,7 +487,7 @@ function ToolEditor({ manifest: initManifest, handlerCode: initCode, onSave, onD
 
 
 // ═══════════════════════════════════════════════════════
-// MAIN FORGE STUDIO
+// MAIN KASSET FORGE
 // ═══════════════════════════════════════════════════════
 export default function ForgeStudio({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<"cartridges" | "tools">("cartridges");
@@ -532,7 +532,7 @@ export default function ForgeStudio({ onClose }: { onClose: () => void }) {
 
   const handleEditCartridge = async (id: string) => {
     try {
-      const res = await fetch(`${API}/api/forge/cartridges/${id}`);
+      const res = await fetch(`${API}/api/forge/kassets/${id}`);
       const data = await res.json();
       if (data.cartridge) {
         setEditingCartridge(data.cartridge);
@@ -544,7 +544,7 @@ export default function ForgeStudio({ onClose }: { onClose: () => void }) {
 
   const handleSaveCartridge = async (c: CartridgeData) => {
     try {
-      const res = await fetch(`${API}/api/forge/cartridges`, {
+      const res = await fetch(`${API}/api/forge/kassets`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(c),
       });
@@ -564,7 +564,7 @@ export default function ForgeStudio({ onClose }: { onClose: () => void }) {
   const handleDeleteCartridge = async (id: string) => {
     if (!confirm(`Delete kasset "${id}"?`)) return;
     try {
-      await fetch(`${API}/api/forge/cartridges/${id}`, { method: "DELETE" });
+      await fetch(`${API}/api/forge/kassets/${id}`, { method: "DELETE" });
       soundTick();
       setEditingCartridge(null);
       loadAvailableCartridges();

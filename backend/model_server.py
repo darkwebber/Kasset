@@ -147,7 +147,7 @@ class ModelClient:
             return temp_path
         except Exception as e:
             logger.error(f"Image preparation failed: {e}")
-            return image_path
+            return None
 
     def _build_prompt(self, messages: List[Dict], enable_thinking: bool = True, has_image: bool = False) -> str:
         """Build the appropriate prompt using the processor's chat template."""
@@ -157,46 +157,53 @@ class ModelClient:
             if isinstance(content, list):
                 text_parts = [p.get("text", "") for p in content if p.get("type") == "text"]
                 content = " ".join(text_parts).strip()
-            
-            # Inject <image> tag for mlx_vlm if an image is provided
-            if has_image and m["role"] == "user" and i == len(messages) - 1:
-                content = f"<image>\n{content}"
-                
             if content:
                 clean_msgs.append({"role": m["role"], "content": str(content)})
 
         if enable_thinking and clean_msgs and clean_msgs[0]["role"] == "system":
             clean_msgs[0]["content"] += "\nRespond with your thought process inside <think>...</think> tags before providing the final answer."
 
-        # For vision inference, restore the original template which properly handles
-        # <image> / vision tokens — our simple override strips that handling.
-        # IMPORTANT: Do NOT pass enable_thinking to VLM templates — they don't support it
-        # and it causes image token mismatch errors.
-        restore_template = None
-        if has_image and self._original_template and hasattr(self.processor, "tokenizer"):
-            restore_template = self.processor.tokenizer.chat_template
-            self.processor.tokenizer.chat_template = self._original_template
+        if has_image:
+            # ── Vision path ──────────────────────────────────────
+            # mlx_vlm's apply_chat_template expects a plain user text string
+            # + num_images so it can properly insert image placeholder tokens.
+            # Passing a messages list with raw <image> text does NOT work —
+            # the tokenizer won't convert it to vision tokens.
+            user_text = ""
+            for msg in reversed(clean_msgs):
+                if msg["role"] == "user" and msg["content"].strip():
+                    user_text = msg["content"]
+                    break
+            if not user_text:
+                user_text = "Describe what you see in this image."
 
-        try:
-            if has_image:
-                # VLM templates: no enable_thinking kwarg
-                return apply_chat_template(
-                    self.processor,
-                    self.config,
-                    clean_msgs,
-                    add_generation_prompt=True,
-                )
+            prompt = apply_chat_template(
+                self.processor, self.config, user_text, num_images=1
+            )
+
+            # Prepend system prompt + prior conversation as ChatML
+            prior = ""
+            for msg in clean_msgs[:-1]:
+                prior += f"<|im_start|>{msg['role']}\n{msg['content']}<|im_end|>\n"
+            if prior:
+                prompt = prior + prompt
+
+            # Append thinking tags (vision template doesn't handle them)
+            if enable_thinking:
+                prompt += "<think>\n"
             else:
-                return apply_chat_template(
-                    self.processor,
-                    self.config,
-                    clean_msgs, 
-                    add_generation_prompt=True,
-                    enable_thinking=enable_thinking
-                )
-        finally:
-            if restore_template is not None:
-                self.processor.tokenizer.chat_template = restore_template
+                prompt += "<think>\n\n</think>\n\n"
+
+            return prompt
+        else:
+            # ── Text-only path ───────────────────────────────────
+            return apply_chat_template(
+                self.processor,
+                self.config,
+                clean_msgs,
+                add_generation_prompt=True,
+                enable_thinking=enable_thinking
+            )
 
     def generate(
         self,
@@ -218,20 +225,43 @@ class ModelClient:
         inference_image = None
         if has_image:
             inference_image = self._prepare_image(image_filepath)
-            max_tokens = min(max_tokens, VISION_TOKEN_CAP)
+            if inference_image is None:
+                has_image = False
+                prompt = self._build_prompt(messages, thinking, False)
+                logger.warning("Image prep failed, falling back to text-only")
+            else:
+                max_tokens = min(max_tokens, VISION_TOKEN_CAP)
             
         t0 = time.time()
-        output = generate(
-            self.model, self.processor,
-            prompt=prompt,
-            image=inference_image,
-            max_tokens=max_tokens,
-            temperature=temp,
-            top_p=top_p,
-            top_k=20,
-            repetition_penalty=1.05,
-            verbose=False,
-        )
+        try:
+            output = generate(
+                self.model, self.processor,
+                prompt=prompt,
+                image=inference_image,
+                max_tokens=max_tokens,
+                temperature=temp,
+                top_p=top_p,
+                top_k=20,
+                repetition_penalty=1.05,
+                verbose=False,
+            )
+        except Exception as e:
+            if inference_image and "token" in str(e).lower():
+                logger.warning(f"Vision inference failed ({e}), retrying text-only")
+                prompt = self._build_prompt(messages, thinking, False)
+                output = generate(
+                    self.model, self.processor,
+                    prompt=prompt,
+                    image=None,
+                    max_tokens=max_tokens,
+                    temperature=temp,
+                    top_p=top_p,
+                    top_k=20,
+                    repetition_penalty=1.05,
+                    verbose=False,
+                )
+            else:
+                raise
         logger.info(f"Generated {len(output.text)} chars in {time.time()-t0:.1f}s")
         return output.text
 
@@ -255,16 +285,39 @@ class ModelClient:
         inference_image = None
         if has_image:
             inference_image = self._prepare_image(image)
-            max_tokens = min(max_tokens, VISION_TOKEN_CAP)
+            if inference_image is None:
+                has_image = False
+                prompt = self._build_prompt(messages, thinking, False)
+                logger.warning("Image prep failed, falling back to text-only")
+            else:
+                max_tokens = min(max_tokens, VISION_TOKEN_CAP)
             
-        for chunk in stream_generate(
-            self.model, self.processor,
-            prompt=prompt,
-            image=inference_image,
-            max_tokens=max_tokens,
-            temperature=temp,
-            top_p=top_p,
-            top_k=20,
-            repetition_penalty=1.05,
-        ):
-            yield chunk.text if hasattr(chunk, "text") else str(chunk)
+        try:
+            for chunk in stream_generate(
+                self.model, self.processor,
+                prompt=prompt,
+                image=inference_image,
+                max_tokens=max_tokens,
+                temperature=temp,
+                top_p=top_p,
+                top_k=20,
+                repetition_penalty=1.05,
+            ):
+                yield chunk.text if hasattr(chunk, "text") else str(chunk)
+        except Exception as e:
+            if inference_image and "token" in str(e).lower():
+                logger.warning(f"Vision inference failed ({e}), retrying text-only")
+                prompt = self._build_prompt(messages, thinking, False)
+                for chunk in stream_generate(
+                    self.model, self.processor,
+                    prompt=prompt,
+                    image=None,
+                    max_tokens=max_tokens,
+                    temperature=temp,
+                    top_p=top_p,
+                    top_k=20,
+                    repetition_penalty=1.05,
+                ):
+                    yield chunk.text if hasattr(chunk, "text") else str(chunk)
+            else:
+                raise
