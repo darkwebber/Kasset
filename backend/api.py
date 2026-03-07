@@ -292,7 +292,7 @@ def list_filesystem(request: FSRequest):
             "items": items
         }
     except Exception as e:
-        return {"error": str(e)}, 400
+        return JSONResponse({"error": str(e)}, status_code=400)
 
 @app.get("/api/cartridges")
 def get_cartridges():
@@ -307,7 +307,7 @@ def load_cartridge_stack(request: dict):
         config = cartridge_loader.load_stack(cartridge_ids)
         return {"config": config.model_dump()}
     except Exception as e:
-        return {"error": str(e)}, 400
+        return JSONResponse({"error": str(e)}, status_code=400)
 
 @app.post("/api/chat")
 async def chat_stream_endpoint(request: Request):
@@ -338,7 +338,7 @@ async def chat_stream_endpoint(request: Request):
         return StreamingResponse(event_generator(), media_type="text/event-stream")
     except Exception as e:
         logger.error(f"Chat error: {e}")
-        return {"error": str(e)}, 500
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 # ═══════════════════════════════════════════
@@ -355,7 +355,7 @@ def get_chat(chat_id: str):
     """Load a specific conversation."""
     chat = chat_store.load(chat_id)
     if not chat:
-        return {"error": "Chat not found"}, 404
+        return JSONResponse({"error": "Chat not found"}, status_code=404)
     return {"chat": chat}
 
 @app.post("/api/chats/{chat_id}/save")
@@ -397,7 +397,7 @@ def update_memory(memory_id: str, request: MemoryUpdateRequest):
     """Update a user memory."""
     mem = user_memory.update(memory_id, request.content)
     if not mem:
-        return {"error": "Memory not found"}, 404
+        return JSONResponse({"error": "Memory not found"}, status_code=404)
     return {"memory": mem}
 
 @app.delete("/api/memory/{memory_id}")
@@ -538,7 +538,7 @@ def forge_get_tool(tool_id: str):
     """Get full manifest for a user tool plugin."""
     manifest = plugin_loader.get_manifest(tool_id)
     if not manifest:
-        return {"error": f"Tool '{tool_id}' not found"}, 404
+        return JSONResponse({"error": f"Tool '{tool_id}' not found"}, status_code=404)
     # Also read handler source
     handler_path = manifest.directory / manifest.handler_file
     handler_code = ""
