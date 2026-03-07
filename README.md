@@ -1,19 +1,27 @@
-# Cartridge Console
+<p align="center">
+  <img src="branding/logo.png" alt="Kasset" width="420" />
+</p>
 
-**A local AI assistant for Mac with swappable agent cartridges, tool calling, and streaming — powered by Qwen 3.5 on Apple Silicon.**
+<p align="center">
+  <strong>A local AI assistant for Mac with swappable agent kassets, tool calling, and streaming — powered by Qwen 3.5 on Apple Silicon.</strong>
+</p>
 
-Run a fully private, multimodal AI on your Mac. No cloud, no API keys, no data leaves your machine.
+<p align="center">
+  Run a fully private, multimodal AI on your Mac. No cloud, no API keys, no data leaves your machine.
+</p>
+
+---
 
 ## Features
 
-- **Cartridge System** — swap between specialized agents: General Assistant, Code Pilot, Tutor, Data Analyst, Terminal, Writer, DevOps, Web Pilot
-- **Cartridge Forge** — create your own cartridges and custom tools through an in-app GUI studio
+- **Kasset System** — swap between specialized agents: General Assistant, Code Pilot, Tutor, Data Analyst, Terminal, Writer, DevOps, Web Pilot
+- **Kasset Forge** — create your own kassets and custom tools through an in-app GUI studio
 - **Tool Plugin System** — extend the agent with custom Python tools (plotly 3D charts, audio processing, web artifacts, anything)
 - **Vision** — upload images, solve problems from screenshots, describe photos
 - **Streaming** — real-time token streaming with thinking/reasoning display
 - **Tool Calling** — file access, shell commands, Python sandbox, web search, C++ execution, and user plugins
 - **HTML Artifacts** — custom tools can return interactive HTML rendered inline (plotly, web apps, visualizations)
-- **Context Management** — session summaries, per-cartridge memory, global user profile
+- **Context Management** — session summaries, per-kasset memory, global user profile
 - **Inline Attachments** — attach files/directories as inline chips in your messages
 - **Visualization** — matplotlib plots auto-captured, built-in `qchart_*` helpers, Mermaid diagram support
 - **Persistent Memory** — learns your preferences across conversations
@@ -96,16 +104,16 @@ All user-generated data is stored at `~/.qwen-studio/` (never in the repo):
 └── settings.json               # User toggles
 ```
 
-## Cartridge Forge
+## Kasset Forge
 
-Open **Cartridge Forge** from the cartridge carousel or the wrench icon in the Console top bar.
+Open **Kasset Forge** from the kasset carousel or the wrench icon in the Console top bar.
 
-### Creating a Cartridge
+### Creating a Kasset
 
-1. Go to **Cartridges** tab → **New Cartridge**
+1. Go to **Kassets** tab → **New Kasset**
 2. Fill in name, description, system prompt, and select tools
 3. Customize theme colors and boot animation
-4. Click **Save** — your cartridge appears in the carousel immediately
+4. Click **Save** — your kasset appears in the carousel immediately
 
 ### Creating a Custom Tool
 
@@ -115,7 +123,7 @@ Open **Cartridge Forge** from the cartridge carousel or the wrench icon in the C
 4. Write the handler function in Python
 5. Click **Test** to verify, then **Save**
 
-The tool is instantly available to assign to any cartridge.
+The tool is instantly available to assign to any kasset.
 
 ## Tool Plugin Standard
 
@@ -185,9 +193,9 @@ def execute(code: str) -> dict:
 
 None of these require changing the plugin standard — just a new `manifest.json` + `handler.py`.
 
-## Built-in Cartridges
+## Built-in Kassets
 
-| Cartridge | Icon | Purpose |
+| Kasset | Icon | Purpose |
 |-----------|------|---------|
 | General Assistant | 🤖 | Default all-purpose helper |
 | Code Pilot | 🚀 | Pair programming, debugging, code review |
@@ -219,8 +227,8 @@ None of these require changing the plugin standard — just a new `manifest.json
 Three layers of context, each toggleable in the **Context** tab:
 
 - **Session Summary** — when conversations get long, older messages are intelligently summarized to free context space
-- **Cartridge Context** — remembers topics and patterns from previous chats with the same cartridge
-- **Global Profile** — app-wide understanding of you across all cartridges (usage patterns, languages, preferences)
+- **Kasset Context** — remembers topics and patterns from previous chats with the same kasset
+- **Global Profile** — app-wide understanding of you across all kassets (usage patterns, languages, preferences)
 
 ## Architecture
 
@@ -228,7 +236,7 @@ Three layers of context, each toggleable in the **Context** tab:
 ┌──────────────────────────┐        ┌──────────────────────────┐
 │  Next.js Frontend (:3000) │───────▶│  FastAPI Backend (:7861)  │
 │  React + Zustand          │◀──SSE──│  Agent + Tool Loop        │
-│  CartridgeCarousel        │        │  MLX-VLM Inference        │
+│  KassetCarousel           │        │  MLX-VLM Inference        │
 │  Console (chat UI)        │        │  Built-in Tools           │
 │  ForgeStudio (creator)    │        │  Plugin Loader            │
 │  ChatDrawer (history)     │        │  Python Sandbox           │
@@ -261,10 +269,10 @@ Three layers of context, each toggleable in the **Context** tab:
 | `/api/forge/tools` | POST | Create/update a tool plugin |
 | `/api/forge/tools/{id}` | DELETE | Delete a user tool |
 | `/api/forge/tools/test` | POST | Test-execute a tool |
-| `/api/forge/cartridges/{id}` | GET | Get cartridge JSON for editing |
-| `/api/forge/cartridges` | POST | Create/update a user cartridge |
-| `/api/forge/cartridges/{id}` | DELETE | Delete a user cartridge |
-| `/api/forge/all-tool-ids` | GET | All tool IDs for cartridge editor |
+| `/api/forge/cartridges/{id}` | GET | Get kasset JSON for editing |
+| `/api/forge/cartridges` | POST | Create/update a user kasset |
+| `/api/forge/cartridges/{id}` | DELETE | Delete a user kasset |
+| `/api/forge/all-tool-ids` | GET | All tool IDs for kasset editor |
 | `/api/forge/tool-meta` | GET | Frontend rendering metadata |
 
 ## Troubleshooting

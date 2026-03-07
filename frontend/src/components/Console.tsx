@@ -288,12 +288,12 @@ function WelcomeScreen({ cartridgeName, cartridgeIcon, bootMessage, tools, sugge
       )}
 
       {/* Keyboard hints */}
-      <div className="hidden sm:flex items-center gap-3 text-[9px] text-white/[0.1] font-mono">
+      <div className="hidden sm:flex items-center gap-4 text-[10px] text-white/25 font-mono">
         <span>⌘K commands</span>
-        <span className="text-white/[0.06]">·</span>
+        <span className="text-white/10">·</span>
         <span>⌘N new chat</span>
-        <span className="text-white/[0.06]">·</span>
-        <span>? tutorial</span>
+        <span className="text-white/10">·</span>
+        <span>⌘/ tutorial</span>
       </div>
     </div>
   );
@@ -1257,7 +1257,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
                   const parts = input.split(pattern);
                   return parts.map((part, i) =>
                     attNames.some(n => part === `@${n}`)
-                      ? <span key={i} className="bg-[var(--accent)]/15 text-[var(--accent)] rounded px-1 py-px -mx-px">{part}</span>
+                      ? <span key={i} className="bg-[var(--accent)]/15 text-[var(--accent)] rounded-sm">{part}</span>
                       : <span key={i} className="text-white/90">{part}</span>
                   );
                 })() : <span className="text-transparent">{input}</span>}
@@ -1306,13 +1306,13 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
           </div>
         </form>
         {/* Subtle action hints — desktop only */}
-        <div className="hidden sm:flex items-center justify-center gap-3 mt-1.5 text-[9px] text-white/[0.12] font-mono select-none">
+        <div className="hidden sm:flex items-center justify-center gap-4 mt-1.5 text-[10px] text-white/25 font-mono select-none">
           <span>⌘K commands</span>
-          <span className="text-white/[0.06]">·</span>
+          <span className="text-white/10">·</span>
           <span>⇧↵ newline</span>
-          <span className="text-white/[0.06]">·</span>
-          <span>? tutorial</span>
-          <span className="text-white/[0.06]">·</span>
+          <span className="text-white/10">·</span>
+          <span>⌘/ tutorial</span>
+          <span className="text-white/10">·</span>
           <span>📎 attach files</span>
         </div>
       </div>

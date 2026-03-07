@@ -141,6 +141,7 @@ class CartridgeLoader:
 
     def load_stack(self, cartridge_ids: List[str]) -> LoadedConfig:
         """Merge a stack of cartridges into a single config."""
+        self.load_all()  # Refresh from disk so JSON edits are picked up
         carts = []
         for cid in cartridge_ids:
             if cid not in self.registry:
