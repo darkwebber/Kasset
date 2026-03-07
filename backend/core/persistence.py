@@ -13,7 +13,7 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 # Storage directories
-DATA_DIR = Path.home() / ".qwen-studio"
+DATA_DIR = Path.home() / ".kasset"
 CHATS_DIR = DATA_DIR / "chats"
 USER_FILE = DATA_DIR / "user_memory.json"
 CACHE_DIR = DATA_DIR / "cache"

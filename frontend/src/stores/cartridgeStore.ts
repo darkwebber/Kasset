@@ -52,7 +52,7 @@ interface CartridgeState {
 export const useCartridgeStore = create<CartridgeState>((set, get) => ({
   availableCartridges: [],
   activeConfig: null,
-  lastActiveCartridgeId: typeof window !== "undefined" ? localStorage.getItem("qwen-studio-last-cartridge") : null,
+  lastActiveCartridgeId: typeof window !== "undefined" ? localStorage.getItem("kasset-last-cartridge") : null,
   isLoading: false,
   error: null,
 
@@ -78,7 +78,7 @@ export const useCartridgeStore = create<CartridgeState>((set, get) => ({
       if (!res.ok) throw new Error("Failed to load cartridge stack");
       
       const data = await res.json();
-      if (typeof window !== "undefined") localStorage.setItem("qwen-studio-last-cartridge", cartridgeIds[0]);
+      if (typeof window !== "undefined") localStorage.setItem("kasset-last-cartridge", cartridgeIds[0]);
       set({ activeConfig: data.config, lastActiveCartridgeId: cartridgeIds[0], isLoading: false });
     } catch (error: any) {
       set({ error: error.message, isLoading: false });
@@ -94,7 +94,7 @@ export const useCartridgeStore = create<CartridgeState>((set, get) => ({
     // Keep localStorage updated even on eject
     const lastId = current?.active_cartridge_ids?.[0] ?? get().lastActiveCartridgeId;
     if (lastId && typeof window !== "undefined") {
-      localStorage.setItem("qwen-studio-last-cartridge", lastId);
+      localStorage.setItem("kasset-last-cartridge", lastId);
     }
   },
 }));

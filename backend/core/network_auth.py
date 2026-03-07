@@ -3,7 +3,7 @@ Network Authentication for Kasset.
 
 Security model:
 - On first boot, the local user sets a network access password.
-- The password is hashed with scrypt (random salt) and stored in ~/.qwen-studio/network_auth.json.
+- The password is hashed with scrypt (random salt) and stored in ~/.kasset/network_auth.json.
 - Network (non-local) clients must authenticate with this password to get a session token.
 - Session tokens are cryptographically random, stored in memory, and expire after 24 hours.
 - After 3 failed login attempts from a single IP, that IP is locked out for 1 hour.
@@ -19,7 +19,7 @@ import threading
 from pathlib import Path
 from typing import Optional, Dict
 
-AUTH_FILE = Path.home() / ".qwen-studio" / "network_auth.json"
+AUTH_FILE = Path.home() / ".kasset" / "network_auth.json"
 TOKEN_EXPIRY_SECONDS = 24 * 60 * 60  # 24 hours
 LOCKOUT_DURATION_SECONDS = 60 * 60   # 1 hour
 MAX_FAILED_ATTEMPTS = 3

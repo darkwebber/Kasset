@@ -140,7 +140,16 @@ if [ ! -d "frontend/node_modules" ]; then
 fi
 
 # ── User data directory ──
-mkdir -p "$HOME/.qwen-studio"/{chats,context/cartridges,cache,uploads,workspace,tools,cartridges}
+# Migrate from old ~/.qwen-studio/ if it exists
+if [ -d "$HOME/.qwen-studio" ] && [ ! -d "$HOME/.kasset" ]; then
+    echo "  → Migrating user data from ~/.qwen-studio/ to ~/.kasset/..."
+    mv "$HOME/.qwen-studio" "$HOME/.kasset"
+    echo "  ✓ Data migrated"
+elif [ -d "$HOME/.qwen-studio" ] && [ -d "$HOME/.kasset" ]; then
+    echo "  ⚠ Both ~/.qwen-studio/ and ~/.kasset/ exist. Using ~/.kasset/."
+    echo "    You can manually merge or delete ~/.qwen-studio/ if needed."
+fi
+mkdir -p "$HOME/.kasset"/{chats,context/cartridges,cache,uploads,workspace,tools,cartridges}
 
 # ═══════════════════════════════════════════
 # PROCESS MANAGEMENT
@@ -230,7 +239,7 @@ if [ -n "$LAN_IP" ]; then
 printf "  ║  Network: http://%-21s║\n" "$LAN_IP:3000"
 fi
 echo "  ║  API:     http://localhost:7861/docs  ║"
-echo "  ║  Data:    ~/.qwen-studio/             ║"
+echo "  ║  Data:    ~/.kasset/                  ║"
 echo "  ╟───────────────────────────────────────╢"
 if [ -n "$LAN_IP" ]; then
 echo "  ║  📱 Open Network URL on your phone    ║"

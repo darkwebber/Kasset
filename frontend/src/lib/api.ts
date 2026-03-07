@@ -25,7 +25,7 @@ export function isLocalClient(): boolean {
 }
 
 // ─── Auth token management ───
-const AUTH_TOKEN_KEY = "qwen-studio-auth-token";
+const AUTH_TOKEN_KEY = "kasset-auth-token";
 
 export function getAuthToken(): string | null {
   if (typeof window === "undefined") return null;

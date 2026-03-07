@@ -2,7 +2,7 @@
 Plugin Loader — discovers, validates, and executes custom tool plugins for Kasset.
 
 Tool Plugin Standard:
-    ~/.qwen-studio/tools/<tool-id>/
+    ~/.kasset/tools/<tool-id>/
     ├── manifest.json       # Tool metadata, params, description, UI hints
     └── handler.py          # Python function implementation
 
@@ -49,7 +49,7 @@ from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
-USER_TOOLS_DIR = Path.home() / ".qwen-studio" / "tools"
+USER_TOOLS_DIR = Path.home() / ".kasset" / "tools"
 
 
 class ToolManifest:

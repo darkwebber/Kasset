@@ -99,7 +99,7 @@ const STEPS = [
       "Tap the ⌘ button for the command palette (all actions)",
       "All buttons have touch-friendly tap targets",
       "Less-used buttons are hidden on small screens — use the command palette to access them",
-      "Your data syncs via the backend at ~/.qwen-studio/",
+      "Your data syncs via the backend at ~/.kasset/",
     ],
   },
   {

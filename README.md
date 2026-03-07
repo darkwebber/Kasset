@@ -42,7 +42,7 @@ That's it. `start.sh` handles everything:
 1. Checks Python 3.10+, Node.js 18+, and port availability
 2. Creates a Python virtual environment (first run only)
 3. Installs all backend and frontend dependencies
-4. Creates user data directories at `~/.qwen-studio/`
+4. Creates user data directories at `~/.kasset/`
 5. Starts the backend API server (port 7861)
 6. Starts the Next.js frontend (port 3000)
 
@@ -86,10 +86,10 @@ Kasset/
 
 ## User Data
 
-All user-generated data is stored at `~/.qwen-studio/` (never in the repo):
+All user-generated data is stored at `~/.kasset/` (never in the repo):
 
 ```
-~/.qwen-studio/
+~/.kasset/
 ├── cartridges/                 # User-created cartridges (JSON)
 ├── tools/                      # User-created tool plugins
 │   └── <tool-id>/
@@ -128,7 +128,7 @@ The tool is instantly available to assign to any kasset.
 
 ## Tool Plugin Standard
 
-Each custom tool lives in `~/.qwen-studio/tools/<tool-id>/` with two files:
+Each custom tool lives in `~/.kasset/tools/<tool-id>/` with two files:
 
 ### `manifest.json`
 
@@ -223,6 +223,20 @@ None of these require changing the plugin standard — just a new `manifest.json
 | `search_web` | DuckDuckGo web search |
 | `read_url` | Fetch and extract text from web pages |
 
+## Vision & Image Processing
+
+Attach images via paste (Ctrl/Cmd+V), file picker, or drag-and-drop. The image flows through a robust pipeline:
+
+1. **Upload** — saved to `~/.kasset/uploads/`, validated (extension, size ≤ 10MB, path sandboxing)
+2. **EXIF auto-rotation** — phone photos are corrected for orientation before inference
+3. **RGBA flattening** — transparent PNGs composited onto white background for VLM compatibility
+4. **Adaptive resize** — images exceeding 768px (longest side) are downscaled with LANCZOS to prevent OOM
+5. **Template switching** — the VLM's original chat template is restored for vision inference (our simple thinking-mode template doesn't handle `<image>` tokens)
+6. **Persistent image context** — the image remains available across all tool-calling rounds, not just the first generation
+7. **Temp file cleanup** — resized images are tracked and cleaned up after each conversation turn
+
+Supported formats: `.jpg`, `.jpeg`, `.png`, `.gif`, `.bmp`, `.webp`, `.tiff`, `.svg`
+
 ## Context Management
 
 Three layers of context, each toggleable in the **Context** tab:
@@ -244,7 +258,7 @@ Three layers of context, each toggleable in the **Context** tab:
 └──────────────────────────┘        │  Context Manager          │
                                     └──────────────────────────┘
                                                │
-                                      ~/.qwen-studio/
+                                      ~/.kasset/
                                       ├── cartridges/   (user)
                                       ├── tools/        (plugins)
                                       ├── chats/

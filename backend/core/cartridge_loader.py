@@ -58,7 +58,7 @@ class LoadedConfig(BaseModel):
 class CartridgeLoader:
     def __init__(self, cartridges_dir: str = "cartridges/builtins"):
         self.builtins_dir = Path(cartridges_dir)
-        self.user_dir = Path.home() / ".qwen-studio" / "cartridges"
+        self.user_dir = Path.home() / ".kasset" / "cartridges"
         self.user_dir.mkdir(parents=True, exist_ok=True)
         self.registry: Dict[str, Cartridge] = {}
         self._sources: Dict[str, str] = {}  # id -> "builtin" | "user"
@@ -86,7 +86,7 @@ class CartridgeLoader:
                 logger.error(f"Failed to load cartridge {path}: {e}")
 
     def save_user_cartridge(self, data: dict) -> dict:
-        """Save a user cartridge to ~/.qwen-studio/cartridges/. Returns the saved data."""
+        """Save a user cartridge to ~/.kasset/cartridges/. Returns the saved data."""
         cart = Cartridge(**data)
         dest = self.user_dir / f"{cart.id}.json"
         dest.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")

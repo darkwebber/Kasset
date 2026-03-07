@@ -20,13 +20,13 @@ function getCtx(): AudioContext {
 export function setMuted(muted: boolean) {
   _muted = muted;
   if (typeof window !== "undefined") {
-    localStorage.setItem("qwen-studio-muted", muted ? "1" : "0");
+    localStorage.setItem("kasset-muted", muted ? "1" : "0");
   }
 }
 
 export function isMuted(): boolean {
   if (typeof window !== "undefined" && _muted === false) {
-    const stored = localStorage.getItem("qwen-studio-muted");
+    const stored = localStorage.getItem("kasset-muted");
     if (stored === "1") _muted = true;
   }
   return _muted;

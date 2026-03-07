@@ -213,7 +213,7 @@ def apply_custom_matplotlib_style():
 
 def _get_workspace_dir() -> str:
     """Return the agent workspace directory, creating it if needed."""
-    workspace = os.path.join(os.path.expanduser("~"), ".qwen-studio", "workspace")
+    workspace = os.path.join(os.path.expanduser("~"), ".kasset", "workspace")
     os.makedirs(workspace, exist_ok=True)
     return workspace
 

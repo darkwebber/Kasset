@@ -452,7 +452,7 @@ export default function ChatDrawer({ onLoadChat, onNewChat, onClose }: ChatDrawe
         {/* Footer */}
         <div className="p-3 border-t border-white/5 text-center">
           <span className="text-[8px] text-white/15 font-mono uppercase tracking-widest">
-            ~/.qwen-studio
+            ~/.kasset
           </span>
         </div>
       </div>

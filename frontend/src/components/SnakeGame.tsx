@@ -22,7 +22,7 @@ export default function SnakeGame({ onClose, onUnlock }: SnakeGameProps) {
   const [level, setLevel] = useState(1);
   const [highScore, setHighScore] = useState(() => {
     if (typeof window !== "undefined") {
-      const stored = localStorage.getItem("qwen-studio-snake-hi");
+      const stored = localStorage.getItem("kasset-snake-hi");
       return stored ? parseInt(stored, 10) : 0;
     }
     return 0;
@@ -105,7 +105,7 @@ export default function SnakeGame({ onClose, onUnlock }: SnakeGameProps) {
       setLevel(newLevel);
       setHighScore(h => {
         const newHi = Math.max(h, scoreRef.current);
-        if (typeof window !== "undefined") localStorage.setItem("qwen-studio-snake-hi", String(newHi));
+        if (typeof window !== "undefined") localStorage.setItem("kasset-snake-hi", String(newHi));
         return newHi;
       });
       spawnFood();

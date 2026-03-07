@@ -1004,7 +1004,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
     if (inputRef.current) inputRef.current.style.height = 'auto';
     
     // Extract image path from attachments
-    const imageAtt = attachments.find(a => /\.(jpg|jpeg|png|webp)$/i.test(a.path));
+    const imageAtt = attachments.find(a => /\.(jpg|jpeg|png|webp|gif|bmp|tiff|svg)$/i.test(a.path));
     const imagePath = imageAtt?.path;
 
     await submitFromMessages(newMessages, userContent, imagePath);
@@ -1135,7 +1135,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
         <SnakeGame
           onClose={() => setShowSnake(false)}
           onUnlock={() => {
-            if (typeof window !== "undefined") localStorage.setItem("qwen-studio-nsfw-unlocked", "true");
+            if (typeof window !== "undefined") localStorage.setItem("kasset-nsfw-unlocked", "true");
           }}
         />
       )}

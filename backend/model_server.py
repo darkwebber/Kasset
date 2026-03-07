@@ -43,8 +43,9 @@ class ModelClient:
         self.model = None
         self.processor = None
         self.config = None
+        self._temp_files: list = []  # Track temp files for cleanup
         self.load_model()
-        
+
     def load_model(self):
         """Load the MLX model into memory."""
         try:
@@ -88,33 +89,64 @@ class ModelClient:
     def is_healthy(self) -> bool:
         return self.model is not None and self.processor is not None
 
-    def _resize_image_if_needed(self, image_path: str) -> str:
-        """Resize image to prevent OOM errors during vision inference."""
+    def cleanup_temp_files(self):
+        """Remove any temporary resized image files created during inference."""
+        for f in self._temp_files:
+            try:
+                if os.path.exists(f):
+                    os.remove(f)
+            except OSError:
+                pass
+        self._temp_files.clear()
+
+    def _prepare_image(self, image_path: str) -> str:
+        """Validate, auto-rotate (EXIF), and resize image for vision inference.
+        
+        Returns the path to a ready-to-use image (may be a temp file).
+        Tracks temp files for later cleanup via cleanup_temp_files().
+        """
         try:
-            with Image.open(image_path) as img:
-                if img.mode != "RGB":
-                    img = img.convert("RGB")
-                    
-                w, h = img.size
-                longest = max(w, h)
-                if longest <= MAX_IMAGE_DIMENSION:
-                    return image_path
-                    
+            img = Image.open(image_path)
+
+            # Auto-rotate based on EXIF orientation (phone photos)
+            try:
+                from PIL import ImageOps
+                img = ImageOps.exif_transpose(img)
+            except Exception:
+                pass
+
+            if img.mode not in ("RGB", "RGBA"):
+                img = img.convert("RGB")
+            elif img.mode == "RGBA":
+                # Flatten alpha onto white background for VLM compatibility
+                background = Image.new("RGB", img.size, (255, 255, 255))
+                background.paste(img, mask=img.split()[3])
+                img = background
+
+            w, h = img.size
+            longest = max(w, h)
+            needs_resize = longest > MAX_IMAGE_DIMENSION
+            needs_save = needs_resize or img.mode != "RGB"
+
+            if not needs_save:
+                img.close()
+                return image_path
+
+            if needs_resize:
                 ratio = MAX_IMAGE_DIMENSION / longest
                 new_size = (int(w * ratio), int(h * ratio))
-                
-                resized_img = img.resize(new_size, Image.Resampling.LANCZOS)
-                
-                import tempfile
-                ext = Path(image_path).suffix or '.jpg'
-                fd, temp_path = tempfile.mkstemp(suffix=ext, prefix="resized_")
-                os.close(fd)
-                
-                resized_img.save(temp_path)
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
                 logger.info(f"Resized image from {w}x{h} to {new_size[0]}x{new_size[1]}")
-                return temp_path
+
+            import tempfile
+            fd, temp_path = tempfile.mkstemp(suffix=".jpg", prefix="kasset_img_")
+            os.close(fd)
+            img.save(temp_path, "JPEG", quality=92)
+            img.close()
+            self._temp_files.append(temp_path)
+            return temp_path
         except Exception as e:
-            logger.error(f"Image resize failed: {e}")
+            logger.error(f"Image preparation failed: {e}")
             return image_path
 
     def _build_prompt(self, messages: List[Dict], enable_thinking: bool = True, has_image: bool = False) -> str:
@@ -185,7 +217,7 @@ class ModelClient:
         
         inference_image = None
         if has_image:
-            inference_image = self._resize_image_if_needed(image_filepath)
+            inference_image = self._prepare_image(image_filepath)
             max_tokens = min(max_tokens, VISION_TOKEN_CAP)
             
         t0 = time.time()
@@ -222,7 +254,7 @@ class ModelClient:
         
         inference_image = None
         if has_image:
-            inference_image = self._resize_image_if_needed(image)
+            inference_image = self._prepare_image(image)
             max_tokens = min(max_tokens, VISION_TOKEN_CAP)
             
         for chunk in stream_generate(

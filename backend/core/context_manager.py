@@ -19,7 +19,7 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 # Storage directories
-DATA_DIR = Path.home() / ".qwen-studio"
+DATA_DIR = Path.home() / ".kasset"
 CONTEXT_DIR = DATA_DIR / "context"
 CARTRIDGE_CONTEXT_DIR = CONTEXT_DIR / "cartridges"
 GLOBAL_PROFILE_FILE = CONTEXT_DIR / "global_profile.json"

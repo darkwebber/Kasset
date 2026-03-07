@@ -545,7 +545,7 @@ class Agent:
             
             for chunk in self.model_client.stream_generate(
                 messages=current_history,
-                image=image_path if tool_round == 0 else None,
+                image=image_path,
                 max_tokens=self.config.suggested_tokens,
                 thinking=self.config.suggested_thinking
             ):
@@ -749,3 +749,6 @@ class Agent:
                 GlobalProfile.update_from_chat(cid, history)
         except Exception as e:
             logger.warning(f"Context update failed: {e}")
+
+        # Cleanup temp image files created during inference
+        self.model_client.cleanup_temp_files()

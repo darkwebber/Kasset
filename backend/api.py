@@ -94,7 +94,7 @@ class NetworkSafetyMiddleware(BaseHTTPMiddleware):
         if is_password_configured():
             token = (
                 request.headers.get("x-auth-token")
-                or request.cookies.get("qwen_session")
+                or request.cookies.get("kasset_session")
                 or ""
             )
             if not validate_session(token):
@@ -142,7 +142,7 @@ def auth_status(request: Request):
     # Check if the client has a valid session
     token = (
         request.headers.get("x-auth-token")
-        or request.cookies.get("qwen_session")
+        or request.cookies.get("kasset_session")
         or ""
     )
     authenticated = is_local or validate_session(token)
@@ -216,7 +216,7 @@ async def auth_login(request: Request):
         })
         # Also set as httpOnly cookie for extra security
         response.set_cookie(
-            key="qwen_session",
+            key="kasset_session",
             value=token,
             httponly=True,
             samesite="lax",
@@ -245,13 +245,13 @@ async def auth_logout(request: Request):
     """Revoke the current session."""
     token = (
         request.headers.get("x-auth-token")
-        or request.cookies.get("qwen_session")
+        or request.cookies.get("kasset_session")
         or ""
     )
     if token:
         revoke_session(token)
     response = JSONResponse({"success": True})
-    response.delete_cookie("qwen_session")
+    response.delete_cookie("kasset_session")
     return response
 
 
@@ -317,6 +317,15 @@ async def chat_stream_endpoint(request: Request):
         chat_req = ChatRequest(**body)
         is_local = getattr(request.state, "is_local", True)
 
+        # Validate image if provided
+        image_path = chat_req.image_path
+        if image_path:
+            from .utils import validate_image_file
+            valid, msg = validate_image_file(image_path)
+            if not valid:
+                logger.warning(f"Image validation failed: {msg}")
+                image_path = None  # Skip image rather than crash
+
         config = cartridge_loader.load_stack(chat_req.cartridge_ids)
         agent = Agent(model_client, config, allow_shell=is_local)
         
@@ -328,7 +337,7 @@ async def chat_stream_endpoint(request: Request):
                 # Send chat_id to frontend so it can track this conversation
                 yield f"data: {json.dumps({'type': 'chat_id', 'data': chat_id})}\n\n"
                 
-                for event_json in agent.chat_stream(chat_req.messages, chat_req.image_path):
+                for event_json in agent.chat_stream(chat_req.messages, image_path):
                     yield f"data: {event_json}\n\n"
             except GeneratorExit:
                 logger.info(f"Client disconnected for chat {chat_id}")
@@ -421,9 +430,9 @@ ALLOWED_UPLOAD_EXTENSIONS = {
 
 @app.post("/api/fs/upload")
 async def upload_file(file: UploadFile = File(...)):
-    """Upload a pasted image or file. Saves to ~/.qwen-studio/uploads/."""
+    """Upload a pasted image or file. Saves to ~/.kasset/uploads/."""
     import uuid
-    upload_dir = Path.home() / ".qwen-studio" / "uploads"
+    upload_dir = Path.home() / ".kasset" / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
     
     # Validate file extension
@@ -511,7 +520,7 @@ async def execute_approved(request: Request):
 
 
 # ═══════════════════════════════════════════
-# CARTRIDGE FORGE — Studio API
+# KASSET FORGE — Studio API
 # ═══════════════════════════════════════════
 
 @app.get("/api/forge/tools")
