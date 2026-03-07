@@ -32,8 +32,8 @@
 > **Requirements:** macOS with Apple Silicon (M1+), Python 3.10+, Node.js 18+, ~6GB RAM free
 
 ```bash
-git clone https://github.com/darkwebber/kasset-studio.git
-cd kasset-studio
+git clone https://github.com/darkwebber/Kasset.git
+cd Kasset
 chmod +x start.sh
 ./start.sh
 ```
@@ -53,7 +53,7 @@ Open **http://localhost:3000** and press **Ctrl+C** to stop.
 ## Project Structure
 
 ```
-qwen-studio/
+Kasset/
 ├── backend/                    # Python FastAPI backend
 │   ├── api.py                  # REST + SSE + Forge Studio API endpoints
 │   ├── model_server.py         # MLX-VLM model wrapper

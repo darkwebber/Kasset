@@ -170,6 +170,96 @@ def _try_parse_tool_json(raw: str) -> Optional[Dict[str, Any]]:
         logger.warning(f"Failed to parse tool call from: {raw[:200]}")
     return None
 
+
+def _has_tool_call_attempt(text: str) -> bool:
+    """Check if the model attempted a tool call but it failed to parse."""
+    lower = text.lower()
+    return '<tool_call>' in lower or '<|tool_call|>' in lower
+
+
+def _diagnose_tool_call_error(text: str) -> str:
+    """Analyze a failed tool call and produce a clear error message for the model."""
+    # Extract the raw JSON attempt
+    match = re.search(r'<tool_call>\s*(.*?)(?:</tool_call>|$)', text, re.DOTALL | re.IGNORECASE)
+    if not match:
+        match = re.search(r'<\|tool_call\|>\s*(.*?)(?:<\|/tool_call\|>|$)', text, re.DOTALL)
+
+    raw_json = match.group(1).strip() if match else ""
+    snippet = raw_json[:300] if raw_json else text[-300:]
+
+    # Diagnose specific issues
+    issues = []
+    if raw_json:
+        brace_count = raw_json.count('{') - raw_json.count('}')
+        if brace_count > 0:
+            issues.append(f"Unclosed braces: {brace_count} opening '{{' without matching '}}'.")
+        elif brace_count < 0:
+            issues.append(f"Extra closing braces: {abs(brace_count)} unmatched '}}'.")
+
+        # Check for raw newlines inside strings (most common failure)
+        if '"code"' in raw_json:
+            code_start = raw_json.find('"code"')
+            # Check if there are unescaped newlines after the code key
+            code_section = raw_json[code_start:]
+            in_str = False
+            for i, ch in enumerate(code_section):
+                if ch == '"' and (i == 0 or code_section[i-1] != '\\'):
+                    in_str = not in_str
+                if in_str and ch == '\n':
+                    issues.append("Raw newlines inside the 'code' string value. Use \\n instead of actual line breaks.")
+                    break
+
+        if '"name"' not in raw_json:
+            issues.append("Missing 'name' key in the tool call JSON.")
+        if '"arguments"' not in raw_json:
+            issues.append("Missing 'arguments' key in the tool call JSON.")
+
+        try:
+            json.loads(raw_json)
+        except json.JSONDecodeError as e:
+            issues.append(f"JSON parse error: {e.msg} at position {e.pos}.")
+    else:
+        issues.append("The <tool_call> tag was found but no JSON content was extracted.")
+
+    issue_text = "\n".join(f"  - {i}" for i in issues) if issues else "  - Unknown JSON formatting error."
+
+    return (
+        f"[SYSTEM] Your previous tool call failed to parse. Here's what went wrong:\n"
+        f"{issue_text}\n\n"
+        f"Your malformed output was:\n```\n{snippet}\n```\n\n"
+        f"Fix the JSON and try again. Remember:\n"
+        f"- The JSON must be valid. Use \\n for newlines and \\\" for quotes inside string values.\n"
+        f"- Format: <tool_call>{{\"name\": \"tool_name\", \"arguments\": {{...}}}}</tool_call>\n"
+        f"- Do NOT put any text after the </tool_call> tag."
+    )
+
+
+def _enrich_tool_error(tool_name: str, tool_args: dict, error_result: str) -> str:
+    """Produce actionable feedback when a tool execution fails."""
+    hints = []
+    err = error_result.lower()
+
+    if "no such file" in err or "does not exist" in err:
+        hints.append("The file/path doesn't exist. Use `list_directory` or `search_files` to find the correct path first.")
+    elif "permission denied" in err:
+        hints.append("Permission denied. Try a different path or approach.")
+    elif "timed out" in err:
+        hints.append("The command took too long (30s limit). Simplify the operation or break it into smaller steps.")
+    elif "syntax" in err or "indentation" in err:
+        hints.append("There's a syntax error in the code. Review and fix it before retrying.")
+    elif "modulenotfounderror" in err or "import" in err:
+        hints.append("A required module is not available. Use only pre-imported packages (pandas, numpy, matplotlib, scipy, seaborn) or ask the user to install it.")
+    elif "blocked" in err:
+        hints.append("This command is blocked for safety. Try an alternative approach.")
+    elif "consent_required" in err:
+        hints.append("This command needs user approval. The user will see a prompt to approve it.")
+
+    base = f"Tool result for {tool_name}: {error_result}"
+    if hints:
+        base += "\n[Hint: " + " ".join(hints) + "]"
+    return base
+
+
 def _extract_attachment_context(content: str) -> str:
     """
     Intelligently extract content from [Attached file: path] tags.
@@ -366,6 +456,16 @@ class Agent:
             "3. Do NOT put any text after the `</tool_call>` closing tag.\n"
             "4. Do NOT wrap tool calls in markdown code fences — just use the raw `<tool_call>` XML tags.\n"
             "5. When a tool returns an image/plot, the user can already see it. Do NOT describe or recreate it — focus on insights.\n\n"
+            "### Agentic Behavior\n"
+            "You are an autonomous agent that can chain multiple tool calls to accomplish complex tasks. "
+            "For multi-step tasks, think through your plan in your reasoning before acting:\n"
+            "1. **Plan** — decide what information you need and which tools to use in what order.\n"
+            "2. **Act** — call the first tool. You will automatically get the result and can continue.\n"
+            "3. **Observe** — analyze the result. Decide if you need another tool call or can answer.\n"
+            "4. **Adapt** — if a tool fails, read the error carefully, adjust your approach, and retry with a corrected call.\n"
+            "5. **Synthesize** — once you have all the data, give a clear final answer.\n\n"
+            "You can use up to 10 tool calls per response. Do NOT ask the user to do things you can do with tools — "
+            "just do them. If you need to read a file, list a directory, run code, or search the web, call the tool directly.\n\n"
             + "\n".join(tool_lines)
         )
         
@@ -430,15 +530,17 @@ class Agent:
         })
         
         # Max rounds of tool calling
-        MAX_TOOL_ROUNDS = 8
+        MAX_TOOL_ROUNDS = 10
+        MAX_PARSE_RETRIES = 2
         consecutive_failures = 0
         
         current_history = list(base_history)
         
         for tool_round in range(MAX_TOOL_ROUNDS):
-            # 1. Stream Model Generation
+            # ── 1. Stream Model Generation ──
             accumulated = ""
             thinking_done = False
+            is_retry_gen = False  # set True during parse-retry re-generations
             yield json.dumps({"type": "status", "data": "Generating..."})
             
             for chunk in self.model_client.stream_generate(
@@ -467,41 +569,86 @@ class Agent:
                 else:
                     yield json.dumps({"type": "token", "data": chunk})
 
-            # 2. Process complete generation
+            # ── 2. Process complete generation ──
             thought, text = parse_thinking(accumulated)
             
             # Strip leading echo fragments from previous round (e.g. "code.", "intuitive.")
-            # The model often echoes the last word of its previous text when continuing after tool results
             if tool_round > 0 and text:
                 frag_match = re.match(r'^(\S[^.\n]{0,28}\.)\s*\n\n', text)
                 if frag_match:
                     text = text[frag_match.end():]
             
             tool_req = extract_tool_call(text)
+
+            # ── 2b. Auto-retry on tool call parse failure ──
+            if not tool_req and _has_tool_call_attempt(text):
+                for retry in range(MAX_PARSE_RETRIES):
+                    logger.warning(f"Tool call parse failure (retry {retry + 1}/{MAX_PARSE_RETRIES})")
+                    yield json.dumps({
+                        "type": "status",
+                        "data": f"Tool call format error — auto-correcting ({retry + 1}/{MAX_PARSE_RETRIES})…"
+                    })
+                    
+                    # Inject diagnostic feedback so the model can self-correct
+                    error_feedback = _diagnose_tool_call_error(text)
+                    # Clean the failed attempt from text before adding to history
+                    failed_text = re.sub(r'<tool_call>[\s\S]*', '', text, flags=re.IGNORECASE).strip()
+                    current_history.append({"role": "assistant", "content": failed_text or "(attempted tool call)"})
+                    current_history.append({"role": "user", "content": error_feedback})
+                    
+                    # Re-generate with thinking visible to user
+                    accumulated = ""
+                    thinking_done = False
+                    for chunk in self.model_client.stream_generate(
+                        messages=current_history,
+                        max_tokens=self.config.suggested_tokens,
+                        thinking=self.config.suggested_thinking
+                    ):
+                        accumulated += chunk
+                        if "</think>" in accumulated:
+                            if not thinking_done:
+                                thinking_done = True
+                                yield json.dumps({"type": "think_end"})
+                            _, answer = parse_thinking(accumulated)
+                            if answer.strip():
+                                yield json.dumps({"type": "token", "data": chunk})
+                        elif self.config.suggested_thinking:
+                            c = accumulated
+                            if "<think>" in c:
+                                c = c[c.index("<think>") + len("<think>"):]
+                            if c.strip():
+                                yield json.dumps({"type": "think_token", "data": chunk})
+                        else:
+                            yield json.dumps({"type": "token", "data": chunk})
+                    
+                    _, text = parse_thinking(accumulated)
+                    tool_req = extract_tool_call(text)
+                    if tool_req:
+                        logger.info(f"Tool call parse succeeded on retry {retry + 1}")
+                        break
+                else:
+                    logger.warning("All parse retries exhausted — treating as final answer")
+
+            # ── 2c. Final answer (no tool call) ──
             if not tool_req:
-                # Final answer reached — strip any leftover tool_call XML that failed to parse
                 clean_text = re.sub(r'<tool_call>[\s\S]*?</tool_call>', '', text, flags=re.IGNORECASE)
                 clean_text = re.sub(r'<tool_call>[\s\S]*$', '', clean_text, flags=re.IGNORECASE)
                 clean_text = re.sub(r'<\|tool_call\|>[\s\S]*$', '', clean_text)
                 clean_text = clean_text.strip()
                 if not clean_text and text.strip():
-                    clean_text = text.strip()  # fallback to original if stripping removed everything
+                    clean_text = text.strip()
                 yield json.dumps({"type": "done", "data": clean_text})
                 break
                 
-            # 3. Tool Execution Phase
+            # ── 3. Tool Execution Phase ──
             tool_name = tool_req.get("name", "")
             tool_args = tool_req.get("arguments", {})
             
-            # Include code directly in tool_start so frontend can display immediately
             start_data = {"name": tool_name, "args": tool_args}
             if tool_name in ("execute_python", "execute_cpp") and "code" in tool_args:
                 start_data["code"] = tool_args["code"]
             
-            yield json.dumps({
-                "type": "tool_start", 
-                "data": start_data
-            })
+            yield json.dumps({"type": "tool_start", "data": start_data})
             
             # Block dangerous tools for network (non-local) clients
             SHELL_TOOLS = {"run_command", "execute_python", "execute_cpp"}
@@ -515,7 +662,6 @@ class Agent:
                 html_artifact = ""
             else:
                 raw_result = execute_tool(tool_name, tool_args)
-                # Tool results can be str or dict with output/images/html
                 if isinstance(raw_result, dict):
                     tool_result = raw_result.get("output", "")
                     sandbox_images = raw_result.get("images", [])
@@ -528,46 +674,44 @@ class Agent:
             result_data = {"name": tool_name, "result": tool_result, "images": sandbox_images}
             if html_artifact:
                 result_data["html"] = html_artifact
-            yield json.dumps({
-                "type": "tool_result", 
-                "data": result_data
-            })
+            yield json.dumps({"type": "tool_result", "data": result_data})
             
-            # Failure tracking
+            # ── 4. Build enriched context for next round ──
             is_failure = tool_result in ("(no output)", "") or str(tool_result).startswith("Error:")
             consecutive_failures = consecutive_failures + 1 if is_failure else 0
             
-            if consecutive_failures >= 2:
-                yield json.dumps({"type": "status", "data": "Tool failed repeatedly. Generating final response..."})
-                failure_note = "\nIMPORTANT: Multiple tools failed. Give your best final answer with the data you have."
+            if consecutive_failures >= 3:
+                yield json.dumps({"type": "status", "data": "Multiple tools failed. Generating final response…"})
+                failure_note = "\nIMPORTANT: Multiple tools have failed. Stop calling tools and give your best final answer with whatever data you have."
             else:
                 failure_note = ""
             
-            # Build context-rich tool result for history
-            result_context = f"Tool result for {tool_name}: {tool_result}"
+            # Use enriched error context for tool failures
+            if is_failure and not failure_note:
+                result_context = _enrich_tool_error(tool_name, tool_args, tool_result)
+            else:
+                result_context = f"Tool result for {tool_name}: {tool_result}"
             if sandbox_images:
-                result_context += f"\n[{len(sandbox_images)} plot image(s) were generated and displayed to the user. You do NOT need to recreate or describe the plot — the user can already see it. Focus on analysis and insights instead.]"
+                result_context += f"\n[{len(sandbox_images)} plot image(s) were generated and displayed to the user. Do NOT recreate or describe the plot — the user can already see it. Focus on analysis and insights.]"
             result_context += failure_note
                 
-            # Append interaction to history for next synthesis step
-            # Strip <tool_call> XML from text — model gets confused seeing its own XML in context
+            # Append interaction to history — strip <tool_call> XML from assistant text
             history_text = re.sub(r'<tool_call>[\s\S]*?</tool_call>', '', text, flags=re.IGNORECASE)
             history_text = re.sub(r'<tool_call>[\s\S]*$', '', history_text, flags=re.IGNORECASE)
             history_text = re.sub(r'<\|tool_call\|>[\s\S]*$', '', history_text)
             history_text = history_text.strip()
-            current_history.append({"role": "assistant", "content": history_text or text.strip()})
+            current_history.append({"role": "assistant", "content": history_text or "(used tool)"})
             current_history.append({"role": "user", "content": result_context})
             
-            if consecutive_failures >= 2:
-                # Do one last non-tool call to summarize
+            if consecutive_failures >= 3:
                 final_res = self.model_client.generate(current_history, max_tokens=self.config.suggested_tokens, thinking=False)
                 _, final_text = parse_thinking(final_res)
                 yield json.dumps({"type": "token", "data": final_text})
                 yield json.dumps({"type": "done", "data": final_text})
                 break
         else:
-            # Hit max rounds — do a final summarizing generation instead of erroring
-            current_history.append({"role": "user", "content": "You have reached the maximum number of tool rounds. Please give your best final answer now with the information you have gathered so far."})
+            # Hit max rounds — produce a final summary
+            current_history.append({"role": "user", "content": "You have reached the maximum number of tool rounds. Summarize your findings and give your best final answer with the information gathered so far."})
             final_res = self.model_client.generate(current_history, max_tokens=self.config.suggested_tokens, thinking=False)
             _, final_text = parse_thinking(final_res)
             yield json.dumps({"type": "token", "data": final_text})
