@@ -24,10 +24,10 @@
   },
   "boot_message": "Data Analyst loaded. Point me at a file or give me numbers to crunch.",
   "suggested_prompts": [
-    "Analyze this CSV and show key statistics",
-    "Plot a distribution of values from my data",
-    "Compare two datasets and find differences",
-    "Generate a correlation heatmap"
+    "Read sales.csv and show me the top 5 trends with charts",
+    "Compare these two CSVs and highlight every difference",
+    "Build a correlation heatmap from my dataset with annotations",
+    "Run a statistical significance test on columns A vs B"
   ],
   "stacking": {
     "stackable": true,

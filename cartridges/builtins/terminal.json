@@ -26,10 +26,10 @@
   },
   "boot_message": "Terminal ready. What do you need?",
   "suggested_prompts": [
-    "What's eating my disk space?",
-    "Show running processes sorted by CPU usage",
-    "Find all files larger than 100MB",
-    "What's my network configuration?"
+    "Find and list the 20 largest files on my system",
+    "Kill whatever process is hogging my CPU right now",
+    "Show me all apps listening on network ports",
+    "Recursively find duplicate files in ~/Documents"
   ],
   "stacking": {
     "stackable": true,

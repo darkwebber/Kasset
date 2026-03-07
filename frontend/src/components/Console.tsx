@@ -247,51 +247,53 @@ function WelcomeScreen({ cartridgeName, cartridgeIcon, bootMessage, tools, sugge
   }, [tools, suggestedPrompts]);
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-center px-2 sm:px-6 py-4 sm:py-8 min-h-0">
-      <div className="text-4xl sm:text-5xl mb-3 drop-shadow-lg select-none">{cartridgeIcon}</div>
-      <div className="text-sm sm:text-base font-bold text-[var(--accent)] tracking-[0.15em] uppercase mb-1.5 text-glow select-none">
+    <div className="flex-1 flex flex-col items-center justify-center px-3 sm:px-6 py-4 sm:py-8 min-h-0 select-none">
+      <div className="text-4xl sm:text-5xl mb-2 sm:mb-3 drop-shadow-lg" style={{ filter: 'drop-shadow(0 0 12px var(--glow))' }}>{cartridgeIcon}</div>
+      <div className="text-sm sm:text-base font-bold text-white/75 mb-0.5">
         {cartridgeName}
       </div>
-      <div className="text-[11px] sm:text-xs text-white/30 font-mono text-center max-w-xs mb-6 sm:mb-8">
+      <div className="text-[11px] text-[var(--accent)]/50 font-mono text-center max-w-sm mb-5 sm:mb-8">
         {bootMessage}
       </div>
 
+      {/* Example prompts — 2-col grid on desktop */}
+      <div className="w-full max-w-lg mb-5 sm:mb-8">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 sm:gap-2">
+          {examples.map((prompt, i) => (
+            <button
+              key={i}
+              onClick={() => onSendPrompt(prompt)}
+              className="text-left px-3 py-2.5 rounded-lg border border-white/[0.05] hover:border-[var(--accent)]/25 bg-white/[0.02] hover:bg-[var(--accent)]/[0.04] text-white/35 hover:text-white/70 text-[11px] sm:text-xs font-mono transition-all leading-relaxed group cursor-pointer active:scale-[0.99]"
+            >
+              <span className="opacity-40 group-hover:opacity-70 mr-1">›</span> {prompt}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Tool badges — compact */}
       {tools.length > 0 && (
-        <div className="mb-6 sm:mb-8 w-full max-w-md">
-          <div className="text-[8px] sm:text-[9px] text-white/15 font-mono uppercase tracking-[0.2em] text-center mb-2.5">Available Tools</div>
-          <div className="flex flex-wrap justify-center gap-1.5">
-            {tools.map(toolId => {
-              const meta = getToolMeta(toolId);
-              const display = TOOL_DISPLAY[toolId] || toolId.replace(/_/g, " ");
-              return (
-                <div key={toolId} className="flex items-center gap-1.5 px-2 sm:px-2.5 py-1 rounded-md bg-white/[0.03] border border-white/[0.06] text-[9px] sm:text-[10px] font-mono transition-colors hover:bg-white/[0.05]">
-                  <span style={{ color: `${meta.color}99` }}>{meta.icon}</span>
-                  <span className="text-white/25">{display}</span>
-                </div>
-              );
-            })}
-          </div>
+        <div className="flex flex-wrap justify-center gap-1 mb-5 max-w-md">
+          {tools.map(toolId => {
+            const meta = getToolMeta(toolId);
+            const display = TOOL_DISPLAY[toolId] || toolId.replace(/_/g, " ");
+            return (
+              <div key={toolId} className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-white/[0.02] border border-white/[0.04] text-[8px] font-mono">
+                <span style={{ color: `${meta.color}66` }}>{meta.icon}</span>
+                <span className="text-white/20">{display}</span>
+              </div>
+            );
+          })}
         </div>
       )}
 
-      <div className="w-full max-w-md space-y-1.5 sm:space-y-2">
-        <div className="text-[8px] sm:text-[9px] text-white/15 font-mono uppercase tracking-[0.2em] text-center mb-2">Try asking</div>
-        {examples.map((prompt, i) => (
-          <button
-            key={i}
-            onClick={() => onSendPrompt(prompt)}
-            className="w-full text-left px-3 sm:px-4 py-2 sm:py-2.5 rounded-lg bg-white/[0.02] border border-white/[0.06] hover:border-[var(--accent)]/20 hover:bg-[var(--accent)]/[0.03] text-[11px] sm:text-xs text-white/30 hover:text-white/50 font-mono transition-all group cursor-pointer active:scale-[0.99]"
-          >
-            <span className="text-[var(--accent)]/30 group-hover:text-[var(--accent)]/60 mr-2">→</span>
-            {prompt}
-          </button>
-        ))}
-      </div>
-
-      <div className="hidden sm:flex items-center gap-3 mt-6 sm:mt-8 text-[9px] text-white/10 font-mono">
-        <span className="flex items-center gap-1"><kbd className="px-1 py-0.5 rounded bg-white/5 border border-white/5 text-white/20">⌘K</kbd> all actions</span>
-        <span className="flex items-center gap-1"><kbd className="px-1 py-0.5 rounded bg-white/5 border border-white/5 text-white/20">⌘/</kbd> help</span>
-        <span className="flex items-center gap-1"><kbd className="px-1 py-0.5 rounded bg-white/5 border border-white/5 text-white/20">⌘N</kbd> new chat</span>
+      {/* Keyboard hints */}
+      <div className="hidden sm:flex items-center gap-3 text-[9px] text-white/[0.1] font-mono">
+        <span>⌘K commands</span>
+        <span className="text-white/[0.06]">·</span>
+        <span>⌘N new chat</span>
+        <span className="text-white/[0.06]">·</span>
+        <span>? tutorial</span>
       </div>
     </div>
   );
@@ -1041,11 +1043,11 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
           <Command size={15} />
         </button>
         {onOpenForge && (
-          <button onClick={onOpenForge} className="hidden sm:block p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 transition-all" title="Kasset Forge (⌘⇧F)">
+          <button onClick={onOpenForge} className="p-2 sm:p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all" title="Kasset Forge (⌘⇧F)">
             <Wrench size={15} />
           </button>
         )}
-        <button onClick={() => { setShowTutorial(true); soundTick(); }} className="hidden sm:block p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 transition-all" title="Quick Guide (⌘/)">
+        <button onClick={() => { setShowTutorial(true); soundTick(); }} className="p-2 sm:p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all" title="Quick Guide (⌘/)">
           <HelpCircle size={15} />
         </button>
         <button
@@ -1256,7 +1258,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
                   return parts.map((part, i) =>
                     attNames.some(n => part === `@${n}`)
                       ? <span key={i} className="bg-[var(--accent)]/15 text-[var(--accent)] rounded px-1 py-px -mx-px">{part}</span>
-                      : <span key={i} className="text-transparent">{part}</span>
+                      : <span key={i} className="text-white/90">{part}</span>
                   );
                 })() : <span className="text-transparent">{input}</span>}
                 {!input && <span className="text-transparent">.</span>}
@@ -1303,6 +1305,16 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
             )}
           </div>
         </form>
+        {/* Subtle action hints — desktop only */}
+        <div className="hidden sm:flex items-center justify-center gap-3 mt-1.5 text-[9px] text-white/[0.12] font-mono select-none">
+          <span>⌘K commands</span>
+          <span className="text-white/[0.06]">·</span>
+          <span>⇧↵ newline</span>
+          <span className="text-white/[0.06]">·</span>
+          <span>? tutorial</span>
+          <span className="text-white/[0.06]">·</span>
+          <span>📎 attach files</span>
+        </div>
       </div>
     </div>
   );

@@ -23,10 +23,10 @@
   },
   "boot_message": "Tutor loaded. What would you like to learn today?",
   "suggested_prompts": [
-    "Explain recursion like I'm 10 years old",
-    "Teach me the basics of calculus",
-    "How does a neural network actually learn?",
-    "Walk me through Big-O notation with examples"
+    "Teach me how HashMap works internally — with a visual diagram",
+    "Explain quantum entanglement using only everyday analogies",
+    "Walk me through solving a dynamic programming problem step by step",
+    "What's the intuition behind Fourier transforms? Show me with code"
   ],
   "stacking": {
     "stackable": true,

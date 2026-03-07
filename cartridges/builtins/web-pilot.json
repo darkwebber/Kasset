@@ -25,10 +25,10 @@
   },
   "boot_message": "Web Pilot online. What do you need researched?",
   "suggested_prompts": [
-    "What's the latest news about Apple Silicon?",
-    "Research the best Python web frameworks in 2025",
-    "Summarize this article for me",
-    "Compare React vs Svelte — pros and cons"
+    "What happened in tech news today? Give me a 5-bullet briefing",
+    "Research the current state of WebAssembly — who's using it and why",
+    "Find the official docs for this library and summarize the API",
+    "Compare the pricing and features of Vercel vs Cloudflare Pages vs Netlify"
   ],
   "stacking": {
     "stackable": true,

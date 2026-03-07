@@ -23,10 +23,10 @@
   },
   "boot_message": "Writer loaded. What are we writing today?",
   "suggested_prompts": [
-    "Write a blog post about local AI privacy",
-    "Help me draft a professional email",
-    "Rewrite this paragraph to be more concise",
-    "Create an outline for a technical tutorial"
+    "Write a product launch email that sounds excited but not salesy",
+    "Turn these bullet points into a compelling blog post with a hook",
+    "Rewrite this dense paragraph at an 8th-grade reading level",
+    "Draft a README.md for my open-source project with badges and examples"
   ],
   "stacking": {
     "stackable": true,

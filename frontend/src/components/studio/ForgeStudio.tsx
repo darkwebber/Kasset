@@ -86,7 +86,7 @@ function TextArea({ value, onChange, placeholder, rows, mono }: { value: string;
   return (
     <textarea
       value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} rows={rows || 4}
-      className={`w-full bg-white/[0.035] border border-white/[0.06] rounded-md px-2.5 py-[7px] text-[13px] text-white/75 placeholder-white/15 focus:border-[var(--accent)]/30 focus:bg-white/[0.05] focus:outline-none transition-all resize-y crt-scroll ${mono ? "font-mono text-xs leading-relaxed" : ""}`}
+      className={`w-full bg-white/[0.035] border border-white/[0.06] rounded-md px-2.5 py-[7px] text-[13px] text-white/75 placeholder-white/15 focus:border-[var(--accent)]/30 focus:bg-white/[0.05] focus:outline-none transition-all resize-y subtle-scroll ${mono ? "font-mono text-xs leading-relaxed" : ""}`}
     />
   );
 }
@@ -138,7 +138,7 @@ function ToolMultiSelect({ selected, onChange, allTools }: { selected: string[];
     else onChange([...selected, id]);
   };
   return (
-    <div className="grid grid-cols-2 gap-px bg-white/[0.02] rounded-md border border-white/[0.06] overflow-hidden max-h-36 overflow-y-auto crt-scroll">
+    <div className="grid grid-cols-2 gap-px bg-white/[0.02] rounded-md border border-white/[0.06] overflow-hidden max-h-36 overflow-y-auto subtle-scroll">
       {allTools.map(id => (
         <label key={id} className={`flex items-center gap-2 px-2.5 py-[6px] cursor-pointer text-[11px] font-mono transition-all ${selected.includes(id) ? "bg-[var(--accent)]/8 text-[var(--accent)]/80" : "text-white/30 hover:bg-white/[0.03] hover:text-white/45"}`}>
           <input type="checkbox" checked={selected.includes(id)} onChange={() => toggle(id)} className="sr-only" />
@@ -228,7 +228,7 @@ function CartridgeEditor({ cartridge, allTools, onSave, onDelete, onCancel, isNe
   };
 
   return (
-    <div className="space-y-3 max-h-[70vh] overflow-y-auto crt-scroll pr-1">
+    <div className="space-y-3 max-h-[70vh] overflow-y-auto subtle-scroll pr-1">
       {/* Core Fields */}
       <div className="grid grid-cols-[1fr_80px] gap-2">
         <Field label="Name">
@@ -303,7 +303,7 @@ function CartridgeEditor({ cartridge, allTools, onSave, onDelete, onCancel, isNe
       {/* JSON Preview */}
       <SectionHeader title="JSON Preview" open={showJson} onToggle={() => setShowJson(!showJson)} />
       {showJson && (
-        <pre className="bg-black/40 border border-white/5 rounded p-3 text-[10px] text-white/30 font-mono max-h-48 overflow-auto crt-scroll whitespace-pre-wrap">
+        <pre className="bg-black/40 border border-white/[0.05] rounded-md p-3 text-[10px] text-white/30 font-mono max-h-48 overflow-auto subtle-scroll whitespace-pre-wrap">
           {JSON.stringify(data, null, 2)}
         </pre>
       )}
@@ -382,7 +382,7 @@ function ToolEditor({ manifest: initManifest, handlerCode: initCode, onSave, onD
   };
 
   return (
-    <div className="space-y-3 max-h-[70vh] overflow-y-auto crt-scroll pr-1">
+    <div className="space-y-3 max-h-[70vh] overflow-y-auto subtle-scroll pr-1">
       <div className="grid grid-cols-[1fr_100px_36px] gap-2 items-end">
         <Field label="Name">
           <TextInput value={manifest.name} onChange={v => { set("name", v); if (isNew) set("id", autoId(v)); }} placeholder="My Custom Tool" />
@@ -425,7 +425,7 @@ function ToolEditor({ manifest: initManifest, handlerCode: initCode, onSave, onD
         <textarea
           value={code} onChange={e => setCode(e.target.value)} rows={14}
           spellCheck={false}
-          className="w-full bg-[#0d1117] border border-white/[0.06] border-t-0 rounded-b-md px-3 py-2.5 text-[12px] text-[#e6edf3] font-mono leading-relaxed focus:outline-none resize-y crt-scroll"
+          className="w-full bg-[#0d1117] border border-white/[0.06] border-t-0 rounded-b-md px-3 py-2.5 text-[12px] text-[#e6edf3] font-mono leading-relaxed focus:outline-none resize-y subtle-scroll"
           style={{ tabSize: 4 }}
         />
       </div>
@@ -452,7 +452,7 @@ function ToolEditor({ manifest: initManifest, handlerCode: initCode, onSave, onD
       {/* JSON Preview */}
       <SectionHeader title="Manifest Preview" open={showJson} onToggle={() => setShowJson(!showJson)} />
       {showJson && (
-        <pre className="bg-black/40 border border-white/5 rounded p-3 text-[10px] text-white/30 font-mono max-h-48 overflow-auto crt-scroll whitespace-pre-wrap">
+        <pre className="bg-black/40 border border-white/[0.05] rounded-md p-3 text-[10px] text-white/30 font-mono max-h-48 overflow-auto subtle-scroll whitespace-pre-wrap">
           {JSON.stringify(manifest, null, 2)}
         </pre>
       )}
@@ -464,7 +464,7 @@ function ToolEditor({ manifest: initManifest, handlerCode: initCode, onSave, onD
             <span className="text-[10px] text-white/25 font-mono">Test Result</span>
             <button onClick={() => setTestResult(null)} className="text-white/15 hover:text-white/40 transition-colors"><X size={10} /></button>
           </div>
-          <pre className="px-3 py-2 text-[11px] text-white/50 font-mono whitespace-pre-wrap max-h-32 overflow-auto crt-scroll">{testResult}</pre>
+          <pre className="px-3 py-2 text-[11px] text-white/50 font-mono whitespace-pre-wrap max-h-32 overflow-auto subtle-scroll">{testResult}</pre>
         </div>
       )}
 
@@ -682,7 +682,7 @@ export default function ForgeStudio({ onClose }: { onClose: () => void }) {
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto crt-scroll px-5 sm:px-6 py-3 sm:py-4">
+        <div className="flex-1 overflow-y-auto subtle-scroll px-5 sm:px-6 py-3 sm:py-4">
           {/* ─── Cartridges Tab ─── */}
           {tab === "cartridges" && !editingCartridge && (
             <div className="space-y-3">

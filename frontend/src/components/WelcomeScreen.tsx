@@ -1,6 +1,6 @@
 "use client";
 
-import { Command, Paperclip, Wrench, Terminal, Calculator, Globe, Code, FileText, Clock, Search, Cpu, Keyboard } from "lucide-react";
+import { Terminal, Calculator, Globe, Code, FileText, Clock, Search, Cpu } from "lucide-react";
 
 const TOOL_BADGES: Record<string, { icon: React.ReactNode; label: string }> = {
   execute_python: { icon: <Code size={12} />, label: "Python" },
@@ -18,60 +18,60 @@ const TOOL_BADGES: Record<string, { icon: React.ReactNode; label: string }> = {
 
 const EXAMPLE_PROMPTS: Record<string, string[]> = {
   "general-assistant": [
-    "Summarize this PDF for me",
-    "What's the weather like? Search the web",
-    "Help me write a professional email",
-    "Explain quantum computing simply",
+    "Summarize the files in ~/Downloads and suggest what to clean up",
+    "What processes are using the most memory right now?",
+    "Convert this CSV to a bar chart showing top 10 entries",
+    "Explain the difference between concurrency and parallelism with a diagram",
   ],
   "code-pilot": [
-    "Review this function for bugs",
-    "Write a React component for a todo list",
-    "Explain this error message",
-    "Refactor this code to be more readable",
+    "Read my project structure and suggest improvements",
+    "Find all TODO comments in this repo and prioritize them",
+    "Write a complete CLI tool in Python that converts Markdown to HTML",
+    "Debug why this function returns None instead of the expected value",
   ],
   "tutor": [
-    "Teach me about recursion with examples",
-    "Explain calculus derivatives step by step",
-    "Quiz me on Python data structures",
-    "What's the difference between TCP and UDP?",
+    "Teach me how HashMap works internally — with a visual diagram",
+    "Explain quantum entanglement using only everyday analogies",
+    "Walk me through solving a dynamic programming problem step by step",
+    "What's the intuition behind Fourier transforms? Show me with code",
   ],
   "data-analyst": [
-    "Analyze this CSV and find trends",
-    "Create a bar chart of monthly sales",
-    "Calculate the standard deviation",
-    "Run a linear regression on this data",
+    "Read sales.csv and show me the top 5 trends with charts",
+    "Compare these two CSVs and highlight every difference",
+    "Build a correlation heatmap from my dataset with annotations",
+    "Run a statistical significance test on columns A vs B",
   ],
   "terminal": [
-    "Show me disk usage by directory",
-    "Find all Python files modified today",
-    "What processes are using the most memory?",
-    "List all git branches",
+    "Find and list the 20 largest files on my system",
+    "Kill whatever process is hogging my CPU right now",
+    "Show me all apps listening on network ports",
+    "Recursively find duplicate files in ~/Documents",
   ],
   "writer": [
-    "Write a short story about a robot",
-    "Help me with this blog post introduction",
-    "Proofread and improve this paragraph",
-    "Generate 5 creative headlines",
+    "Write a product launch email that sounds excited but not salesy",
+    "Turn these bullet points into a compelling blog post with a hook",
+    "Rewrite this dense paragraph at an 8th-grade reading level",
+    "Draft a README.md for my open-source project with badges and examples",
   ],
   "devops": [
-    "Show me running Docker containers",
-    "Check the git log for recent changes",
-    "What's my Node.js version?",
-    "Help me write a Dockerfile",
+    "Analyze my git history and show commit frequency by author this month",
+    "Write a multi-stage Dockerfile that builds and serves this project",
+    "Create a GitHub Actions workflow that tests, builds, and deploys on push",
+    "My container exits with code 137 — diagnose and fix it",
   ],
   "web-pilot": [
-    "Search for the latest AI news",
-    "Summarize this article for me",
-    "Compare React vs Vue vs Svelte",
-    "Find documentation for FastAPI",
+    "What happened in tech news today? Give me a 5-bullet briefing",
+    "Research the current state of WebAssembly — who's using it and why",
+    "Find the official docs for this library and summarize the API",
+    "Compare the pricing and features of Vercel vs Cloudflare Pages vs Netlify",
   ],
 };
 
 const DEFAULT_PROMPTS = [
-  "What can you help me with?",
-  "Run a quick system check",
-  "Search the web for something interesting",
-  "Write and run a Python script",
+  "What's eating my disk space? Show me the biggest files",
+  "Run a quick system health check",
+  "Write and run a Python script that does something cool",
+  "Explain how this project is structured",
 ];
 
 interface WelcomeScreenProps {
@@ -91,27 +91,26 @@ export default function WelcomeScreen({ cartridgeId, cartridgeName, cartridgeIco
     .filter(Boolean);
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-center px-2 sm:px-4 select-none overflow-y-auto momentum-scroll">
+    <div className="flex-1 flex flex-col items-center justify-center px-3 sm:px-4 select-none overflow-y-auto momentum-scroll">
       {/* Cartridge identity */}
-      <div className="text-4xl sm:text-5xl mb-2 sm:mb-3 drop-shadow-lg">{cartridgeIcon}</div>
-      <h2 className="text-base sm:text-lg font-bold text-white/70 mb-1">{cartridgeName}</h2>
-      <p className="text-[11px] sm:text-xs text-white/30 max-w-sm text-center mb-2 leading-relaxed">{cartridgeDescription}</p>
+      <div className="text-4xl sm:text-5xl mb-2 sm:mb-3 drop-shadow-lg" style={{ filter: 'drop-shadow(0 0 12px var(--glow))' }}>{cartridgeIcon}</div>
+      <h2 className="text-base sm:text-lg font-bold text-white/75 mb-0.5">{cartridgeName}</h2>
+      <p className="text-[11px] sm:text-xs text-white/25 max-w-xs text-center mb-1.5 leading-relaxed">{cartridgeDescription}</p>
       {bootMessage && (
-        <p className="text-xs text-[var(--accent)]/60 font-mono max-w-sm text-center mb-4 sm:mb-8">{bootMessage}</p>
+        <p className="text-[11px] text-[var(--accent)]/50 font-mono max-w-sm text-center mb-5 sm:mb-8">{bootMessage}</p>
       )}
-      {!bootMessage && <div className="mb-4 sm:mb-8" />}
+      {!bootMessage && <div className="mb-5 sm:mb-8" />}
 
       {/* Example prompts */}
-      <div className="w-full max-w-lg space-y-2 mb-4 sm:mb-8">
-        <div className="text-[10px] uppercase tracking-widest text-white/20 font-mono mb-2 text-center">Try asking</div>
+      <div className="w-full max-w-lg mb-5 sm:mb-8">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 sm:gap-2">
           {prompts.map((prompt, i) => (
             <button
               key={i}
               onClick={() => onSendPrompt(prompt)}
-              className="text-left px-3 py-2 sm:py-2.5 rounded-lg border border-white/5 hover:border-[var(--accent)]/30 active:border-[var(--accent)]/30 bg-white/[0.02] hover:bg-[var(--accent)]/5 active:bg-[var(--accent)]/5 text-white/40 hover:text-[var(--accent)] active:text-[var(--accent)] text-xs font-mono transition-all leading-relaxed"
+              className="text-left px-3 py-2.5 rounded-lg border border-white/[0.05] hover:border-[var(--accent)]/25 bg-white/[0.02] hover:bg-[var(--accent)]/[0.04] text-white/35 hover:text-white/70 text-[11px] sm:text-xs font-mono transition-all leading-relaxed group"
             >
-              {prompt}
+              <span className="opacity-40 group-hover:opacity-70 mr-1">›</span> {prompt}
             </button>
           ))}
         </div>
@@ -119,24 +118,15 @@ export default function WelcomeScreen({ cartridgeId, cartridgeName, cartridgeIco
 
       {/* Tool badges */}
       {activeToolBadges.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 justify-center mb-6 max-w-md">
-          <span className="text-[9px] uppercase tracking-widest text-white/15 font-mono mr-1 self-center">Tools:</span>
+        <div className="flex flex-wrap gap-1 justify-center mb-5 max-w-md">
           {activeToolBadges.map((badge, i) => (
-            <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/[0.03] border border-white/5 text-white/25 text-[9px] font-mono">
+            <span key={i} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-white/[0.02] border border-white/[0.04] text-white/20 text-[8px] font-mono">
               {badge.icon}
               {badge.label}
             </span>
           ))}
         </div>
       )}
-
-      {/* Keyboard hints — hidden on touch devices */}
-      <div className="hidden sm:flex items-center gap-4 text-[9px] text-white/12 font-mono">
-        <span className="flex items-center gap-1"><Keyboard size={10} /> Enter = send</span>
-        <span>Shift+Enter = newline</span>
-        <span className="flex items-center gap-1"><Paperclip size={9} /> attach files</span>
-        <span className="flex items-center gap-1"><Command size={9} />K = commands</span>
-      </div>
     </div>
   );
 }

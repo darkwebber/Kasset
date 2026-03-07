@@ -24,10 +24,10 @@
   },
   "boot_message": "DevOps module loaded. Ready for infrastructure work.",
   "suggested_prompts": [
-    "Show my git log and current branch status",
-    "Write a Dockerfile for a Python FastAPI app",
-    "Help me set up a GitHub Actions CI pipeline",
-    "Debug why my Docker container keeps crashing"
+    "Analyze my git history and show commit frequency by author this month",
+    "Write a multi-stage Dockerfile that builds and serves this project",
+    "Create a GitHub Actions workflow that tests, builds, and deploys on push",
+    "My container exits with code 137 — diagnose and fix it"
   ],
   "stacking": {
     "stackable": true,
