@@ -129,6 +129,11 @@ export default function SnakeGame({ onClose, onUnlock }: SnakeGameProps) {
     const ctx = canvasRef.current?.getContext("2d");
     if (!ctx) return;
     const W = GRID * CELL;
+    // Ensure canvas dimensions match (in case CELL changed)
+    if (canvasRef.current && (canvasRef.current.width !== W || canvasRef.current.height !== W)) {
+      canvasRef.current.width = W;
+      canvasRef.current.height = W;
+    }
 
     // Background
     ctx.fillStyle = "#0a0a0a";
@@ -168,7 +173,7 @@ export default function SnakeGame({ onClose, onUnlock }: SnakeGameProps) {
     for (let y = 0; y < W; y += 4) {
       ctx.fillRect(0, y, W, 2);
     }
-  }, []);
+  }, [CELL]);
 
   // Game tick
   useEffect(() => {

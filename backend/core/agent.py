@@ -537,7 +537,12 @@ class Agent:
             result_context += failure_note
                 
             # Append interaction to history for next synthesis step
-            current_history.append({"role": "assistant", "content": text})
+            # Strip <tool_call> XML from text — model gets confused seeing its own XML in context
+            history_text = re.sub(r'<tool_call>[\s\S]*?</tool_call>', '', text, flags=re.IGNORECASE)
+            history_text = re.sub(r'<tool_call>[\s\S]*$', '', history_text, flags=re.IGNORECASE)
+            history_text = re.sub(r'<\|tool_call\|>[\s\S]*$', '', history_text)
+            history_text = history_text.strip()
+            current_history.append({"role": "assistant", "content": history_text or text.strip()})
             current_history.append({"role": "user", "content": result_context})
             
             if consecutive_failures >= 2:
