@@ -40,6 +40,11 @@ mlx-community/
 *.bin
 *.gguf
 
+# ─── Root-level npm artifacts (prevent module resolution hijack) ──
+node_modules/
+package.json
+package-lock.json
+
 # ─── Frontend Build ──────────────────────
 frontend/node_modules/
 frontend/.next/
