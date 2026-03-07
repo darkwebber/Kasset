@@ -50,6 +50,49 @@ try:
 except ImportError:
     pass
 
+# ML/DL libraries — pre-load if available
+try:
+    import sklearn
+    _SHARED_GLOBALS['sklearn'] = sklearn
+    from sklearn import model_selection, preprocessing, metrics, ensemble, linear_model, cluster, decomposition
+    _SHARED_GLOBALS['model_selection'] = model_selection
+    _SHARED_GLOBALS['preprocessing'] = preprocessing
+    _SHARED_GLOBALS['metrics'] = metrics
+except ImportError:
+    pass
+try:
+    import torch
+    _SHARED_GLOBALS['torch'] = torch
+except ImportError:
+    pass
+try:
+    import torchvision
+    _SHARED_GLOBALS['torchvision'] = torchvision
+except ImportError:
+    pass
+try:
+    import PIL
+    from PIL import Image as PILImage
+    _SHARED_GLOBALS['PIL'] = PIL
+    _SHARED_GLOBALS['PILImage'] = PILImage
+except ImportError:
+    pass
+try:
+    import json as _json
+    _SHARED_GLOBALS['json'] = _json
+except ImportError:
+    pass
+try:
+    import csv as _csv
+    _SHARED_GLOBALS['csv'] = _csv
+except ImportError:
+    pass
+try:
+    import re as _re
+    _SHARED_GLOBALS['re'] = _re
+except ImportError:
+    pass
+
 # ──────────────────────────────────────────
 # PRE-BUILT VISUALIZATION HELPERS
 # ──────────────────────────────────────────
@@ -220,6 +263,15 @@ def execute_python_sandbox(code: str) -> dict:
         if not output and not images:
             output = "Code executed successfully (no output)."
 
+    except ModuleNotFoundError as e:
+        missing = e.name or str(e)
+        output = (
+            f"MISSING_PACKAGE: {missing}\n"
+            f"The package '{missing}' is not installed. "
+            f"Ask the user if they'd like to install it. If they agree, "
+            f"run: execute_python with code: import subprocess; subprocess.check_call(['pip', 'install', '{missing}'])\n"
+            f"Then retry your original code."
+        )
     except Exception as e:
         output = output_capture.getvalue() + "\n" + traceback.format_exc()
     finally:

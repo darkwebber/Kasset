@@ -18,6 +18,7 @@ import { useChatStore } from "@/stores/chatStore";
 import { FolderOpen, X, Copy, Check, History, Plus, ChevronDown, ChevronRight, Wrench, Terminal, FileText, Clock, Play, Search, Calculator, Volume2, VolumeX, Square, RefreshCw, Pencil, Scissors, Trash2, CornerDownLeft, Paperclip, HelpCircle, Download, Command } from "lucide-react";
 import { soundSend, soundThinkStart, soundThinkEnd, soundToolStart, soundToolDone, soundDone, soundError, soundNewChat, soundTick, soundCartridgeEject, isMuted, setMuted } from "@/lib/sounds";
 import { getApiBase, isLocalClient } from "@/lib/api";
+import SnakeGame from "./SnakeGame";
 
 // ═══════════════════════════════════════════
 // TYPES — structured message segments
@@ -336,6 +337,9 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [showPalette, setShowPalette] = useState(false);
   const [showTutorial, setShowTutorial] = useState(false);
+  const [showSnake, setShowSnake] = useState(false);
+  const redDotClicks = useRef(0);
+  const redDotTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const thinkStartRef = useRef<number>(0);
@@ -591,14 +595,23 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
     return () => el.removeEventListener("scroll", onScroll);
   }, []);
 
-  // Auto-scroll — only when pinned to bottom
+  // Auto-scroll — only when pinned to bottom AND actively generating
+  useEffect(() => {
+    if (scrollRef.current && pinnedToBottom.current && isGenerating) {
+      requestAnimationFrame(() => {
+        if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      });
+    }
+  }, [streamSegments, isGenerating]);
+
+  // Scroll once when new messages arrive (user send / finalize)
   useEffect(() => {
     if (scrollRef.current && pinnedToBottom.current) {
       requestAnimationFrame(() => {
         if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
       });
     }
-  }, [messages, streamSegments]);
+  }, [messages.length]);
 
   // Pin to bottom when generation starts
   useEffect(() => {
@@ -802,12 +815,15 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
             } else if (data.type === "memory_update") {
               console.log("New memories learned:", data.data);
             } else if (data.type === "status") {
-              // Show backend status as a transient text segment
-              const last = segments[segments.length - 1];
-              if (!last || last.kind !== "text" || !(last as TextSegment).content.startsWith("⏳")) {
-                pushSegment({ kind: "text", content: `⏳ ${data.data}` });
-              } else {
-                updateLastSegment(() => ({ kind: "text", content: `⏳ ${data.data}` }));
+              // Only show status for non-trivial messages (skip generic "Generating...")
+              const statusText = String(data.data);
+              if (statusText !== "Generating..." && statusText.length > 0) {
+                const last = segments[segments.length - 1];
+                if (!last || last.kind !== "text" || !(last as TextSegment).content.startsWith("⏳")) {
+                  pushSegment({ kind: "text", content: `⏳ ${statusText}` });
+                } else {
+                  updateLastSegment(() => ({ kind: "text", content: `⏳ ${statusText}` }));
+                }
               }
             } else if (data.type === "think_token") {
               // Remove any ⏳ status placeholder
@@ -844,19 +860,28 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
                 } else {
                   pushSegment({ kind: "text", content: cleanText });
                 }
-              } else if (rawAccumulated.includes("<tool_call>")) {
+              } else if (rawAccumulated.includes("<tool_call>") || rawAccumulated.includes("<tool_call")) {
                 // Model is generating a tool call — show a preparing indicator
-                // so the UI doesn't look frozen while the code is being written
+                // Replace any short fragment text (< 30 chars like "this.") with the indicator
                 const last = segments[segments.length - 1];
-                if (!last || last.kind !== "text" || !(last as TextSegment).content.startsWith("⏳")) {
+                if (last && last.kind === "text" && (last as TextSegment).content.length < 30 && !(last as TextSegment).content.startsWith("⏳")) {
+                  updateLastSegment(() => ({ kind: "text", content: "⏳ Preparing tool call…" }));
+                } else if (!last || last.kind !== "text" || !(last as TextSegment).content.startsWith("⏳")) {
                   pushSegment({ kind: "text", content: "⏳ Preparing tool call…" });
                 }
               }
             } else if (data.type === "tool_start") {
-              // Remove "⏳ Preparing..." placeholder if present
-              const lastIdx = segments.length - 1;
-              if (lastIdx >= 0 && segments[lastIdx].kind === "text" && (segments[lastIdx] as TextSegment).content.startsWith("⏳")) {
-                segments = segments.slice(0, -1);
+              // Remove transient segments: ⏳ placeholders or short text fragments (< 30 chars like "this.")
+              while (segments.length > 0) {
+                const last = segments[segments.length - 1];
+                if (last.kind === "text") {
+                  const txt = (last as TextSegment).content;
+                  if (txt.startsWith("⏳") || txt.length < 30) {
+                    segments = segments.slice(0, -1);
+                    continue;
+                  }
+                }
+                break;
               }
               if (segments.length > 0 && segments[segments.length - 1].kind === "thinking") {
                 const duration = Date.now() - thinkStartRef.current;
@@ -1069,10 +1094,30 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
         <Tutorial onClose={() => setShowTutorial(false)} />
       )}
 
+      {showSnake && (
+        <SnakeGame
+          onClose={() => setShowSnake(false)}
+          onUnlock={() => {
+            if (typeof window !== "undefined") localStorage.setItem("qwen-studio-nsfw-unlocked", "true");
+          }}
+        />
+      )}
+
       {/* Hardware Accents — LEDs + context meter */}
       <div className="absolute top-2 sm:top-4 left-3 sm:left-6 flex items-center gap-2 sm:gap-3">
         <div className="flex gap-1.5 sm:gap-2">
-          <div className="w-2.5 h-2.5 sm:w-3 sm:h-3 rounded-full bg-red-500 opacity-80" />
+          <button
+            className="w-2.5 h-2.5 sm:w-3 sm:h-3 rounded-full bg-red-500 opacity-80 cursor-default"
+            onClick={() => {
+              redDotClicks.current++;
+              if (redDotTimer.current) clearTimeout(redDotTimer.current);
+              redDotTimer.current = setTimeout(() => { redDotClicks.current = 0; }, 1500);
+              if (redDotClicks.current >= 5) {
+                redDotClicks.current = 0;
+                setShowSnake(true);
+              }
+            }}
+          />
           <div className={`w-2.5 h-2.5 sm:w-3 sm:h-3 rounded-full ${isGenerating ? "bg-[var(--accent)] animate-pulse crt-glow" : "bg-white/20"}`} />
         </div>
         {contextInfo && (
