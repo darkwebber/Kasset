@@ -43,7 +43,8 @@ def validate_image_file(image_path: str) -> Tuple[bool, str]:
             Path.home() / "Documents",
             Path.home() / "Downloads",
             Path.home() / "Pictures",
-            Path(tempfile.gettempdir()).resolve(),  # Gradio uploads (macOS: /private/var/folders/...)
+            Path.home() / ".qwen-studio" / "uploads",
+            Path(tempfile.gettempdir()).resolve(),
             Path("/tmp"),
             Path("/var/tmp"),
         ]

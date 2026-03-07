@@ -42,7 +42,8 @@ interface ChatState {
   updateMemory: (memoryId: string, content: string) => Promise<void>;
 }
 
-const API = "http://127.0.0.1:7861";
+import { getApiBase } from "@/lib/api";
+const API = getApiBase();
 
 export const useChatStore = create<ChatState>((set, get) => ({
   chatList: [],

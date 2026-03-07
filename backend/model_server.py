@@ -73,7 +73,9 @@ class ModelClient:
                     "{%- endif -%}"
                 "{%- endif -%}"
             )
+            self._original_template = None
             if hasattr(self.processor, "tokenizer"):
+                self._original_template = getattr(self.processor.tokenizer, "chat_template", None)
                 self.processor.tokenizer.chat_template = _SIMPLE_TEMPLATE
             
             logger.info(f"✅ Model loaded successfully in {time.time() - t0:.1f}s")
@@ -115,27 +117,54 @@ class ModelClient:
             logger.error(f"Image resize failed: {e}")
             return image_path
 
-    def _build_prompt(self, messages: List[Dict], enable_thinking: bool = True) -> str:
+    def _build_prompt(self, messages: List[Dict], enable_thinking: bool = True, has_image: bool = False) -> str:
         """Build the appropriate prompt using the processor's chat template."""
         clean_msgs = []
-        for m in messages:
+        for i, m in enumerate(messages):
             content = m["content"]
             if isinstance(content, list):
                 text_parts = [p.get("text", "") for p in content if p.get("type") == "text"]
                 content = " ".join(text_parts).strip()
+            
+            # Inject <image> tag for mlx_vlm if an image is provided
+            if has_image and m["role"] == "user" and i == len(messages) - 1:
+                content = f"<image>\n{content}"
+                
             if content:
                 clean_msgs.append({"role": m["role"], "content": str(content)})
 
         if enable_thinking and clean_msgs and clean_msgs[0]["role"] == "system":
             clean_msgs[0]["content"] += "\nRespond with your thought process inside <think>...</think> tags before providing the final answer."
 
-        return apply_chat_template(
-            self.processor,
-            self.config,
-            clean_msgs, 
-            add_generation_prompt=True,
-            enable_thinking=enable_thinking
-        )
+        # For vision inference, restore the original template which properly handles
+        # <image> / vision tokens — our simple override strips that handling.
+        # IMPORTANT: Do NOT pass enable_thinking to VLM templates — they don't support it
+        # and it causes image token mismatch errors.
+        restore_template = None
+        if has_image and self._original_template and hasattr(self.processor, "tokenizer"):
+            restore_template = self.processor.tokenizer.chat_template
+            self.processor.tokenizer.chat_template = self._original_template
+
+        try:
+            if has_image:
+                # VLM templates: no enable_thinking kwarg
+                return apply_chat_template(
+                    self.processor,
+                    self.config,
+                    clean_msgs,
+                    add_generation_prompt=True,
+                )
+            else:
+                return apply_chat_template(
+                    self.processor,
+                    self.config,
+                    clean_msgs, 
+                    add_generation_prompt=True,
+                    enable_thinking=enable_thinking
+                )
+        finally:
+            if restore_template is not None:
+                self.processor.tokenizer.chat_template = restore_template
 
     def generate(
         self,
@@ -149,7 +178,7 @@ class ModelClient:
             raise RuntimeError("Model is not loaded")
             
         has_image = bool(image_filepath and str(image_filepath).strip())
-        prompt = self._build_prompt(messages, thinking)
+        prompt = self._build_prompt(messages, thinking, has_image)
         
         temp = 1.0 if thinking else 0.7
         top_p = 0.95 if thinking else 0.8
@@ -186,7 +215,7 @@ class ModelClient:
             raise RuntimeError("Model is not loaded")
             
         has_image = bool(image and str(image).strip())
-        prompt = self._build_prompt(messages, thinking)
+        prompt = self._build_prompt(messages, thinking, has_image)
         
         temp = 1.0 if thinking else 0.7
         top_p = 0.95 if thinking else 0.8

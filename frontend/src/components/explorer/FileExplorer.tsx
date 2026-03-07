@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { Folder, File, ArrowUpLeft, X } from "lucide-react";
+import { getApiBase } from "@/lib/api";
 
 interface FSItem {
   name: string;
@@ -25,7 +26,7 @@ export default function FileExplorer({
       setIsLoading(true);
       setError(null);
       try {
-        const res = await fetch("http://127.0.0.1:7861/api/fs/list", {
+        const res = await fetch(`${getApiBase()}/api/fs/list`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ path: currentPath }),
@@ -76,6 +77,12 @@ export default function FileExplorer({
             onKeyDown={(e) => e.key === 'Enter' && setCurrentPath(e.currentTarget.value)}
             className="flex-1 bg-transparent border-none outline-none text-white text-sm"
           />
+          <button 
+            onClick={() => onSelect(currentPath)}
+            className="px-3 py-1 bg-[var(--accent)] text-black rounded text-xs font-bold hover:bg-white transition-colors whitespace-nowrap"
+          >
+            Attach Dir
+          </button>
         </div>
 
         {/* File List */}
@@ -101,8 +108,11 @@ export default function FileExplorer({
                   <tr 
                     key={idx}
                     onClick={() => {
-                      if (item.type === "dir") setCurrentPath(item.path);
-                      else onSelect(item.path);
+                      if (item.type === "dir") {
+                        setCurrentPath(item.path);
+                      } else {
+                        onSelect(item.path);
+                      }
                     }}
                     className="hover:bg-[var(--accent)]/10 cursor-pointer border-b border-white/5 transition-colors group"
                   >

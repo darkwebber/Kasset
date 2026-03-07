@@ -1,136 +1,296 @@
-# Qwen Studio
+# Cartridge Console
 
-**A local AI assistant for Mac with vision, tool calling, and streaming — powered by Qwen 3.5 on Apple Silicon.**
+**A local AI assistant for Mac with swappable agent cartridges, tool calling, and streaming — powered by Qwen 3.5 on Apple Silicon.**
 
-Run a fully private, multimodal AI chat on your Mac. No cloud, no API keys, no data leaves your machine.
+Run a fully private, multimodal AI on your Mac. No cloud, no API keys, no data leaves your machine.
 
 ## Features
 
+- **Cartridge System** — swap between specialized agents: General Assistant, Code Pilot, Tutor, Data Analyst, Terminal, Writer, DevOps, Web Pilot
+- **Cartridge Forge** — create your own cartridges and custom tools through an in-app GUI studio
+- **Tool Plugin System** — extend the agent with custom Python tools (plotly 3D charts, audio processing, web artifacts, anything)
 - **Vision** — upload images, solve problems from screenshots, describe photos
-- **Streaming** — tokens appear as they generate (real-time thinking display)
-- **Tool Calling** — manage files, check system info, search, run safe shell commands via natural language
-- **Chain-of-Thought** — toggle reasoning mode for complex problems
-- **LaTeX & Code** — renders math and syntax-highlighted code blocks
-- **Secure** — all tools are read-only with whitelisted commands, path validation, and timeouts
+- **Streaming** — real-time token streaming with thinking/reasoning display
+- **Tool Calling** — file access, shell commands, Python sandbox, web search, C++ execution, and user plugins
+- **HTML Artifacts** — custom tools can return interactive HTML rendered inline (plotly, web apps, visualizations)
+- **Context Management** — session summaries, per-cartridge memory, global user profile
+- **Inline Attachments** — attach files/directories as inline chips in your messages
+- **Visualization** — matplotlib plots auto-captured, built-in `qchart_*` helpers, Mermaid diagram support
+- **Persistent Memory** — learns your preferences across conversations
+- **LaTeX & Code** — renders math equations and syntax-highlighted code blocks
 
 ## Quick Start
 
-> **Requirements:** macOS with Apple Silicon (M1/M2/M3/M4), Python 3.10+, ~6GB RAM free
+> **Requirements:** macOS with Apple Silicon (M1+), Python 3.10+, Node.js 18+, ~6GB RAM free
 
 ```bash
 git clone https://github.com/darkwebber/Local-Studio.git
 cd Local-Studio
+chmod +x start.sh
 ./start.sh
 ```
 
 That's it. `start.sh` handles everything:
-1. Creates a virtual environment (first run only)
-2. Installs all dependencies
-3. Starts the model server (port 7861)
-4. Waits for the model to load
-5. Starts the chat UI (port 7860)
-6. Opens at **http://localhost:7860**
+1. Checks Python 3.10+, Node.js 18+, and port availability
+2. Creates a Python virtual environment (first run only)
+3. Installs all backend and frontend dependencies
+4. Creates user data directories at `~/.qwen-studio/`
+5. Starts the backend API server (port 7861)
+6. Starts the Next.js frontend (port 3000)
 
-Press **Ctrl+C** to stop both servers cleanly.
+Open **http://localhost:3000** and press **Ctrl+C** to stop.
 
 > **First run?** The model (~5GB) downloads automatically from Hugging Face. Subsequent starts are much faster.
 
+## Project Structure
+
+```
+qwen-studio/
+├── backend/                    # Python FastAPI backend
+│   ├── api.py                  # REST + SSE + Forge Studio API endpoints
+│   ├── model_server.py         # MLX-VLM model wrapper
+│   ├── utils.py                # Image validation
+│   └── core/
+│       ├── agent.py            # Agent orchestration & tool loop
+│       ├── cartridge_loader.py # Cartridge loading, stacking & user CRUD
+│       ├── context_manager.py  # Multi-layer context management
+│       ├── persistence.py      # Chat storage & user memory
+│       ├── plugin_loader.py    # Custom tool plugin discovery & execution
+│       ├── sandbox.py          # Python execution sandbox
+│       └── tool_registry.py    # Built-in tools + plugin dispatch
+├── frontend/                   # Next.js React frontend
+│   └── src/
+│       ├── components/
+│       │   ├── Console.tsx         # Main chat UI
+│       │   ├── CartridgeCarousel.tsx # Cartridge selector
+│       │   ├── ChatDrawer.tsx      # Chat history
+│       │   ├── Tutorial.tsx        # Onboarding guide
+│       │   └── studio/
+│       │       └── ForgeStudio.tsx  # Cartridge & tool creator GUI
+│       └── stores/             # Zustand state (cartridges, chats, settings)
+├── cartridges/
+│   ├── builtins/               # Built-in cartridge definitions (JSON)
+│   └── schema.json             # Cartridge schema specification
+├── start.sh                    # One-command launcher
+└── README.md
+```
+
+## User Data
+
+All user-generated data is stored at `~/.qwen-studio/` (never in the repo):
+
+```
+~/.qwen-studio/
+├── cartridges/                 # User-created cartridges (JSON)
+├── tools/                      # User-created tool plugins
+│   └── <tool-id>/
+│       ├── manifest.json       # Tool metadata & parameter schema
+│       └── handler.py          # Python implementation
+├── chats/                      # Saved conversations
+├── context/
+│   ├── global_profile.json     # App-wide user understanding
+│   └── cartridges/             # Per-cartridge context
+├── cache/                      # Summary cache
+├── uploads/                    # Pasted/uploaded files
+├── user_memory.json            # Learned user preferences
+└── settings.json               # User toggles
+```
+
+## Cartridge Forge
+
+Open **Cartridge Forge** from the cartridge carousel or the wrench icon in the Console top bar.
+
+### Creating a Cartridge
+
+1. Go to **Cartridges** tab → **New Cartridge**
+2. Fill in name, description, system prompt, and select tools
+3. Customize theme colors and boot animation
+4. Click **Save** — your cartridge appears in the carousel immediately
+
+### Creating a Custom Tool
+
+1. Go to **Tools** tab → **New Tool**
+2. Define the tool name, description (what the model sees), and parameters
+3. Choose output type: `text`, `html`, `image`, or `mixed`
+4. Write the handler function in Python
+5. Click **Test** to verify, then **Save**
+
+The tool is instantly available to assign to any cartridge.
+
+## Tool Plugin Standard
+
+Each custom tool lives in `~/.qwen-studio/tools/<tool-id>/` with two files:
+
+### `manifest.json`
+
+```json
+{
+  "id": "plotly_3d",
+  "name": "Plotly 3D Chart",
+  "version": "1.0.0",
+  "description": "Create interactive 3D visualizations using Plotly",
+  "author": "user",
+  "icon": "cube",
+  "color": "#636efa",
+  "parameters": {
+    "code": {
+      "type": "string",
+      "description": "Python code using plotly to create 3D visualizations",
+      "required": true
+    }
+  },
+  "output_type": "html",
+  "handler": "handler.py",
+  "entry_point": "execute",
+  "sandbox": {
+    "timeout": 30,
+    "imports": ["plotly"],
+    "pre_run": "import plotly.graph_objects as go"
+  }
+}
+```
+
+### `handler.py`
+
+```python
+def execute(code: str) -> dict:
+    """Entry point called by the agent. Return types:
+        str  -> displayed as text
+        dict -> { "output": str, "images": [base64], "html": str }
+    """
+    import plotly.graph_objects as go
+    # ... execute user code, capture figure ...
+    return {
+        "output": "3D chart created",
+        "html": fig.to_html(include_plotlyjs=True)
+    }
+```
+
+### Output Types
+
+| Type | Return | Frontend Rendering |
+|------|--------|--------------------|
+| `text` | `str` | Plain text in tool result |
+| `html` | `dict` with `html` key | Sandboxed iframe artifact |
+| `image` | `dict` with `images` key (base64) | Inline images |
+| `mixed` | `dict` with any combination | All applicable renderers |
+
+### Example Use Cases
+
+- **3D Visualization Bot** — plotly tool returning interactive HTML
+- **Music Bot** — waveform visualization tool with audio playback HTML
+- **Web Dev Bot** — tool that renders HTML/CSS/JS artifacts inline
+- **API Integration** — tool that calls external APIs and returns structured data
+- **File Converter** — tool that transforms file formats
+
+None of these require changing the plugin standard — just a new `manifest.json` + `handler.py`.
+
+## Built-in Cartridges
+
+| Cartridge | Icon | Purpose |
+|-----------|------|---------|
+| General Assistant | 🤖 | Default all-purpose helper |
+| Code Pilot | 🚀 | Pair programming, debugging, code review |
+| Tutor | 🎓 | Teaching with examples and analogies |
+| Data Analyst | 📊 | Data analysis, statistics, visualization |
+| Terminal | 💻 | Natural language shell interface |
+| Writer | ✍️ | Creative and technical writing |
+| DevOps | 🔧 | Git, Docker, CI/CD, infrastructure |
+| Web Pilot | 🌐 | Web research and information synthesis |
+
 ## Built-in Tools
 
-The assistant can use these tools when you ask it to interact with your system:
+| Tool | Description |
+|------|-------------|
+| `get_current_time` | Current date and time |
+| `list_directory` | Browse files with sizes |
+| `get_system_info` | OS, hardware, disk, uptime |
+| `search_files` | Glob-based recursive file search |
+| `read_file` | Read text files (up to 50KB) |
+| `run_command` | Shell commands with consent flow for write operations |
+| `calculate` | Safe math evaluator (sqrt, trig, factorial, etc.) |
+| `execute_python` | Stateful Python sandbox with pandas, numpy, matplotlib, scipy, seaborn |
+| `execute_cpp` | Compile and run C++ code (C++17) |
+| `search_web` | DuckDuckGo web search |
+| `read_url` | Fetch and extract text from web pages |
 
-| Tool | What it does | Example prompt |
-|------|-------------|----------------|
-| `get_current_time` | Current date & time | *"What time is it?"* |
-| `list_directory` | Browse files with sizes | *"Show me what's in my Downloads folder"* |
-| `get_system_info` | OS, disk, uptime | *"How much disk space do I have?"* |
-| `search_files` | Find files by pattern | *"Find all .py files in my projects"* |
-| `read_file` | Read text files | *"Show me the contents of ~/.zshrc"* |
-| `run_command` | Shell commands with pipes | *"What's the largest folder in my home dir?"* |
-| `calculate` | Safe math evaluator | *"What's sqrt(144) + 3^4?"* |
+## Context Management
 
-The model **automatically chains** multiple tool calls to complete complex tasks — no need to say "continue".
+Three layers of context, each toggleable in the **Context** tab:
 
-### Security Model
-
-- **Command whitelist** — only read-only commands allowed (`ls`, `ps`, `df`, `du`, `grep`, `sort`, `cat`, `curl`, etc.)
-- **Safe pipes** — pipe chains like `du -h | sort -rh | head` are supported (each stage validated)
-- **No destructive ops** — `rm`, `sudo`, `kill`, `shutdown`, `mv`, `cp` are blocked
-- **No shell injection** — redirects (`>`), chaining (`;`, `&&`), backticks, `$()` are blocked
-- **Path sandboxing** — file access restricted to home directory and temp folders
-- **Timeouts** — all commands have a 30-second timeout
-- **Output limits** — command output capped at 5000 characters
+- **Session Summary** — when conversations get long, older messages are intelligently summarized to free context space
+- **Cartridge Context** — remembers topics and patterns from previous chats with the same cartridge
+- **Global Profile** — app-wide understanding of you across all cartridges (usage patterns, languages, preferences)
 
 ## Architecture
 
 ```
-┌─────────────────────┐       ┌─────────────────────────┐
-│   app.py (:7860)    │──────▶│  model_server.py (:7861)│
-│   Gradio Chat UI    │◀──────│  MLX-VLM Inference      │
-│   Tool execution    │stream │  Vision + Text           │
-│   History mgmt      │       │  Streaming generate     │
-└─────────────────────┘       └─────────────────────────┘
+┌──────────────────────────┐        ┌──────────────────────────┐
+│  Next.js Frontend (:3000) │───────▶│  FastAPI Backend (:7861)  │
+│  React + Zustand          │◀──SSE──│  Agent + Tool Loop        │
+│  CartridgeCarousel        │        │  MLX-VLM Inference        │
+│  Console (chat UI)        │        │  Built-in Tools           │
+│  ForgeStudio (creator)    │        │  Plugin Loader            │
+│  ChatDrawer (history)     │        │  Python Sandbox           │
+└──────────────────────────┘        │  Context Manager          │
+                                    └──────────────────────────┘
+                                               │
+                                      ~/.qwen-studio/
+                                      ├── cartridges/   (user)
+                                      ├── tools/        (plugins)
+                                      ├── chats/
+                                      └── memory, context, settings
 ```
 
-- **`model_server.py`** — loads the Qwen 3.5 9B model, exposes `/chat` and `/chat_stream` API endpoints
-- **`app.py`** — chat UI, tool execution, streaming display, image handling
-- **`utils.py`** — shared image validation and security checks
+## Security Model
 
-## Configuration
+- **Blocklist + Consent** — destructive commands (`rm`, `sudo`, `kill`) are blocked; write operations (`mkdir`, `cp`, `git commit`, `pip install`) require user approval via an in-chat consent UI
+- **Shell chaining** — `&&`, `;`, `||` supported; each sub-command validated individually
+- **Pipes** — `cmd1 | cmd2 | cmd3` supported; each stage validated
+- **Path sandboxing** — file access restricted to home directory and temp folders
+- **Timeouts** — all commands have a 30-second timeout
+- **Output limits** — command output capped at 8000 characters
+- **Plugin isolation** — custom tool handlers run with stdout capture; errors are caught and reported
 
-Set these environment variables before starting (all optional):
+## Forge Studio API
 
-```bash
-export MODEL_PATH="mlx-community/Qwen3.5-9B-MLX-4bit"  # default model
-```
-
-### Tuning
-
-| Setting | Default | Notes |
-|---------|---------|-------|
-| Max tokens | 32,768 | Model's context window |
-| Default tokens | 4,096 | Per-response limit |
-| Vision cap | 4,096 tokens | Prevents long vision inference |
-| Max image | 10MB, 768px | Auto-resized for speed |
-| History | 50 messages | Vision tasks use last 6 only |
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/forge/tools` | GET | List all tools (builtin + user) |
+| `/api/forge/tools/{id}` | GET | Get tool manifest + handler code |
+| `/api/forge/tools` | POST | Create/update a tool plugin |
+| `/api/forge/tools/{id}` | DELETE | Delete a user tool |
+| `/api/forge/tools/test` | POST | Test-execute a tool |
+| `/api/forge/cartridges/{id}` | GET | Get cartridge JSON for editing |
+| `/api/forge/cartridges` | POST | Create/update a user cartridge |
+| `/api/forge/cartridges/{id}` | DELETE | Delete a user cartridge |
+| `/api/forge/all-tool-ids` | GET | All tool IDs for cartridge editor |
+| `/api/forge/tool-meta` | GET | Frontend rendering metadata |
 
 ## Troubleshooting
 
-**Model won't load?**
+**`start.sh` says Python not found?**
 ```bash
-# Ensure you have enough RAM (~6GB) and the right Python
-python3 --version  # needs 3.10+
-pip install --upgrade mlx-vlm gradio gradio_client
+brew install python@3.12
+```
+
+**`start.sh` says Node.js not found?**
+```bash
+brew install node
 ```
 
 **Port in use?**
 ```bash
-lsof -i :7860 -i :7861  # find what's using the ports
-kill -9 <PID>            # free them
+lsof -i :7861 -i :3000
+kill -9 <PID>
 ```
 
-**Slow vision inference?**
-- Disable thinking (CoT) for simple image tasks
-- Images are auto-resized to 768px max — larger originals are fine
-
-**Model server disconnected?**
-- The UI auto-reconnects. Check that `model_server.py` is still running in Terminal 1.
-
-## Adding Custom Tools
-
-1. Add a function to `app.py` (in the tools section):
-```python
-def my_tool(arg1: str) -> str:
-    """Description of what it does."""
-    return "result"
+**Backend crashes on start?**
+```bash
+# Check with verbose logging:
+source venv/bin/activate
+python -m uvicorn backend.api:app --log-level debug
 ```
-
-2. Register it:
-```python
-AVAILABLE_TOOLS["my_tool"] = my_tool
-```
-
-3. Add it to the system prompt in `_build_system_prompt()`.
 
 ## License
 

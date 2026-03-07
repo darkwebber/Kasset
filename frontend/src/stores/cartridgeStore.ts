@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { getApiBase } from "@/lib/api";
 
 export interface Theme {
   accent_color: string;
@@ -17,6 +18,8 @@ export interface CartridgeConfig {
   version: string;
   tags: string[];
   role: string;
+  source: string;
+  tools: string[];
   theme: {
     accent_color: string;
     glow_color: string;
@@ -29,6 +32,7 @@ export interface LoadedConfig {
   theme: Theme;
   boot_messages: string[];
   active_cartridge_ids: string[];
+  suggested_prompts: string[];
   suggested_tokens: number;
   suggested_thinking: boolean;
 }
@@ -36,22 +40,25 @@ export interface LoadedConfig {
 interface CartridgeState {
   availableCartridges: CartridgeConfig[];
   activeConfig: LoadedConfig | null;
+  lastActiveCartridgeId: string | null;
   isLoading: boolean;
   error: string | null;
   
   loadAvailableCartridges: () => Promise<void>;
   loadActiveStack: (cartridgeIds: string[]) => Promise<void>;
+  ejectCartridge: () => void;
 }
 
-export const useCartridgeStore = create<CartridgeState>((set) => ({
+export const useCartridgeStore = create<CartridgeState>((set, get) => ({
   availableCartridges: [],
   activeConfig: null,
+  lastActiveCartridgeId: typeof window !== "undefined" ? localStorage.getItem("qwen-studio-last-cartridge") : null,
   isLoading: false,
   error: null,
 
   loadAvailableCartridges: async () => {
     try {
-      const res = await fetch("http://127.0.0.1:7861/api/cartridges");
+      const res = await fetch(`${getApiBase()}/api/cartridges`);
       const data = await res.json();
       set({ availableCartridges: data.cartridges });
     } catch (error: any) {
@@ -62,7 +69,7 @@ export const useCartridgeStore = create<CartridgeState>((set) => ({
   loadActiveStack: async (cartridgeIds: string[]) => {
     set({ isLoading: true, error: null });
     try {
-      const res = await fetch("http://127.0.0.1:7861/api/cartridges/load", {
+      const res = await fetch(`${getApiBase()}/api/cartridges/load`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ cartridge_ids: cartridgeIds }),
@@ -71,9 +78,23 @@ export const useCartridgeStore = create<CartridgeState>((set) => ({
       if (!res.ok) throw new Error("Failed to load cartridge stack");
       
       const data = await res.json();
-      set({ activeConfig: data.config, isLoading: false });
+      if (typeof window !== "undefined") localStorage.setItem("qwen-studio-last-cartridge", cartridgeIds[0]);
+      set({ activeConfig: data.config, lastActiveCartridgeId: cartridgeIds[0], isLoading: false });
     } catch (error: any) {
       set({ error: error.message, isLoading: false });
+    }
+  },
+
+  ejectCartridge: () => {
+    const current = get().activeConfig;
+    set({
+      activeConfig: null,
+      lastActiveCartridgeId: current?.active_cartridge_ids?.[0] ?? get().lastActiveCartridgeId,
+    });
+    // Keep localStorage updated even on eject
+    const lastId = current?.active_cartridge_ids?.[0] ?? get().lastActiveCartridgeId;
+    if (lastId && typeof window !== "undefined") {
+      localStorage.setItem("qwen-studio-last-cartridge", lastId);
     }
   },
 }));

@@ -14,8 +14,16 @@ const firaCode = Fira_Code({
 });
 
 export const metadata: Metadata = {
-  title: "Cartridge Console | Qwen Studio",
-  description: "A retro-futuristic AI interface powered by Qwen 3.5.",
+  title: "Kasset",
+  description: "Local AI console — load a kasset, start chatting.",
+};
+
+export const viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  viewportFit: "cover" as const,
 };
 
 export default function RootLayout({
@@ -25,7 +33,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className="dark">
-      <body className={`${vt323.variable} ${firaCode.variable} font-sans`}>
+      <body className={`${vt323.variable} ${firaCode.variable} font-sans touch-manipulation`}>
         {children}
       </body>
     </html>

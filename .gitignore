@@ -1,32 +1,54 @@
-# Python
+# ─── Python ──────────────────────────────
 __pycache__/
 *.py[cod]
+*.pyo
 *.egg-info/
 dist/
 build/
 *.egg
+*.whl
 
-# Virtual environment
+# ─── Virtual Environment ─────────────────
 venv/
 .venv/
 env/
 
-# IDE
+# ─── IDE / Editor ────────────────────────
 .vscode/
 .idea/
 .windsurf/
 *.swp
 *.swo
+*~
+
+# ─── OS Files ────────────────────────────
 .DS_Store
+Thumbs.db
+Desktop.ini
 
-# Environment
+# ─── Environment / Secrets ───────────────
 .env
+.env.*
 
-# Logs
+# ─── Logs ────────────────────────────────
 *.log
+logs/
 
-# Model files (large)
+# ─── Model Files (large) ─────────────────
 mlx-community/
 *.safetensors
 *.bin
 *.gguf
+
+# ─── Frontend Build ──────────────────────
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/*.tsbuildinfo
+frontend/next-env.d.ts
+
+# ─── User-Generated Data ─────────────────
+# All user data lives in ~/.qwen-studio/ (outside repo).
+# These patterns catch anything accidentally created in-repo:
+*.sqlite
+*.db

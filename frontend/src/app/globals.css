@@ -164,3 +164,56 @@
   opacity: 0.4;
   border-radius: 3px;
 }
+
+/* ─── Mobile & Touch ─── */
+
+/* Safe area insets for notched devices */
+@supports (padding: env(safe-area-inset-bottom)) {
+  .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+  .safe-top { padding-top: env(safe-area-inset-top); }
+}
+
+/* Touch-friendly tap targets — minimum 44px */
+@media (pointer: coarse) {
+  .touch-target {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  
+  /* Wider scrollbar thumb for touch */
+  .crt-scroll::-webkit-scrollbar { width: 6px; }
+  .crt-scroll::-webkit-scrollbar-thumb { border-radius: 3px; }
+}
+
+/* Active state for touch — replaces hover on mobile */
+@media (hover: none) {
+  .btn-touch:active {
+    opacity: 0.7;
+    transform: scale(0.96);
+    transition: transform 0.08s ease, opacity 0.08s ease;
+  }
+}
+
+/* Prevent text selection on UI elements but allow in chat */
+.no-select {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* Smooth momentum scrolling for iOS */
+.momentum-scroll {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+/* Hide scrollbar on mobile for cleaner look */
+@media (max-width: 640px) {
+  .crt-scroll::-webkit-scrollbar { width: 3px; }
+  .crt-scroll::-webkit-scrollbar-track { background: transparent; border: none; }
+}
+
+/* Keyboard shortcut badges — hide on touch devices */
+@media (pointer: coarse) {
+  .kbd-hint { display: none; }
+}

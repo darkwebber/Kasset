@@ -51,17 +51,9 @@
       "type": "array",
       "items": {
         "type": "string",
-        "enum": [
-          "get_current_time",
-          "list_directory",
-          "get_system_info",
-          "search_files",
-          "read_file",
-          "run_command",
-          "calculate"
-        ]
+        "pattern": "^[a-z0-9_]+$"
       },
-      "description": "Which tools this cartridge enables"
+      "description": "Tool IDs this cartridge enables (built-in or user plugin IDs)"
     },
     "theme": {
       "type": "object",
@@ -157,6 +149,12 @@
       "type": "boolean",
       "default": false,
       "description": "Whether to persist state across sessions"
+    },
+    "suggested_prompts": {
+      "type": "array",
+      "items": { "type": "string" },
+      "maxItems": 6,
+      "description": "Example prompts shown on the welcome screen when this cartridge loads"
     },
     "suggested_tokens": {
       "type": "integer",

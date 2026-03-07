@@ -1,7 +1,6 @@
 "use client";
 
-import { useCartridgeStore } from "@/stores/cartridgeStore";
-import { useState, useRef, useEffect, useMemo } from "react";
+import React, { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -12,9 +11,13 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import FileExplorer from "./explorer/FileExplorer";
 import ChatDrawer from "./ChatDrawer";
+import CommandPalette from "./CommandPalette";
+import Tutorial from "./Tutorial";
+import { useCartridgeStore } from "@/stores/cartridgeStore";
 import { useChatStore } from "@/stores/chatStore";
-import { FolderOpen, X, Copy, Check, History, Plus, ChevronDown, ChevronRight, Wrench, Terminal, FileText, Clock, Play, Search, Calculator, Volume2, VolumeX, Square, RefreshCw, Pencil, Scissors, Trash2, CornerDownLeft } from "lucide-react";
+import { FolderOpen, X, Copy, Check, History, Plus, ChevronDown, ChevronRight, Wrench, Terminal, FileText, Clock, Play, Search, Calculator, Volume2, VolumeX, Square, RefreshCw, Pencil, Scissors, Trash2, CornerDownLeft, Paperclip, HelpCircle, Download, Command } from "lucide-react";
 import { soundSend, soundThinkStart, soundThinkEnd, soundToolStart, soundToolDone, soundDone, soundError, soundNewChat, soundTick, soundCartridgeEject, isMuted, setMuted } from "@/lib/sounds";
+import { getApiBase, isLocalClient } from "@/lib/api";
 
 // ═══════════════════════════════════════════
 // TYPES — structured message segments
@@ -69,6 +72,34 @@ function getToolMeta(name: string) {
   return TOOL_META[name] || { icon: <Wrench size={13} />, label: name, color: "#94a3b8" };
 }
 
+const TOOL_DISPLAY: Record<string, string> = {
+  run_command: "Shell",
+  execute_python: "Python",
+  execute_cpp: "C++",
+  read_file: "File Reader",
+  search_files: "Search",
+  list_directory: "Browse",
+  calculate: "Math",
+  get_current_time: "Clock",
+  get_system_info: "System",
+  search_web: "Web Search",
+  read_url: "URL Reader",
+};
+
+const TOOL_EXAMPLES: Record<string, string> = {
+  run_command: "Show my disk usage and top processes",
+  execute_python: "Plot a sine wave using matplotlib",
+  read_file: "Read my ~/.zshrc and explain what it does",
+  search_files: "Find all Python files in my home directory",
+  list_directory: "What's in my Downloads folder?",
+  calculate: "What's the square root of 2048?",
+  get_system_info: "What are my system specs?",
+  get_current_time: "What time is it right now?",
+  execute_cpp: "Write and run a C++ hello world program",
+  search_web: "Search for the latest AI news",
+  read_url: "Summarize the top story on Hacker News",
+};
+
 // ═══════════════════════════════════════════
 // SUB-COMPONENTS
 // ═══════════════════════════════════════════
@@ -86,7 +117,7 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-function ThinkingBlock({ segment, onToggle }: { segment: ThinkingSegment; onToggle: () => void }) {
+const ThinkingBlock = React.memo(function ThinkingBlock({ segment, onToggle }: { segment: ThinkingSegment; onToggle: () => void }) {
   const isStreaming = !segment.durationMs;
   const durationStr = segment.durationMs ? `${(segment.durationMs / 1000).toFixed(1)}s` : null;
 
@@ -119,9 +150,9 @@ function ThinkingBlock({ segment, onToggle }: { segment: ThinkingSegment; onTogg
       )}
     </div>
   );
-}
+});
 
-function ToolCallCard({ segment }: { segment: ToolCallSegment }) {
+const ToolCallCard = React.memo(function ToolCallCard({ segment }: { segment: ToolCallSegment }) {
   const [expanded, setExpanded] = useState(false);
   const meta = getToolMeta(segment.name);
   const isRunning = segment.status === "running";
@@ -189,6 +220,81 @@ function ToolCallCard({ segment }: { segment: ToolCallSegment }) {
       )}
     </div>
   );
+});
+
+function WelcomeScreen({ cartridgeName, cartridgeIcon, bootMessage, tools, suggestedPrompts, onSendPrompt }: {
+  cartridgeName: string;
+  cartridgeIcon: string;
+  bootMessage: string;
+  tools: string[];
+  suggestedPrompts: string[];
+  onSendPrompt: (prompt: string) => void;
+}) {
+  const examples = useMemo(() => {
+    // Prefer cartridge-defined prompts
+    if (suggestedPrompts.length > 0) return suggestedPrompts.slice(0, 4);
+    // Fallback to tool-based examples
+    const picks: string[] = [];
+    for (const toolId of tools) {
+      if (TOOL_EXAMPLES[toolId] && picks.length < 4) {
+        picks.push(TOOL_EXAMPLES[toolId]);
+      }
+    }
+    if (picks.length === 0) {
+      picks.push("Hello! What can you do?", "Tell me about yourself");
+    }
+    return picks;
+  }, [tools, suggestedPrompts]);
+
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center px-2 sm:px-6 py-4 sm:py-8 min-h-0">
+      <div className="text-4xl sm:text-5xl mb-3 drop-shadow-lg select-none">{cartridgeIcon}</div>
+      <div className="text-sm sm:text-base font-bold text-[var(--accent)] tracking-[0.15em] uppercase mb-1.5 text-glow select-none">
+        {cartridgeName}
+      </div>
+      <div className="text-[11px] sm:text-xs text-white/30 font-mono text-center max-w-xs mb-6 sm:mb-8">
+        {bootMessage}
+      </div>
+
+      {tools.length > 0 && (
+        <div className="mb-6 sm:mb-8 w-full max-w-md">
+          <div className="text-[8px] sm:text-[9px] text-white/15 font-mono uppercase tracking-[0.2em] text-center mb-2.5">Available Tools</div>
+          <div className="flex flex-wrap justify-center gap-1.5">
+            {tools.map(toolId => {
+              const meta = getToolMeta(toolId);
+              const display = TOOL_DISPLAY[toolId] || toolId.replace(/_/g, " ");
+              return (
+                <div key={toolId} className="flex items-center gap-1.5 px-2 sm:px-2.5 py-1 rounded-md bg-white/[0.03] border border-white/[0.06] text-[9px] sm:text-[10px] font-mono transition-colors hover:bg-white/[0.05]">
+                  <span style={{ color: `${meta.color}99` }}>{meta.icon}</span>
+                  <span className="text-white/25">{display}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <div className="w-full max-w-md space-y-1.5 sm:space-y-2">
+        <div className="text-[8px] sm:text-[9px] text-white/15 font-mono uppercase tracking-[0.2em] text-center mb-2">Try asking</div>
+        {examples.map((prompt, i) => (
+          <button
+            key={i}
+            onClick={() => onSendPrompt(prompt)}
+            className="w-full text-left px-3 sm:px-4 py-2 sm:py-2.5 rounded-lg bg-white/[0.02] border border-white/[0.06] hover:border-[var(--accent)]/20 hover:bg-[var(--accent)]/[0.03] text-[11px] sm:text-xs text-white/30 hover:text-white/50 font-mono transition-all group cursor-pointer active:scale-[0.99]"
+          >
+            <span className="text-[var(--accent)]/30 group-hover:text-[var(--accent)]/60 mr-2">→</span>
+            {prompt}
+          </button>
+        ))}
+      </div>
+
+      <div className="hidden sm:flex items-center gap-3 mt-6 sm:mt-8 text-[9px] text-white/10 font-mono">
+        <span className="flex items-center gap-1"><kbd className="px-1 py-0.5 rounded bg-white/5 border border-white/5 text-white/20">⌘K</kbd> all actions</span>
+        <span className="flex items-center gap-1"><kbd className="px-1 py-0.5 rounded bg-white/5 border border-white/5 text-white/20">⌘/</kbd> help</span>
+        <span className="flex items-center gap-1"><kbd className="px-1 py-0.5 rounded bg-white/5 border border-white/5 text-white/20">⌘N</kbd> new chat</span>
+      </div>
+    </div>
+  );
 }
 
 /** Strip raw tags from content for clean display */
@@ -207,16 +313,17 @@ function cleanContent(text: string): string {
 // MAIN CONSOLE COMPONENT
 // ═══════════════════════════════════════════
 
-export default function Console({ onChangeCartridge }: { onChangeCartridge: () => void }) {
-  const { activeConfig } = useCartridgeStore();
+export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCartridge: () => void; onOpenForge?: () => void }) {
+  const { activeConfig, ejectCartridge, availableCartridges } = useCartridgeStore();
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [showExplorer, setShowExplorer] = useState(false);
   const [showDrawer, setShowDrawer] = useState(false);
-  const [attachedFile, setAttachedFile] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<{path: string, name: string}[]>([]);
   const [contextInfo, setContextInfo] = useState<{message_count: number, estimated_tokens: number, max_tokens: number} | null>(null);
   const [chatId, setChatId] = useState<string | null>(null);
+  const chatIdRef = useRef<string | null>(null);
   // Streaming state — not part of messages until finalized
   const [streamSegments, setStreamSegments] = useState<Segment[]>([]);
   const [muted, setMutedState] = useState(false);
@@ -225,10 +332,21 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
   const [editingText, setEditingText] = useState("");
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+  const [showPalette, setShowPalette] = useState(false);
+  const [showTutorial, setShowTutorial] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const thinkStartRef = useRef<number>(0);
   const abortRef = useRef<AbortController | null>(null);
+  const pinnedToBottom = useRef(true);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileUploadRef = useRef<HTMLInputElement>(null);
+  const mirrorRef = useRef<HTMLDivElement>(null);
+  const isLocal = typeof window !== "undefined" ? isLocalClient() : true;
+
+  // Derive cartridge info early (used by handlers below)
+  const currentCartridge = activeConfig ? availableCartridges.find(c => c.id === activeConfig.active_cartridge_ids[0]) : null;
+  const showWelcome = messages.length === 0 && !!activeConfig;
 
   // Sync mute state on mount
   useEffect(() => {
@@ -242,8 +360,13 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
     if (!next) soundTick();
   };
 
-  const handleLoadChat = (loadedMessages: any[], _cartridgeIds: string[]) => {
+  const handleLoadChat = (loadedMessages: any[], _cartridgeIds: string[], loadedChatId?: string) => {
     setMessages(loadedMessages);
+    if (loadedChatId) {
+      setChatId(loadedChatId);
+      chatIdRef.current = loadedChatId;
+      setActiveChatId(loadedChatId);
+    }
     setContextInfo(null);
     setStreamSegments([]);
     setEditingIdx(null);
@@ -253,11 +376,68 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
     soundNewChat();
     setMessages([]);
     setChatId(null);
+    chatIdRef.current = null;
     setActiveChatId(null);
     setContextInfo(null);
     setStreamSegments([]);
     setEditingIdx(null);
+    setAttachments([]);
   };
+
+  // ─── Export chat as Markdown ───
+  const handleExportChat = () => {
+    if (messages.length === 0) return;
+    const cartName = currentCartridge?.name || activeConfig?.active_cartridge_ids[0] || "chat";
+    const lines = messages.map(m => m.role === "user" ? `**You:** ${m.content}` : m.content).join("\n\n---\n\n");
+    const md = `# ${cartName} — Chat Export\n\n${lines}\n`;
+    const blob = new Blob([md], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${cartName.toLowerCase().replace(/\s+/g, "-")}-${new Date().toISOString().slice(0, 10)}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+    soundTick();
+  };
+
+  // ─── Copy full conversation to clipboard ───
+  const handleCopyChat = () => {
+    if (messages.length === 0) return;
+    const text = messages.map(m => `${m.role === "user" ? "You" : "Assistant"}: ${m.content}`).join("\n\n");
+    navigator.clipboard.writeText(text);
+    soundTick();
+  };
+
+  // ─── Global keyboard shortcuts ───
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const meta = e.metaKey || e.ctrlKey;
+      // ⌘K — toggle command palette
+      if (meta && e.key === "k") { e.preventDefault(); setShowPalette(p => !p); return; }
+      // ⌘N — new chat
+      if (meta && e.key === "n") { e.preventDefault(); handleNewChat(); return; }
+      // ⌘E — export chat
+      if (meta && e.key === "e") { e.preventDefault(); handleExportChat(); return; }
+      // ⌘⇧C — copy full conversation
+      if (meta && e.shiftKey && e.key === "C") { e.preventDefault(); handleCopyChat(); return; }
+      // ⌘⇧F — open forge
+      if (meta && e.shiftKey && e.key === "F") { e.preventDefault(); onOpenForge?.(); return; }
+      // ⌘/ — toggle help
+      if (meta && e.key === "/") { e.preventDefault(); setShowTutorial(t => !t); return; }
+      // ⌘. — focus input
+      if (meta && e.key === ".") { e.preventDefault(); inputRef.current?.focus(); return; }
+      // Escape — close overlays or stop generation
+      if (e.key === "Escape") {
+        if (showPalette) { setShowPalette(false); return; }
+        if (showTutorial) { setShowTutorial(false); return; }
+        if (showExplorer) { setShowExplorer(false); return; }
+        if (showDrawer) { setShowDrawer(false); return; }
+        if (isGenerating) { handleStop(); return; }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [showPalette, showTutorial, showExplorer, showDrawer, isGenerating, messages]);
 
   // ─── Stop generation ───
   const handleStop = () => {
@@ -384,19 +564,147 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
     },
   }), []);
 
-  // Auto-add boot message
-  useEffect(() => {
-    if (activeConfig && messages.length === 0 && activeConfig.boot_messages.length > 0) {
-      setMessages([{ role: "assistant", content: activeConfig.boot_messages[0] }]);
+  // Handle clicking an example prompt from the welcome screen
+  const handleWelcomePrompt = (prompt: string) => {
+    if (isGenerating || !activeConfig) return;
+    const msgs: Message[] = [];
+    if (activeConfig.boot_messages.length > 0) {
+      msgs.push({ role: "assistant", content: activeConfig.boot_messages[0] });
     }
-  }, [activeConfig, messages.length]);
+    const userMsg: Message = { role: "user", content: prompt };
+    msgs.push(userMsg);
+    setMessages(msgs);
+    submitFromMessages(msgs, prompt);
+  };
 
-  // Auto-scroll
+  // Track user scroll position
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const { scrollTop, scrollHeight, clientHeight } = el;
+      pinnedToBottom.current = scrollHeight - scrollTop - clientHeight < 80;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  // Auto-scroll — only when pinned to bottom
+  useEffect(() => {
+    if (scrollRef.current && pinnedToBottom.current) {
+      requestAnimationFrame(() => {
+        if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      });
     }
   }, [messages, streamSegments]);
+
+  // Pin to bottom when generation starts
+  useEffect(() => {
+    if (isGenerating) {
+      pinnedToBottom.current = true;
+    }
+  }, [isGenerating]);
+
+  // Auto-resize textarea
+  const adjustTextareaHeight = () => {
+    const el = inputRef.current;
+    if (el) {
+      el.style.height = 'auto';
+      el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+    }
+  };
+
+  // Insert text at cursor position in textarea
+  const insertAtCursor = useCallback((text: string) => {
+    const ta = inputRef.current;
+    if (!ta) { setInput(prev => prev + text); return; }
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    setInput(prev => prev.slice(0, start) + text + prev.slice(end));
+    setTimeout(() => {
+      ta.selectionStart = ta.selectionEnd = start + text.length;
+      ta.focus();
+      adjustTextareaHeight();
+    }, 0);
+  }, []);
+
+  // File selection from explorer (local clients)
+  const handleFileSelect = (path: string) => {
+    const name = path.split('/').pop() || path;
+    if (!attachments.some(a => a.path === path)) {
+      setAttachments(prev => [...prev, { path, name }]);
+      insertAtCursor(`@${name} `);
+    }
+    setShowExplorer(false);
+  };
+
+  const removeAttachment = (idx: number) => {
+    const att = attachments[idx];
+    setAttachments(prev => prev.filter((_, i) => i !== idx));
+    if (att) {
+      setInput(prev => prev.replace(new RegExp(`@${att.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s?`, 'g'), ''));
+    }
+  };
+
+  // Handle file upload from native file picker (network/mobile clients)
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const formData = new FormData();
+      formData.append('file', file, file.name);
+      try {
+        const res = await fetch(`${getApiBase()}/api/fs/upload`, {
+          method: 'POST', body: formData,
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.path) {
+            const fname = data.filename || file.name;
+            setAttachments(prev => [...prev, { path: data.path, name: fname }]);
+            insertAtCursor(`@${fname} `);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to upload file:', err);
+      }
+    }
+    if (fileUploadRef.current) fileUploadRef.current.value = '';
+  };
+
+  // Handle paste — support pasting images
+  const handlePaste = async (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        const blob = item.getAsFile();
+        if (!blob) continue;
+        const formData = new FormData();
+        const fname = `paste_${Date.now()}.png`;
+        formData.append('file', blob, fname);
+        try {
+          const res = await fetch(`${getApiBase()}/api/fs/upload`, {
+            method: 'POST', body: formData,
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.path) {
+              const pastedName = data.filename || fname;
+              setAttachments(prev => [...prev, { path: data.path, name: pastedName }]);
+              insertAtCursor(`@${pastedName} `);
+            }
+          }
+        } catch (err) {
+          console.error('Failed to upload pasted image:', err);
+        }
+        return;
+      }
+    }
+  };
 
   // ─── Core streaming function (used by submit, retry, edit) ───
   const submitFromMessages = async (msgHistory: Message[], _userContent: string, imagePath?: string) => {
@@ -440,7 +748,7 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
     };
 
     try {
-      const response = await fetch("http://127.0.0.1:7861/api/chat", {
+      const response = await fetch(`${getApiBase()}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
@@ -472,6 +780,7 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
             
             if (data.type === "chat_id") {
               setChatId(data.data);
+              chatIdRef.current = data.data;
               setActiveChatId(data.data);
             } else if (data.type === "context_info") {
               setContextInfo(data.data);
@@ -566,22 +875,32 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() && !attachedFile) return;
+    if (!input.trim() && attachments.length === 0) return;
     if (isGenerating || !activeConfig) return;
 
+    // Build content: replace @filename references with [Attached file: path] tags
     let userContent = input.trim();
-    if (attachedFile) {
-      userContent = userContent ? `${userContent}\n[Attached file: ${attachedFile}]` : `[Attached file: ${attachedFile}]`;
+    for (const att of attachments) {
+      const escaped = att.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      userContent = userContent.replace(new RegExp(`@${escaped}`, 'g'), `[Attached file: ${att.path}]`);
+    }
+
+    // If first message, inject boot message as first assistant message
+    let history = [...messages];
+    if (history.length === 0 && activeConfig.boot_messages.length > 0) {
+      history.push({ role: "assistant", content: activeConfig.boot_messages[0] });
     }
 
     const userMsg: Message = { role: "user", content: userContent };
-    const newMessages = [...messages, userMsg];
+    const newMessages = [...history, userMsg];
     setMessages(newMessages);
     setInput("");
+    setAttachments([]);
+    if (inputRef.current) inputRef.current.style.height = 'auto';
     
-    const isImage = attachedFile?.match(/\.(jpg|jpeg|png|webp)$/i);
-    const imagePath = isImage ? attachedFile ?? undefined : undefined;
-    setAttachedFile(null);
+    // Extract image path from attachments
+    const imageAtt = attachments.find(a => /\.(jpg|jpeg|png|webp)$/i.test(a.path));
+    const imagePath = imageAtt?.path;
 
     await submitFromMessages(newMessages, userContent, imagePath);
   };
@@ -619,6 +938,10 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
           return <ToolCallCard key={`tool-${i}`} segment={seg} />;
         }
         if (seg.kind === "text" && seg.content.trim()) {
+          if (isLive) {
+            // During streaming: use plain pre-formatted text for performance
+            return <div key={`text-${i}`} className="text-sm text-white/80 font-mono whitespace-pre-wrap leading-relaxed">{seg.content}</div>;
+          }
           return (
             <ReactMarkdown
               key={`text-${i}`}
@@ -644,12 +967,12 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
 
   return (
     <div 
-      className="w-full max-w-5xl h-[90vh] bg-[var(--color-console-bezel)] rounded-3xl p-6 md:p-10 shadow-2xl flex flex-col border border-white/5 relative"
+      className="w-full max-w-5xl h-[100dvh] sm:h-[90vh] bg-[var(--color-console-bezel)] rounded-none sm:rounded-3xl p-3 sm:p-6 md:p-10 shadow-2xl flex flex-col border-0 sm:border border-white/5 relative"
       style={themeStyle}
     >
       {showExplorer && (
         <FileExplorer 
-          onSelect={(path) => { setAttachedFile(path); setShowExplorer(false); }} 
+          onSelect={handleFileSelect} 
           onClose={() => setShowExplorer(false)} 
         />
       )}
@@ -662,14 +985,35 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
         />
       )}
 
-      {/* Hardware Accents */}
-      <div className="absolute top-4 left-6 flex items-center gap-3">
-        <div className="flex gap-2">
-          <div className="w-3 h-3 rounded-full bg-red-500 opacity-80" />
-          <div className={`w-3 h-3 rounded-full ${isGenerating ? "bg-[var(--accent)] animate-pulse crt-glow" : "bg-white/20"}`} />
+      {showPalette && (
+        <CommandPalette
+          onClose={() => setShowPalette(false)}
+          onNewChat={handleNewChat}
+          onOpenHistory={() => { setShowDrawer(true); soundTick(); }}
+          onExportChat={handleExportChat}
+          onCopyChat={handleCopyChat}
+          onOpenForge={onOpenForge}
+          onOpenHelp={() => setShowTutorial(true)}
+          onToggleMute={toggleMute}
+          onEjectCartridge={() => { soundCartridgeEject(); ejectCartridge(); onChangeCartridge(); }}
+          isMuted={muted}
+          cartridgeName={currentCartridge?.name || "Kasset"}
+          hasMessages={messages.length > 0}
+        />
+      )}
+
+      {showTutorial && (
+        <Tutorial onClose={() => setShowTutorial(false)} />
+      )}
+
+      {/* Hardware Accents — LEDs + context meter */}
+      <div className="absolute top-2 sm:top-4 left-3 sm:left-6 flex items-center gap-2 sm:gap-3">
+        <div className="flex gap-1.5 sm:gap-2">
+          <div className="w-2.5 h-2.5 sm:w-3 sm:h-3 rounded-full bg-red-500 opacity-80" />
+          <div className={`w-2.5 h-2.5 sm:w-3 sm:h-3 rounded-full ${isGenerating ? "bg-[var(--accent)] animate-pulse crt-glow" : "bg-white/20"}`} />
         </div>
         {contextInfo && (
-          <div className="flex items-center gap-2 ml-2" title={`${contextInfo.estimated_tokens} / ${contextInfo.max_tokens} tokens`}>
+          <div className="hidden sm:flex items-center gap-2 ml-2" title={`${contextInfo.estimated_tokens} / ${contextInfo.max_tokens} tokens`}>
             <div className="w-24 h-1.5 bg-black/40 rounded-full overflow-hidden border border-white/5">
               <div 
                 className="h-full rounded-full transition-all duration-500"
@@ -685,35 +1029,40 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
         )}
       </div>
       
-      {/* Cartridge Slot + Chat Controls */}
-      <div className="absolute top-4 right-8 flex items-center gap-2">
+      {/* Top Bar — controls */}
+      <div className="absolute top-2 sm:top-4 right-3 sm:right-8 flex items-center gap-0.5 sm:gap-1 no-select">
+        <button onClick={handleNewChat} className="p-2 sm:p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all" title="New Chat (⌘N)">
+          <Plus size={15} />
+        </button>
+        <button onClick={() => { setShowDrawer(true); soundTick(); }} className="p-2 sm:p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all" title="Chat History">
+          <History size={15} />
+        </button>
+        <button onClick={() => { setShowPalette(true); soundTick(); }} className="p-2 sm:p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all" title="Command Palette (⌘K)">
+          <Command size={15} />
+        </button>
+        {onOpenForge && (
+          <button onClick={onOpenForge} className="hidden sm:block p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 transition-all" title="Kasset Forge (⌘⇧F)">
+            <Wrench size={15} />
+          </button>
+        )}
+        <button onClick={() => { setShowTutorial(true); soundTick(); }} className="hidden sm:block p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 transition-all" title="Quick Guide (⌘/)">
+          <HelpCircle size={15} />
+        </button>
         <button
           onClick={toggleMute}
-          className={`p-1.5 rounded transition-all ${muted ? "text-white/15" : "text-white/30 hover:text-[var(--accent)] hover:bg-white/5"}`}
+          className={`hidden sm:block p-1.5 rounded transition-all ${muted ? "text-white/15" : "text-white/30 hover:text-[var(--accent)] hover:bg-white/5"}`}
           title={muted ? "Unmute sounds" : "Mute sounds"}
         >
           {muted ? <VolumeX size={15} /> : <Volume2 size={15} />}
         </button>
-        <button
-          onClick={handleNewChat}
-          className="p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 transition-all"
-          title="New Chat"
-        >
-          <Plus size={16} />
-        </button>
-        <button
-          onClick={() => { setShowDrawer(true); soundTick(); }}
-          className="p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 transition-all"
-          title="Chat History & Memory"
-        >
-          <History size={16} />
-        </button>
-        <div className="bg-black/40 border border-white/10 px-4 py-1.5 rounded text-[var(--accent)] text-glow font-bold text-sm tracking-wider shadow-inner flex items-center gap-2">
-          {activeConfig ? activeConfig.active_cartridge_ids[0].toUpperCase() : "NO CARTRIDGE"}
+        <div className="hidden sm:block w-px h-4 bg-white/5 mx-1" />
+        <div className="bg-black/40 border border-white/10 px-2 sm:px-3 py-1 rounded-lg text-[var(--accent)] font-bold text-[10px] sm:text-xs tracking-wider shadow-inner flex items-center gap-1.5 sm:gap-2 ml-0.5 sm:ml-1">
+          {currentCartridge && <span className="text-sm sm:text-base leading-none">{currentCartridge.icon}</span>}
+          <span className="max-w-[60px] sm:max-w-[120px] truncate text-glow">{currentCartridge?.name?.toUpperCase() || (activeConfig ? activeConfig.active_cartridge_ids[0].toUpperCase() : "NO KASSET")}</span>
           <button 
-            onClick={() => { soundCartridgeEject(); onChangeCartridge(); }}
-            className="ml-2 hover:text-white transition-colors"
-            title="Eject Cartridge"
+            onClick={() => { soundCartridgeEject(); ejectCartridge(); onChangeCartridge(); }}
+            className="hover:text-white active:text-white transition-colors text-[var(--accent)]/50 hover:text-[var(--accent)]"
+            title="Eject Kasset"
           >
             ⏏
           </button>
@@ -721,8 +1070,18 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
       </div>
 
       {/* Screen Area */}
-      <div className="flex-1 min-h-0 mt-6 rounded-2xl border-4 border-black/80 crt-screen p-6 overflow-hidden flex flex-col relative">
-        <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto crt-scroll pr-4 space-y-4">
+      <div className="flex-1 min-h-0 mt-8 sm:mt-10 rounded-xl sm:rounded-2xl border-2 sm:border-4 border-black/80 crt-screen p-3 sm:p-6 overflow-hidden flex flex-col relative">
+        {showWelcome ? (
+          <WelcomeScreen
+            cartridgeName={currentCartridge?.name || activeConfig!.active_cartridge_ids[0]}
+            cartridgeIcon={currentCartridge?.icon || "🤖"}
+            bootMessage={activeConfig!.boot_messages[0] || "Ready."}
+            tools={activeConfig!.tools}
+            suggestedPrompts={activeConfig!.suggested_prompts || []}
+            onSendPrompt={handleWelcomePrompt}
+          />
+        ) : (
+        <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto crt-scroll pr-2 sm:pr-4 space-y-3 sm:space-y-4">
           {messages.map((msg, idx) => {
             const isUser = msg.role === "user";
             const isBot = msg.role === "assistant";
@@ -859,55 +1218,90 @@ export default function Console({ onChangeCartridge }: { onChangeCartridge: () =
             </div>
           )}
         </div>
+        )}
       </div>
 
       {/* Input Area */}
-      <div className="mt-6 bg-black/60 rounded-xl p-2 border border-white/10 shadow-inner flex flex-col gap-2">
-        {attachedFile && (
-          <div className="flex items-center gap-2 px-3 py-1 bg-white/5 w-fit rounded border border-white/10 text-xs text-white/70">
-            <span className="truncate max-w-xs">{attachedFile}</span>
-            <button onClick={() => setAttachedFile(null)} className="hover:text-red-400">
-              <X size={14} />
-            </button>
-          </div>
-        )}
-        <form onSubmit={handleSubmit} className="flex items-center">
-          <button 
-            type="button" 
-            onClick={() => setShowExplorer(true)}
-            className="p-2 text-white/50 hover:text-[var(--accent)] transition-colors"
-            title="Browse File System"
-          >
-            <FolderOpen size={20} />
-          </button>
-          <div className="text-[var(--accent)] px-2 text-xl font-bold">{">"}</div>
+      <div className="mt-1.5 sm:mt-4 shrink-0">
+        <form onSubmit={handleSubmit} className="bg-white/[0.04] border border-white/[0.08] rounded-xl sm:rounded-2xl px-2 sm:px-3 py-1.5 sm:py-2 focus-within:border-[var(--accent)]/20 transition-colors">
+          {/* Hidden file input for network/mobile clients */}
           <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            disabled={isGenerating || !activeConfig}
-            className="flex-1 bg-transparent border-none outline-none text-[var(--accent)] placeholder-[var(--accent)]/30 text-lg py-2 font-mono"
-            placeholder={activeConfig ? "Enter command..." : "Insert cartridge to begin..."}
-            autoFocus
+            ref={fileUploadRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={handleFileUpload}
           />
-          {isGenerating ? (
+          {/* Input row */}
+          <div className="flex items-end gap-1.5 sm:gap-2">
             <button 
-              type="button"
-              onClick={handleStop}
-              className="px-5 py-2 bg-red-500/80 text-white font-bold uppercase tracking-widest rounded mx-1 hover:bg-red-500 transition-colors flex items-center gap-2"
+              type="button" 
+              onClick={() => isLocal ? setShowExplorer(true) : fileUploadRef.current?.click()}
+              className="p-1.5 rounded-lg text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all shrink-0 mb-0.5"
+              title={isLocal ? "Attach file or directory" : "Upload file"}
             >
-              <Square size={14} fill="currentColor" />
-              Stop
+              <Paperclip size={16} />
             </button>
-          ) : (
-            <button 
-              type="submit"
-              disabled={(!input.trim() && !attachedFile) || !activeConfig}
-              className="px-6 py-2 bg-[var(--accent)] text-black font-bold uppercase tracking-widest rounded mx-1 hover:bg-white transition-colors disabled:opacity-30"
-            >
-              Send
-            </button>
-          )}
+            <div className="flex-1 min-w-0 relative">
+              {/* Mirror overlay — renders styled @mentions */}
+              <div
+                ref={mirrorRef}
+                aria-hidden
+                className="absolute inset-0 pointer-events-none text-sm sm:text-base py-1.5 font-mono leading-relaxed whitespace-pre-wrap break-words overflow-hidden"
+              >
+                {attachments.length > 0 ? (() => {
+                  const attNames = attachments.map(a => a.name);
+                  const pattern = new RegExp(`(@(?:${attNames.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')}))`, 'g');
+                  const parts = input.split(pattern);
+                  return parts.map((part, i) =>
+                    attNames.some(n => part === `@${n}`)
+                      ? <span key={i} className="bg-[var(--accent)]/15 text-[var(--accent)] rounded px-1 py-px -mx-px">{part}</span>
+                      : <span key={i} className="text-transparent">{part}</span>
+                  );
+                })() : <span className="text-transparent">{input}</span>}
+                {!input && <span className="text-transparent">.</span>}
+              </div>
+              {/* Actual textarea — text transparent where mirror renders, caret visible */}
+              <textarea
+                ref={inputRef}
+                value={input}
+                onChange={(e) => { setInput(e.target.value); adjustTextareaHeight(); }}
+                onScroll={() => { if (mirrorRef.current && inputRef.current) mirrorRef.current.scrollTop = inputRef.current.scrollTop; }}
+                onPaste={handlePaste}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSubmit(e);
+                  }
+                }}
+                disabled={isGenerating || !activeConfig}
+                className={`w-full bg-transparent border-none outline-none placeholder-white/20 text-sm sm:text-base py-1.5 font-mono resize-none min-h-[28px] sm:min-h-[32px] max-h-[100px] sm:max-h-[120px] leading-relaxed relative z-10 ${attachments.length > 0 ? 'text-white/90 caret-white/90' : 'text-white/90'}`}
+                style={attachments.length > 0 ? { color: 'transparent', caretColor: 'rgba(255,255,255,0.9)' } : undefined}
+                placeholder={activeConfig ? "Message..." : "Insert a kasset to begin..."}
+                rows={1}
+                autoFocus
+              />
+            </div>
+            {isGenerating ? (
+              <button 
+                type="button"
+                onClick={handleStop}
+                className="p-2 rounded-xl bg-red-500/15 text-red-400 hover:bg-red-500/25 border border-red-500/20 transition-all shrink-0 mb-0.5"
+                title="Stop generating"
+              >
+                <Square size={16} fill="currentColor" />
+              </button>
+            ) : (
+              <button 
+                type="submit"
+                disabled={(!input.trim() && attachments.length === 0) || !activeConfig}
+                className="p-2 rounded-xl bg-[var(--accent)]/15 text-[var(--accent)] hover:bg-[var(--accent)]/25 border border-[var(--accent)]/20 transition-all disabled:opacity-20 disabled:hover:bg-[var(--accent)]/15 shrink-0 mb-0.5"
+                title="Send message"
+              >
+                <CornerDownLeft size={16} />
+              </button>
+            )}
+          </div>
         </form>
       </div>
     </div>

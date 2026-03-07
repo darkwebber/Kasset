@@ -14,7 +14,12 @@ import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
+import requests
+from bs4 import BeautifulSoup
+import markdownify
+from duckduckgo_search import DDGS
 from .sandbox import execute_python_sandbox
+from .plugin_loader import plugin_loader
 
 logger = logging.getLogger(__name__)
 
@@ -179,83 +184,193 @@ def calculate(expression: str) -> str:
         return f"Error: {e}"
 
 
-SAFE_COMMANDS = frozenset({
-    "ls", "find", "file", "stat", "wc", "cat", "head", "tail", "grep",
-    "du", "df", "tree", "realpath", "dirname", "basename",
-    "sort", "uniq", "diff", "comm", "cut", "tr", "fold", "fmt",
-    "xxd", "od", "strings", "md5", "shasum", "cksum", "xattr", "lsof",
-    "uname", "hostname", "whoami", "date", "uptime", "pwd", "id",
-    "ps", "top", "sw_vers", "system_profiler", "sysctl", "vm_stat",
-    "last", "w", "groups",
-    "ifconfig", "ping", "dig", "nslookup", "curl", "netstat",
-    "scutil", "networksetup",
-    "mdfind", "mdls", "diskutil", "pmset", "ioreg",
-    "pbpaste", "log", "csrutil", "spctl", "open", "say",
-    "echo", "which", "env", "printenv", "locale", "cal", "bc",
+# ──────────────────────────────────────────
+# COMMAND SECURITY — Blocklist + Consent
+# ──────────────────────────────────────────
+# Instead of whitelisting safe commands, we block dangerous ones
+# and require user consent for write/modify operations.
+# Everything else is auto-executed.
+
+BLOCKED_COMMANDS = frozenset({
+    # Privilege escalation
+    "sudo", "su", "doas",
+    # File destruction
+    "rm", "rmdir", "shred", "unlink", "srm",
+    # Disk / partition operations
+    "mkfs", "dd", "format", "fdisk",
+    # System control
+    "shutdown", "reboot", "halt", "poweroff", "init",
+    # Process killing
+    "kill", "killall", "pkill",
+    # User / group management
+    "passwd", "chpasswd", "useradd", "userdel", "usermod",
+    "groupadd", "groupdel", "groupmod", "visudo",
+    # Network security
+    "iptables", "pfctl", "ufw",
+    # Mount
+    "mount", "umount",
+    # Service management
+    "systemctl", "service",
 })
 
-_BLOCKED_ARGS = frozenset({
-    "sudo", "rm", "rmdir", "mkfs", "dd", "format",
-    "shutdown", "reboot", "halt", "kill", "killall",
-    "mv", "cp", "chmod", "chown", "chgrp", "mktemp",
+# Commands that ALWAYS need user consent (modify files/state)
+CONSENT_COMMANDS = frozenset({
+    "mkdir", "touch", "cp", "mv", "ln", "install",
+    "chmod", "chown", "chgrp",
+    "tee", "truncate",
+    "rsync", "scp",
+    "crontab",
+    "launchctl",
+    "wget",
 })
 
-def _expand_arg(arg: str) -> list:
-    if arg.startswith("~"):
-        arg = str(Path.home()) + arg[1:]
-    if any(c in arg for c in ("*", "?", "[")):
-        matches = sorted(glob_module.glob(arg))
-        return matches if matches else [arg]
-    return [arg]
+# Multi-command tools: only specific subcommands need consent
+CONSENT_SUBCOMMANDS = {
+    "git":    frozenset({"commit", "push", "pull", "merge", "rebase", "reset", "checkout", "switch",
+                         "stash", "cherry-pick", "revert", "init", "clone", "add", "rm", "mv",
+                         "clean", "tag", "fetch", "restore"}),
+    "pip":    frozenset({"install", "uninstall"}),
+    "pip3":   frozenset({"install", "uninstall"}),
+    "npm":    frozenset({"install", "uninstall", "update", "init", "publish", "link", "ci"}),
+    "yarn":   frozenset({"add", "remove", "install", "upgrade"}),
+    "brew":   frozenset({"install", "uninstall", "update", "upgrade", "remove", "tap", "untap"}),
+    "docker": frozenset({"run", "exec", "build", "push", "pull", "rm", "rmi", "stop",
+                         "kill", "create", "start", "restart", "compose"}),
+    "defaults": frozenset({"write", "delete"}),
+    "xattr":    frozenset({"write", "delete", "clear"}),
+    "diskutil": frozenset({"erase", "partition", "mount", "unmount", "rename"}),
+}
+
+def _check_command_safety(segment: str) -> str:
+    """Check safety of a single command segment.
+    Returns: 'safe', 'consent', or 'Error: ...' message."""
+    segment = segment.strip()
+    if not segment:
+        return "safe"
+    try:
+        parts = shlex.split(segment)
+    except ValueError:
+        return f"Error: Could not parse: {segment}"
+    if not parts:
+        return "safe"
+    cmd = parts[0]
+    # Hard block
+    if cmd in BLOCKED_COMMANDS:
+        return f"Error: '{cmd}' is blocked for safety."
+    # Check arguments for blocked commands (prevent tricks like 'env sudo ...')
+    for arg in parts[1:]:
+        if arg in BLOCKED_COMMANDS:
+            return f"Error: '{arg}' is blocked."
+    # Full-command consent
+    if cmd in CONSENT_COMMANDS:
+        return "consent"
+    # Subcommand-level consent
+    if cmd in CONSENT_SUBCOMMANDS and len(parts) > 1:
+        subcmd = parts[1].lstrip("-")
+        if subcmd in CONSENT_SUBCOMMANDS[cmd]:
+            return "consent"
+    return "safe"
+
+def _validate_redirects(command: str) -> str:
+    """Check for dangerous shell operators. Returns error or empty string."""
+    cleaned = re.sub(r'2>\s*/dev/null', '', command)
+    for bad in ["`", "$("]:
+        if bad in cleaned:
+            return f"Error: Shell operator '{bad}' is not allowed"
+    test_str = re.sub(r'2>&1', '', cleaned)
+    if ">>" in test_str:
+        return "Error: Append redirection '>>' is not allowed"
+    remaining = re.sub(r'2>\s*/dev/null', '', test_str)
+    if ">" in remaining:
+        return "Error: Output redirection '>' is not allowed"
+    return ""
 
 def run_command(command: str) -> str:
-    """Run whitelisted shell commands (read-only, 30s timeout, pipes allowed)."""
+    """Run shell commands. Dangerous commands are blocked; write operations need user consent."""
     try:
+        redirect_err = _validate_redirects(command)
+        if redirect_err:
+            return redirect_err
+
         cleaned = re.sub(r'2>\s*/dev/null', '', command)
-        for bad in ["&&", "||", ";", "`", "$(", ">>", ">"]:
-            if bad == ">" and "2>&1" in cleaned:
-                cleaned = cleaned.replace("2>&1", "")
-                continue
-            if bad in cleaned: return f"Error: Shell operator '{bad}' is not allowed"
+        chain_segments = re.split(r'\s*(?:&&|\|\||;)\s*', cleaned)
 
-        stages = [s.strip() for s in cleaned.split("|")]
-        parsed_stages = []
-        for stage in stages:
-            if not stage: continue
-            raw_parts = shlex.split(stage)
-            if not raw_parts: return "Error: Empty command in pipe chain"
-            if raw_parts[0] not in SAFE_COMMANDS:
-                return f"Error: '{raw_parts[0]}' is not allowed."
-            if any(arg in _BLOCKED_ARGS for arg in raw_parts):
-                return "Error: Blocked keyword detected"
-            expanded = [raw_parts[0]]
-            for arg in raw_parts[1:]: expanded.extend(_expand_arg(arg))
-            parsed_stages.append(expanded)
+        needs_consent = False
+        for chain_seg in chain_segments:
+            pipe_parts = [s.strip() for s in chain_seg.split("|")]
+            for part in pipe_parts:
+                if not part:
+                    continue
+                safety = _check_command_safety(part)
+                if safety.startswith("Error:"):
+                    return safety
+                if safety == "consent":
+                    needs_consent = True
 
-        if not parsed_stages: return "Error: Empty command"
+        if needs_consent:
+            return (
+                f"[CONSENT_REQUIRED] `{command}` — This command may modify files or system state. "
+                f"The user must approve it before it can run."
+            )
 
+        return _execute_shell(command)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+def _execute_shell(command: str) -> str:
+    """Execute a shell command and return output."""
+    try:
         home = str(Path.home())
         run_env = {**os.environ, "LANG": "en_US.UTF-8"}
         suppress_stderr = "2>" in command
-        prev_stdout = None
 
-        for i, parts in enumerate(parsed_stages):
-            proc = subprocess.run(
-                parts, input=prev_stdout, stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL if suppress_stderr else subprocess.PIPE,
-                text=True, timeout=30, cwd=home, env=run_env,
-            )
-            prev_stdout = proc.stdout
-            if not suppress_stderr and proc.returncode != 0 and proc.stderr:
-                prev_stdout += f"\n[exit {proc.returncode}] {proc.stderr.strip()}"
+        proc = subprocess.run(
+            command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL if suppress_stderr else subprocess.PIPE,
+            text=True,
+            timeout=30,
+            cwd=home,
+            env=run_env,
+        )
 
-        output = prev_stdout or ""
-        if len(output) > 5000: output = output[:5000] + "\n... (truncated)"
+        output = proc.stdout or ""
+        if not suppress_stderr and proc.returncode != 0 and proc.stderr:
+            output += f"\n[exit {proc.returncode}] {proc.stderr.strip()}"
+
+        if len(output) > 8000:
+            output = output[:8000] + "\n... (truncated)"
         return output.strip() or "(no output)"
     except subprocess.TimeoutExpired:
         return "Error: Command timed out (30s limit)"
     except Exception as e:
         return f"Error: {str(e)}"
+
+
+def run_approved_command(command: str) -> str:
+    """Execute a user-approved command. Still blocks truly dangerous commands."""
+    redirect_err = _validate_redirects(command)
+    if redirect_err:
+        return redirect_err
+    cleaned = re.sub(r'2>\s*/dev/null', '', command)
+    chain_segments = re.split(r'\s*(?:&&|\|\||;)\s*', cleaned)
+    for chain_seg in chain_segments:
+        pipe_parts = [s.strip() for s in chain_seg.split("|")]
+        for part in pipe_parts:
+            if not part:
+                continue
+            try:
+                parts = shlex.split(part.strip())
+            except ValueError:
+                return f"Error: Could not parse: {part}"
+            if parts and parts[0] in BLOCKED_COMMANDS:
+                return f"Error: '{parts[0]}' is blocked."
+            for arg in parts[1:]:
+                if arg in BLOCKED_COMMANDS:
+                    return f"Error: '{arg}' is blocked."
+    return _execute_shell(command)
 
 # ──────────────────────────────────────────
 # REGISTRY
@@ -314,7 +429,53 @@ def execute_cpp(code: str, stdin_input: str = "") -> str:
         return f"Error: {str(e)}"
 
 
-AVAILABLE_TOOLS = {
+def search_web(query: str, max_results: int = 5) -> str:
+    """Search the web using DuckDuckGo."""
+    try:
+        ddgs = DDGS()
+        results = list(ddgs.text(query, max_results=max_results))
+        if not results:
+            return "No results found."
+        
+        output = f"Search results for: '{query}'\n\n"
+        for i, r in enumerate(results, 1):
+            output += f"{i}. {r.get('title', 'No Title')}\n"
+            output += f"   URL: {r.get('href', 'No URL')}\n"
+            output += f"   Snippet: {r.get('body', 'No snippet available')}\n\n"
+        return output.strip()
+    except Exception as e:
+        return f"Error performing web search: {str(e)}"
+
+def read_url(url: str) -> str:
+    """Read and extract text content from a webpage URL."""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        # Parse HTML and convert to markdown
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Remove script and style elements
+        for script in soup(["script", "style", "nav", "footer", "iframe", "noscript"]):
+            script.decompose()
+            
+        markdown_text = markdownify.markdownify(str(soup), heading_style="ATX")
+        
+        # Clean up excessive newlines
+        clean_text = re.sub(r'\n{3,}', '\n\n', markdown_text).strip()
+        
+        if len(clean_text) > 8000:
+            return clean_text[:8000] + "\n\n... (Content truncated due to length)"
+        return clean_text
+    except requests.RequestException as e:
+        return f"Error fetching URL: {str(e)}"
+    except Exception as e:
+        return f"Error processing webpage: {str(e)}"
+
+BUILTIN_TOOLS = {
     "get_current_time": get_current_time,
     "list_directory": list_directory,
     "get_system_info": get_system_info,
@@ -324,12 +485,31 @@ AVAILABLE_TOOLS = {
     "calculate": calculate,
     "execute_python": execute_python,
     "execute_cpp": execute_cpp,
+    "search_web": search_web,
+    "read_url": read_url,
 }
 
-def execute_tool(name: str, args: dict) -> str:
-    if name not in AVAILABLE_TOOLS:
-        return f"Error: unknown tool '{name}'"
-    try:
-        return AVAILABLE_TOOLS[name](**args)
-    except Exception as e:
-        return f"Error executing tool '{name}': {str(e)}"
+# Backwards compat
+AVAILABLE_TOOLS = BUILTIN_TOOLS
+
+
+def get_all_tool_ids() -> list:
+    """Return IDs of all available tools (built-in + plugins)."""
+    ids = list(BUILTIN_TOOLS.keys())
+    ids.extend(plugin_loader.manifests.keys())
+    return ids
+
+
+def execute_tool(name: str, args: dict):
+    """Execute a tool by name. Checks built-ins first, then plugins."""
+    if name in BUILTIN_TOOLS:
+        try:
+            return BUILTIN_TOOLS[name](**args)
+        except Exception as e:
+            return f"Error executing tool '{name}': {str(e)}"
+
+    # Check plugin tools
+    if name in plugin_loader.manifests:
+        return plugin_loader.execute_tool(name, args)
+
+    return f"Error: unknown tool '{name}'"

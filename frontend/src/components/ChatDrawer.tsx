@@ -3,11 +3,12 @@
 import { useEffect, useState } from "react";
 import { useCartridgeStore } from "@/stores/cartridgeStore";
 import { useChatStore } from "@/stores/chatStore";
-import { MessageSquare, Plus, Trash2, Brain, X, ChevronDown, ChevronRight, Filter } from "lucide-react";
+import { useSettingsStore } from "@/stores/settingsStore";
+import { MessageSquare, Plus, Trash2, Brain, X, ChevronDown, ChevronRight, Filter, Settings, Zap, Globe, RotateCcw } from "lucide-react";
 import { soundTick, soundNewChat } from "@/lib/sounds";
 
 interface ChatDrawerProps {
-  onLoadChat: (messages: any[], cartridgeIds: string[]) => void;
+  onLoadChat: (messages: any[], cartridgeIds: string[], chatId?: string) => void;
   onNewChat: () => void;
   onClose: () => void;
 }
@@ -19,19 +20,23 @@ export default function ChatDrawer({ onLoadChat, onNewChat, onClose }: ChatDrawe
     memories, loadMemories, deleteMemory, addMemory,
   } = useChatStore();
 
-  const [tab, setTab] = useState<"history" | "memory">("history");
+  const [tab, setTab] = useState<"history" | "memory" | "context">("history");
+  const { context: ctxSettings, loadSettings, updateContext } = useSettingsStore();
   const [showAll, setShowAll] = useState(false);
   const [newMemContent, setNewMemContent] = useState("");
   const [newMemType, setNewMemType] = useState("fact");
   const [showAddMem, setShowAddMem] = useState(false);
   const [expandedType, setExpandedType] = useState<string | null>(null);
+  const [confirmDeleteChat, setConfirmDeleteChat] = useState<string | null>(null);
+  const [confirmDeleteMem, setConfirmDeleteMem] = useState<string | null>(null);
 
   const activeCartridgeId = activeConfig?.active_cartridge_ids?.[0] || "";
 
   useEffect(() => {
     loadChatList();
     loadMemories();
-  }, [loadChatList, loadMemories]);
+    loadSettings();
+  }, [loadChatList, loadMemories, loadSettings]);
 
   // Filter chats by current cartridge
   const cartridgeChats = chatList.filter(
@@ -45,7 +50,7 @@ export default function ChatDrawer({ onLoadChat, onNewChat, onClose }: ChatDrawe
   const handleLoadChat = async (chatId: string) => {
     const data = await loadChat(chatId);
     if (data) {
-      onLoadChat(data.messages, data.cartridge_ids);
+      onLoadChat(data.messages, data.cartridge_ids, chatId);
       onClose();
     }
   };
@@ -126,6 +131,15 @@ export default function ChatDrawer({ onLoadChat, onNewChat, onClose }: ChatDrawe
               <Brain size={12} className="inline mr-1.5 -mt-0.5" />
               Memory
             </button>
+            <button
+              onClick={() => { setTab("context"); soundTick(); }}
+              className={`px-3 py-1.5 rounded text-xs font-bold uppercase tracking-wider transition-all ${
+                tab === "context" ? "bg-[var(--accent)] text-black" : "text-white/40 hover:text-white/70"
+              }`}
+            >
+              <Settings size={12} className="inline mr-1.5 -mt-0.5" />
+              Context
+            </button>
           </div>
           <button onClick={onClose} className="text-white/30 hover:text-white/70 transition-colors">
             <X size={18} />
@@ -152,7 +166,7 @@ export default function ChatDrawer({ onLoadChat, onNewChat, onClose }: ChatDrawe
                       ? "border-[var(--accent)]/30 text-[var(--accent)]"
                       : "border-white/10 text-white/30 hover:text-white/50"
                   }`}
-                  title={showAll ? "Showing all cartridges" : "Showing current cartridge only"}
+                  title={showAll ? "Showing all kassets" : "Showing current kasset only"}
                 >
                   <Filter size={12} />
                   {showAll ? "All" : activeCartridgeId.slice(0, 6).toUpperCase() || "ALL"}
@@ -185,7 +199,7 @@ export default function ChatDrawer({ onLoadChat, onNewChat, onClose }: ChatDrawe
                       onClick={() => setShowAll(true)}
                       className="text-[var(--accent)]/40 hover:text-[var(--accent)] transition-colors text-[10px]"
                     >
-                      Show all cartridges ({otherChats.length})
+                      Show all kassets ({otherChats.length})
                     </button>
                   )}
                 </div>
@@ -224,13 +238,23 @@ export default function ChatDrawer({ onLoadChat, onNewChat, onClose }: ChatDrawe
                             )}
                           </div>
                         </div>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); deleteChat(chat.id); soundTick(); }}
-                          className="opacity-0 group-hover:opacity-100 text-white/20 hover:text-red-400 transition-all p-1"
-                          title="Delete chat"
-                        >
-                          <Trash2 size={12} />
-                        </button>
+                        {confirmDeleteChat === chat.id ? (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); deleteChat(chat.id); setConfirmDeleteChat(null); soundTick(); }}
+                            className="text-red-400 text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 bg-red-400/10 rounded border border-red-400/30 animate-pulse"
+                            onBlur={() => setConfirmDeleteChat(null)}
+                          >
+                            Confirm
+                          </button>
+                        ) : (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setConfirmDeleteChat(chat.id); soundTick(); }}
+                            className="opacity-0 group-hover:opacity-100 text-white/20 hover:text-red-400 transition-all p-1"
+                            title="Delete chat"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        )}
                       </div>
                     );
                   })}
@@ -314,12 +338,22 @@ export default function ChatDrawer({ onLoadChat, onNewChat, onClose }: ChatDrawe
                                 <div className="flex-1 text-[11px] text-white/60 font-mono leading-relaxed">
                                   {mem.content}
                                 </div>
-                                <button
-                                  onClick={() => { deleteMemory(mem.id); soundTick(); }}
-                                  className="opacity-0 group-hover:opacity-100 text-white/20 hover:text-red-400 transition-all p-0.5 shrink-0"
-                                >
-                                  <X size={10} />
-                                </button>
+                                {confirmDeleteMem === mem.id ? (
+                                  <button
+                                    onClick={() => { deleteMemory(mem.id); setConfirmDeleteMem(null); soundTick(); }}
+                                    className="text-red-400 text-[8px] font-bold uppercase px-1 py-0.5 bg-red-400/10 rounded border border-red-400/30 animate-pulse shrink-0"
+                                    onBlur={() => setConfirmDeleteMem(null)}
+                                  >
+                                    OK
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => { setConfirmDeleteMem(mem.id); soundTick(); }}
+                                    className="opacity-0 group-hover:opacity-100 text-white/20 hover:text-red-400 transition-all p-0.5 shrink-0"
+                                  >
+                                    <X size={10} />
+                                  </button>
+                                )}
                               </div>
                             ))}
                           </div>
@@ -329,6 +363,88 @@ export default function ChatDrawer({ onLoadChat, onNewChat, onClose }: ChatDrawe
                   })}
                 </div>
               )}
+            </div>
+          )}
+
+          {tab === "context" && (
+            <div className="p-3 space-y-4">
+              <div className="px-1 mb-2">
+                <span className="text-[10px] text-white/30 font-mono uppercase tracking-wider">
+                  Context Management
+                </span>
+                <p className="text-[10px] text-white/20 mt-1 leading-relaxed">
+                  Control what context the agent has access to across sessions.
+                </p>
+              </div>
+
+              {/* Session Summary Toggle */}
+              <div className="p-3 rounded-lg bg-white/5 border border-white/10 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Zap size={14} className="text-yellow-400/70" />
+                    <span className="text-xs text-white/70 font-mono">Session Summary</span>
+                  </div>
+                  <button
+                    onClick={() => { updateContext("use_session_summary", !ctxSettings.use_session_summary); soundTick(); }}
+                    className={`w-8 h-4 rounded-full transition-all relative ${
+                      ctxSettings.use_session_summary ? "bg-[var(--accent)]" : "bg-white/10"
+                    }`}
+                  >
+                    <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${
+                      ctxSettings.use_session_summary ? "left-4" : "left-0.5"
+                    }`} />
+                  </button>
+                </div>
+                <p className="text-[10px] text-white/30 leading-relaxed">
+                  When a conversation gets long, older messages are summarized to make room. Keeps key context without losing the thread.
+                </p>
+              </div>
+
+              {/* Cartridge Context Toggle */}
+              <div className="p-3 rounded-lg bg-white/5 border border-white/10 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <RotateCcw size={14} className="text-blue-400/70" />
+                    <span className="text-xs text-white/70 font-mono">Kasset Context</span>
+                  </div>
+                  <button
+                    onClick={() => { updateContext("use_cartridge_context", !ctxSettings.use_cartridge_context); soundTick(); }}
+                    className={`w-8 h-4 rounded-full transition-all relative ${
+                      ctxSettings.use_cartridge_context ? "bg-[var(--accent)]" : "bg-white/10"
+                    }`}
+                  >
+                    <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${
+                      ctxSettings.use_cartridge_context ? "left-4" : "left-0.5"
+                    }`} />
+                  </button>
+                </div>
+                <p className="text-[10px] text-white/30 leading-relaxed">
+                  Remembers topics and patterns from previous chats with the same kasset. The agent builds continuity across sessions.
+                </p>
+              </div>
+
+              {/* Global Profile Toggle */}
+              <div className="p-3 rounded-lg bg-white/5 border border-white/10 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Globe size={14} className="text-green-400/70" />
+                    <span className="text-xs text-white/70 font-mono">Global Profile</span>
+                  </div>
+                  <button
+                    onClick={() => { updateContext("use_global_profile", !ctxSettings.use_global_profile); soundTick(); }}
+                    className={`w-8 h-4 rounded-full transition-all relative ${
+                      ctxSettings.use_global_profile ? "bg-[var(--accent)]" : "bg-white/10"
+                    }`}
+                  >
+                    <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${
+                      ctxSettings.use_global_profile ? "left-4" : "left-0.5"
+                    }`} />
+                  </button>
+                </div>
+                <p className="text-[10px] text-white/30 leading-relaxed">
+                  App-wide understanding of you across all kassets — usage patterns, languages, and general profile. Helps agents need fewer prompts.
+                </p>
+              </div>
             </div>
           )}
         </div>

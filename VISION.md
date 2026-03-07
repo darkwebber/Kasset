@@ -305,11 +305,52 @@ Users can create cartridges through:
 
 - **Hover on cartridge** — slight tilt/parallax, glow intensifies
 - **Click buttons** — tactile press animation (scale down 2px, spring back)
+- **Active states** — touch-friendly `:active` states replace hover on mobile (scale 0.96, opacity 0.7)
 - **Scroll chat** — momentum scrolling with slight CRT curve distortion at edges
 - **Input focus** — cursor blink rate increases, subtle glow around input
 - **New message** — text appears with typewriter effect (optional, can be instant)
 - **LED indicators** — smooth pulse transitions, not abrupt on/off
 - **Slot status** — cartridge label has subtle breathing glow when active
+- **Swipe gestures** — carousel navigation and Snake game steering via touch swipe
+
+### 6.4 Mobile & Touch
+
+**Responsive design** — the console adapts from phone screens to desktop monitors:
+- Full-screen on mobile (no border radius, edge-to-edge)
+- Top bar collapses to essential actions; secondary actions via Command Palette
+- Safe area insets for notched devices (iPhone, etc.)
+- Momentum scrolling everywhere
+- Touch-friendly tap targets (minimum 44px)
+- Keyboard shortcut badges hidden on touch devices
+- Grid view auto-selected in carousel when >12 cartridges
+- Swipe left/right to navigate carousel on touch
+- Snake game resizes canvas to fit screen, swipe to steer
+
+### 6.5 Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Enter` | Send message |
+| `Shift+Enter` | New line |
+| `Escape` | Close topmost overlay / stop generation |
+| `⌘K` / `Ctrl+K` | Toggle command palette |
+| `⌘N` / `Ctrl+N` | New chat |
+| `⌘E` / `Ctrl+E` | Export chat as Markdown |
+| `⌘⇧C` | Copy full conversation to clipboard |
+| `⌘⇧F` | Open Cartridge Forge |
+| `⌘/` | Toggle help/tutorial |
+| `⌘.` | Focus input box |
+| `/` (in carousel) | Focus search bar |
+| `←→` (in carousel) | Navigate cartridges |
+| `Enter` (in carousel) | Load selected cartridge |
+
+### 6.6 Command Palette
+
+A searchable action overlay (⌘K) providing quick access to all console actions:
+- New Chat, Chat History, Export, Copy Conversation
+- Cartridge Forge, Quick Guide
+- Mute/Unmute, Switch Cartridge
+- Arrow key navigation + fuzzy search by keywords
 
 ### 6.3 Sound Design (Optional, Toggle-able)
 
@@ -501,22 +542,36 @@ Local-Studio/
 
 ## 9. Roadmap
 
-### Phase 1 — Console MVP
-- [ ] React frontend with console shell, screen, and input
-- [ ] CRT visual effects (scanlines, glow, screen curvature)
-- [ ] Single cartridge loading (from JSON file)
-- [ ] Boot and cartridge insertion animations
-- [ ] Connect to existing model server backend
-- [ ] Port all existing chat functionality to new UI
-- [ ] Ship with 4 built-in cartridges (General, Code Pilot, Terminal, Writer)
+### Phase 1 — Console MVP ✅
+- [x] React frontend with console shell, screen, and input
+- [x] CRT visual effects (scanlines, glow, screen curvature)
+- [x] Single cartridge loading (from JSON file)
+- [x] Boot and cartridge insertion animations
+- [x] Connect to existing model server backend
+- [x] Port all existing chat functionality to new UI
+- [x] Ship with 8 built-in cartridges (General, Code Pilot, Terminal, Writer, Tutor, Data Analyst, DevOps, Web Pilot)
 
-### Phase 2 — Multi-Cartridge & Drawer
-- [ ] Cartridge drawer UI (slide-out panel with collection)
-- [ ] Multi-cartridge stacking (1 primary + 3 aux)
-- [ ] Prompt merging engine with conflict resolution
-- [ ] Per-cartridge theme switching
-- [ ] Cartridge creation UI (in-app editor)
-- [ ] Import/export cartridges as JSON files
+### Phase 2 — Multi-Cartridge & Drawer ✅
+- [x] Cartridge drawer UI (carousel + grid with search, categories)
+- [x] Multi-cartridge stacking (1 primary + 3 aux)
+- [x] Prompt merging engine with conflict resolution
+- [x] Per-cartridge theme switching
+- [x] Cartridge creation UI (Cartridge Forge in-app editor)
+- [x] Import/export cartridges as JSON files
+- [x] Custom tool plugin system (Python handlers)
+
+### Phase 2.5 — UX Polish ✅ *(added post-roadmap)*
+- [x] Command palette (⌘K) with searchable actions
+- [x] Welcome screen with per-cartridge example prompts
+- [x] Inline file attachment chips
+- [x] Chat sharing (copy conversation as Markdown)
+- [x] Comprehensive keyboard shortcuts (Escape, ⌘N, ⌘E, ⌘⇧C, ⌘⇧F, ⌘/, ⌘.)
+- [x] Mobile-responsive layout (phone → desktop)
+- [x] Touch interactions (swipe carousel, swipe snake, active states)
+- [x] Safe area insets for notched devices
+- [x] Data persistence (last cartridge, mute state, snake high score)
+- [x] Tutorial/help with mobile + shortcuts sections
+- [x] Snake game easter egg (5 red LED clicks) with NSFW cartridge unlock
 
 ### Phase 3 — Store & Community
 - [ ] Store browse UI (grid, categories, search)
@@ -527,13 +582,13 @@ Local-Studio/
 - [ ] Featured collections
 
 ### Phase 4 — Advanced Features
-- [ ] Per-cartridge persistent memory
-- [ ] Sound design and audio toggle
+- [x] Per-cartridge persistent memory
+- [x] Sound design and audio toggle
 - [ ] Workflow engine (multi-step sequences)
 - [ ] Cartridge-specific hotkeys
 - [ ] AI-generated cartridge creation ("make me a cartridge for...")
 - [ ] Premium cartridges with revenue sharing
-- [ ] Mobile-responsive console layout
+- [x] Mobile-responsive console layout
 - [ ] Model swapping (different "processors" for the console)
 
 ---
@@ -552,7 +607,12 @@ Local-Studio/
 
 6. **Safe by default.** Tools are read-only, commands are whitelisted, paths are sandboxed. A cartridge cannot grant itself more permissions than the console allows.
 
+7. **Responsive by nature.** Works on any screen size. The same console adapts from a phone to a 5K monitor. Touch and pointer interactions are both first-class.
+
+8. **Persistent by default.** User preferences, chat history, memories, and state survive restarts. Data lives locally at `~/.qwen-studio/`.
+
 ---
 
 *Working title. Final product name TBD.*
 *This document is a living artifact — it evolves as we build.*
+*Last updated: Phase 2.5 complete (UX polish, mobile, touch, shortcuts, persistence).*
