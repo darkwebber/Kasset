@@ -6,7 +6,6 @@ import { soundTick, soundNewChat, soundError } from "@/lib/sounds";
 import { useCartridgeStore } from "@/stores/cartridgeStore";
 
 import { getApiBase } from "@/lib/api";
-const API = getApiBase();
 
 // ─── Types ───────────────────────────────────────────
 interface ToolInfo {
@@ -224,8 +223,7 @@ function CartridgeEditor({ cartridge, allTools, onSave, onDelete, onCancel, isNe
     const toSave = { ...data };
     if (isNew || !toSave.id) toSave.id = autoId(toSave.name);
     setSaving(true);
-    onSave(toSave);
-    setSaving(false);
+    try { await onSave(toSave); } finally { setSaving(false); }
   };
 
   return (
@@ -343,7 +341,7 @@ function CartridgeEditor({ cartridge, allTools, onSave, onDelete, onCancel, isNe
         }} className="flex items-center gap-1 px-3 py-[7px] text-white/25 hover:text-white/50 hover:bg-white/[0.04] rounded-md text-[11px] font-medium transition-all" title="Export as .kasset bundle">
           <Download size={12} /> Export
         </button>
-        <button onClick={onCancel} className="px-3 py-[7px] text-white/25 hover:text-white/45 rounded-md text-[11px] font-medium transition-all hover:bg-white/[0.04]">Cancel</button>
+        <button onClick={() => { if (JSON.stringify(data) !== JSON.stringify(cartridge)) { if (!confirm("Discard unsaved changes?")) return; } onCancel(); }} className="px-3 py-[7px] text-white/25 hover:text-white/45 rounded-md text-[11px] font-medium transition-all hover:bg-white/[0.04]">Cancel</button>
         {onDelete && <button onClick={onDelete} className="ml-auto p-1.5 text-red-400/25 hover:text-red-400 hover:bg-red-400/10 rounded-md transition-all"><Trash2 size={13} /></button>}
       </div>
     </div>
@@ -371,13 +369,12 @@ function ToolEditor({ manifest: initManifest, handlerCode: initCode, onSave, onD
   const set = (key: string, value: any) => setManifest((m: any) => ({ ...m, [key]: value }));
   const autoId = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!manifest.name.trim()) { soundError(); return; }
     const toSave = { ...manifest };
     if (isNew || !toSave.id) toSave.id = autoId(toSave.name);
     setSaving(true);
-    onSave(toSave, code);
-    setSaving(false);
+    try { await onSave(toSave, code); } finally { setSaving(false); }
   };
 
   const handleTest = async () => {
@@ -387,11 +384,11 @@ function ToolEditor({ manifest: initManifest, handlerCode: initCode, onSave, onD
       // First save, then test
       const toSave = { ...manifest };
       if (!toSave.id) toSave.id = autoId(toSave.name);
-      await fetch(`${API}/api/forge/tools`, {
+      await fetch(`${getApiBase()}/api/forge/tools`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ manifest: toSave, handler_code: code }),
       });
-      const res = await fetch(`${API}/api/forge/tools/test`, {
+      const res = await fetch(`${getApiBase()}/api/forge/tools/test`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tool_id: toSave.id, args: {} }),
       });
@@ -407,7 +404,7 @@ function ToolEditor({ manifest: initManifest, handlerCode: initCode, onSave, onD
   const checkDeps = async () => {
     if (!manifest.id) return;
     try {
-      const res = await fetch(`${API}/api/forge/tools/${manifest.id}/deps`);
+      const res = await fetch(`${getApiBase()}/api/forge/tools/${manifest.id}/deps`);
       if (res.ok) {
         const data = await res.json();
         setDepStatus(Object.fromEntries(
@@ -421,7 +418,7 @@ function ToolEditor({ manifest: initManifest, handlerCode: initCode, onSave, onD
     if (!manifest.id) return;
     setInstallingDeps(true);
     try {
-      const res = await fetch(`${API}/api/forge/tools/${manifest.id}/deps/install`, { method: "POST" });
+      const res = await fetch(`${getApiBase()}/api/forge/tools/${manifest.id}/deps/install`, { method: "POST" });
       if (res.ok) {
         const data = await res.json();
         setDepStatus(data.results || {});
@@ -550,7 +547,7 @@ function ToolEditor({ manifest: initManifest, handlerCode: initCode, onSave, onD
           className="flex items-center gap-1.5 px-3 py-[7px] bg-emerald-500/8 hover:bg-emerald-500/15 text-emerald-400 rounded-md text-[11px] font-medium transition-all disabled:opacity-25">
           <Play size={13} /> {testing ? "Testing..." : "Test"}
         </button>
-        <button onClick={onCancel} className="px-3 py-[7px] text-white/25 hover:text-white/45 rounded-md text-[11px] font-medium transition-all hover:bg-white/[0.04]">Cancel</button>
+        <button onClick={() => { if (JSON.stringify(manifest) !== JSON.stringify(initManifest) || code !== initCode) { if (!confirm("Discard unsaved changes?")) return; } onCancel(); }} className="px-3 py-[7px] text-white/25 hover:text-white/45 rounded-md text-[11px] font-medium transition-all hover:bg-white/[0.04]">Cancel</button>
         {onDelete && <button onClick={onDelete} className="ml-auto p-1.5 text-red-400/25 hover:text-red-400 hover:bg-red-400/10 rounded-md transition-all"><Trash2 size={13} /></button>}
       </div>
     </div>
@@ -575,7 +572,7 @@ export default function ForgeStudio({ onClose }: { onClose: () => void }) {
 
   const fetchTools = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/api/forge/tools`);
+      const res = await fetch(`${getApiBase()}/api/forge/tools`);
       const data = await res.json();
       setTools(data.tools || []);
     } catch { /* ignore */ }
@@ -583,7 +580,7 @@ export default function ForgeStudio({ onClose }: { onClose: () => void }) {
 
   const fetchToolIds = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/api/forge/all-tool-ids`);
+      const res = await fetch(`${getApiBase()}/api/forge/all-tool-ids`);
       const data = await res.json();
       setAllToolIds(data.tool_ids || []);
     } catch { /* ignore */ }
@@ -604,7 +601,7 @@ export default function ForgeStudio({ onClose }: { onClose: () => void }) {
 
   const handleEditCartridge = async (id: string) => {
     try {
-      const res = await fetch(`${API}/api/forge/kassets/${id}`);
+      const res = await fetch(`${getApiBase()}/api/forge/kassets/${id}`);
       const data = await res.json();
       if (data.cartridge) {
         setEditingCartridge(data.cartridge);
@@ -616,7 +613,7 @@ export default function ForgeStudio({ onClose }: { onClose: () => void }) {
 
   const handleSaveCartridge = async (c: CartridgeData) => {
     try {
-      const res = await fetch(`${API}/api/forge/kassets`, {
+      const res = await fetch(`${getApiBase()}/api/forge/kassets`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(c),
       });
@@ -636,7 +633,7 @@ export default function ForgeStudio({ onClose }: { onClose: () => void }) {
   const handleDeleteCartridge = async (id: string) => {
     if (!confirm(`Delete kasset "${id}"?`)) return;
     try {
-      await fetch(`${API}/api/forge/kassets/${id}`, { method: "DELETE" });
+      await fetch(`${getApiBase()}/api/forge/kassets/${id}`, { method: "DELETE" });
       soundTick();
       setEditingCartridge(null);
       loadAvailableCartridges();
@@ -652,7 +649,7 @@ export default function ForgeStudio({ onClose }: { onClose: () => void }) {
 
   const handleEditTool = async (id: string) => {
     try {
-      const res = await fetch(`${API}/api/forge/tools/${id}`);
+      const res = await fetch(`${getApiBase()}/api/forge/tools/${id}`);
       const data = await res.json();
       if (data.manifest) {
         setEditingTool({ manifest: data.manifest, code: data.handler_code || DEFAULT_HANDLER });
@@ -664,7 +661,7 @@ export default function ForgeStudio({ onClose }: { onClose: () => void }) {
 
   const handleSaveTool = async (m: typeof EMPTY_MANIFEST, code: string) => {
     try {
-      const res = await fetch(`${API}/api/forge/tools`, {
+      const res = await fetch(`${getApiBase()}/api/forge/tools`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ manifest: m, handler_code: code }),
       });
@@ -684,7 +681,7 @@ export default function ForgeStudio({ onClose }: { onClose: () => void }) {
   const handleDeleteTool = async (id: string) => {
     if (!confirm(`Delete tool "${id}"?`)) return;
     try {
-      await fetch(`${API}/api/forge/tools/${id}`, { method: "DELETE" });
+      await fetch(`${getApiBase()}/api/forge/tools/${id}`, { method: "DELETE" });
       soundTick();
       setEditingTool(null);
       fetchTools();
@@ -789,7 +786,7 @@ export default function ForgeStudio({ onClose }: { onClose: () => void }) {
                         if (file.name.endsWith(".zip") || file.type === "application/zip") {
                           const form = new FormData();
                           form.append("file", file);
-                          const res = await fetch(`${API}/api/forge/import`, { method: "POST", body: form });
+                          const res = await fetch(`${getApiBase()}/api/forge/import`, { method: "POST", body: form });
                           const data = await res.json();
                           if (data.imported) {
                             soundNewChat();

@@ -56,6 +56,13 @@ AUTH_PATHS = {"/api/auth/status", "/api/auth/setup", "/api/auth/login", "/api/au
 
 MAX_REQUEST_BODY = 10 * 1024 * 1024  # 10 MB max for chat/save requests
 
+# Simple per-IP rate limiting for chat endpoint
+import threading
+_chat_rate: dict = {}  # {ip: [timestamp, ...]}
+_chat_rate_lock = threading.Lock()
+CHAT_RATE_LIMIT = 10  # max requests per window
+CHAT_RATE_WINDOW = 60  # seconds
+
 class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
     """Reject request bodies that exceed the size limit."""
     async def dispatch(self, request: Request, call_next):
@@ -512,6 +519,20 @@ def load_kasset_stack(request: dict):
 async def chat_stream_endpoint(request: Request):
     """SSE endpoint for streaming chat with tool execution."""
     try:
+        # Rate limiting for chat endpoint
+        client_ip = request.client.host if request.client else "127.0.0.1"
+        now = time.time()
+        with _chat_rate_lock:
+            timestamps = _chat_rate.get(client_ip, [])
+            timestamps = [t for t in timestamps if now - t < CHAT_RATE_WINDOW]
+            if len(timestamps) >= CHAT_RATE_LIMIT:
+                return JSONResponse(
+                    {"error": f"Rate limit exceeded. Max {CHAT_RATE_LIMIT} requests per {CHAT_RATE_WINDOW}s."},
+                    status_code=429,
+                )
+            timestamps.append(now)
+            _chat_rate[client_ip] = timestamps
+
         # Guard: model must be loaded before accepting chat requests
         if not model_client.is_healthy():
             status = model_client.model_status()
@@ -964,9 +985,11 @@ def forge_check_deps(tool_id: str):
 
 
 @app.post("/api/forge/tools/{tool_id}/deps/install")
-def forge_install_deps(tool_id: str):
+async def forge_install_deps(tool_id: str):
     """Install missing dependencies for a plugin tool. Local-only."""
-    results = plugin_loader.install_dependencies(tool_id)
+    import asyncio
+    loop = asyncio.get_event_loop()
+    results = await loop.run_in_executor(None, plugin_loader.install_dependencies, tool_id)
     if "error" in results:
         return JSONResponse(results, status_code=404)
     return {"tool_id": tool_id, "results": results}

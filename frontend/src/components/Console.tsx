@@ -673,14 +673,18 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
       const decoder = new TextDecoder();
       let sseBuffer = "";
       const STALL_TIMEOUT_MS = 90_000; // 90s watchdog per chunk
+      let stallTimer: ReturnType<typeof setTimeout> | null = null;
+      let parseFailCount = 0;
+      let parseWarned = false;
 
       while (true) {
         // Watchdog: if no data arrives within STALL_TIMEOUT_MS, abort
         const readPromise = reader.read();
-        const timeoutPromise = new Promise<{ value: undefined; done: true }>((_, reject) =>
-          setTimeout(() => reject(new Error("Stream stalled — no data received for 90 seconds")), STALL_TIMEOUT_MS)
-        );
+        const timeoutPromise = new Promise<{ value: undefined; done: true }>((_, reject) => {
+          stallTimer = setTimeout(() => reject(new Error("Stream stalled — no data received for 90 seconds")), STALL_TIMEOUT_MS);
+        });
         const { value, done } = await Promise.race([readPromise, timeoutPromise]);
+        if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
         if (done) break;
         
         sseBuffer += decoder.decode(value, { stream: true });
@@ -869,7 +873,11 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
               soundError();
             }
           } catch {
-            // Skip unparseable SSE lines silently
+            parseFailCount++;
+            if (parseFailCount >= 5 && !parseWarned) {
+              parseWarned = true;
+              console.warn("Multiple SSE parse failures — stream may be corrupted");
+            }
           }
         }
       }
@@ -1273,10 +1281,11 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
             const isLast = idx === messages.length - 1;
             const isBoot = idx === 0 && isBot;
             const isEditing = editingIdx === idx;
+            const msgKey = `${msg.role}-${idx}-${msg.content.slice(0, 32).replace(/\s/g, '')}`;
 
             return (
               <div 
-                key={idx} 
+                key={msgKey} 
                 className={`group/msg flex ${isUser ? "justify-end" : "justify-start"}`}
               >
                 <div className="relative max-w-[85%]">

@@ -51,37 +51,30 @@ logger = logging.getLogger(__name__)
 USER_TOOLS_DIR = Path.home() / ".kasset" / "tools"
 
 
-def _build_runner_script(handler_path: str, entry_point: str, pre_run: str = "") -> str:
-    """Build a self-contained Python script that runs in a subprocess.
-
-    The script:
-    1. Reads JSON args from stdin
-    2. Imports the handler module
-    3. Calls the entry point function
-    4. Writes JSON result to stdout (or plain text)
-    """
-    # Escape for embedding in triple-quoted string
-    handler_path_escaped = handler_path.replace("\\", "\\\\").replace("'", "\\'")
-    entry_escaped = entry_point.replace("'", "\\'")
-    pre_run_escaped = pre_run.replace("\\", "\\\\").replace("'", "\\'") if pre_run else ""
-
-    return f'''
+# The runner script is a fixed template — no string interpolation of user data.
+# All dynamic values (handler_path, entry_point, pre_run, args) are passed via JSON on stdin.
+_RUNNER_SCRIPT = '''
 import sys, json, importlib.util, io, contextlib
 
-# Read args from stdin
-args = json.loads(sys.stdin.read())
+# Read all dynamic config + args from stdin (safe — no string interpolation)
+payload = json.loads(sys.stdin.read())
+handler_path = payload["handler_path"]
+entry_point = payload["entry_point"]
+pre_run_code = payload.get("pre_run", "")
+args = payload.get("args", {})
 
-# Pre-run imports if specified
-{("exec('" + pre_run_escaped + "')") if pre_run else "pass"}
+# Pre-run imports if specified (executed in controlled subprocess)
+if pre_run_code:
+    exec(pre_run_code)
 
 # Load handler module
-spec = importlib.util.spec_from_file_location("_plugin_handler", r'{handler_path_escaped}')
+spec = importlib.util.spec_from_file_location("_plugin_handler", handler_path)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
-fn = getattr(mod, '{entry_escaped}', None)
+fn = getattr(mod, entry_point, None)
 if fn is None:
-    print(json.dumps({{"error": "Entry point '{entry_escaped}' not found"}}))
+    print(json.dumps({"error": f"Entry point '{entry_point}' not found"}))
     sys.exit(1)
 
 # Capture stdout from the handler
@@ -97,10 +90,10 @@ if result is None:
     print(out)
 elif isinstance(result, dict):
     if captured:
-        result["output"] = (captured + "\\n" + result.get("output", "")).strip()
+        result["output"] = (captured + "\n" + result.get("output", "")).strip()
     print(json.dumps(result))
 elif isinstance(result, str):
-    combined = (captured + "\\n" + result).strip() if captured else result
+    combined = (captured + "\n" + result).strip() if captured else result
     print(combined)
 else:
     print(str(result))
@@ -266,7 +259,8 @@ class PluginLoader:
 
     def install_dependencies(self, tool_id: str) -> Dict[str, str]:
         """Install missing dependencies for a plugin.
-        Returns {package_spec: "installed" | "already_installed" | error_message}."""
+        Returns {package_spec: "installed" | "already_installed" | error_message}.
+        Note: This runs pip synchronously. Call via run_in_executor from async context."""
         manifest = self.manifests.get(tool_id)
         if not manifest:
             return {"error": f"Plugin '{tool_id}' not found"}
@@ -307,7 +301,11 @@ class PluginLoader:
         if not manifest:
             return f"Error: Plugin tool '{tool_id}' not found"
 
-        handler_path = manifest.directory / manifest.handler_file
+        handler_path = (manifest.directory / manifest.handler_file).resolve()
+        # Prevent path traversal — handler must be inside the tool directory
+        if not str(handler_path).startswith(str(manifest.directory.resolve())):
+            logger.error(f"Plugin '{tool_id}': handler path traversal blocked: {manifest.handler_file}")
+            return f"Error: Handler path '{manifest.handler_file}' escapes tool directory"
         if not handler_path.exists():
             return f"Error: Handler not found: {handler_path}"
 
@@ -317,18 +315,17 @@ class PluginLoader:
         timeout = manifest.sandbox.get("timeout", 30)
         pre_run = manifest.sandbox.get("pre_run", "")
 
-        # Build the runner script that loads and calls the handler
-        runner_script = _build_runner_script(
-            handler_path=str(handler_path),
-            entry_point=manifest.entry_point,
-            pre_run=pre_run,
-        )
-
-        payload = json.dumps(valid_args)
+        # Build payload with all dynamic values — passed via stdin, not string interpolation
+        payload = json.dumps({
+            "handler_path": str(handler_path),
+            "entry_point": manifest.entry_point,
+            "pre_run": pre_run,
+            "args": valid_args,
+        })
 
         try:
             proc = subprocess.run(
-                [sys.executable, "-c", runner_script],
+                [sys.executable, "-c", _RUNNER_SCRIPT],
                 input=payload,
                 capture_output=True,
                 text=True,

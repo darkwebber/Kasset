@@ -9,9 +9,12 @@ Three layers of context:
 Each layer can be toggled on/off by the user via UserSettings.
 """
 
+import os
 import json
 import re
 import logging
+import fcntl
+import tempfile
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -32,6 +35,29 @@ def _ensure_dirs():
 
 
 _ensure_dirs()
+
+
+def _atomic_write_json(path: Path, data, indent: int = 2):
+    """Write JSON atomically with file locking."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    try:
+        with open(lock_path, "w") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            try:
+                fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "w") as f:
+                        json.dump(data, f, ensure_ascii=False, indent=indent)
+                    os.replace(tmp, str(path))
+                except Exception:
+                    try: os.unlink(tmp)
+                    except OSError: pass
+                    raise
+            finally:
+                fcntl.flock(lf, fcntl.LOCK_UN)
+    except Exception:
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=indent))
 
 
 # ═══════════════════════════════════════════
@@ -55,7 +81,6 @@ class UserSettings:
             "use_cartridge_context": True,
             "use_global_profile": True,
         },
-        "rss_feeds": [],
     }
 
     def __init__(self):
@@ -78,7 +103,7 @@ class UserSettings:
                         self._settings[key][dk] = dv
 
     def _save(self):
-        SETTINGS_FILE.write_text(json.dumps(self._settings, indent=2))
+        _atomic_write_json(SETTINGS_FILE, self._settings)
 
     def get(self, section: str, key: str) -> Any:
         return self._settings.get(section, {}).get(
@@ -234,7 +259,7 @@ class CartridgeContext:
     @staticmethod
     def save(cartridge_id: str, data: Dict[str, Any]):
         path = CartridgeContext._path(cartridge_id)
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        _atomic_write_json(path, data)
 
     @staticmethod
     def update_from_chat(
@@ -252,11 +277,11 @@ class CartridgeContext:
             ctx["first_used"] = now
         ctx["last_used"] = now
 
-        existing_topics = {t["text"] for t in ctx.get("topics", [])}
+        existing_topics = {t["text"].lower().strip() for t in ctx.get("topics", [])}
 
         # Add chat title as a topic
         if chat_title and chat_title != "New conversation":
-            if chat_title not in existing_topics:
+            if chat_title.lower().strip() not in existing_topics:
                 ctx.setdefault("topics", []).append(
                     {"text": chat_title, "date": now}
                 )
@@ -276,7 +301,7 @@ class CartridgeContext:
             ).strip()
             if clean and len(clean) > 15:
                 topic = clean[:80]
-                if topic not in existing_topics:
+                if topic.lower().strip() not in existing_topics:
                     ctx.setdefault("topics", []).append(
                         {"text": topic, "date": now}
                     )
@@ -296,7 +321,7 @@ class CartridgeContext:
     def add_learning(cartridge_id: str, learning: str):
         """Add a specific learning about the user for this cartridge."""
         ctx = CartridgeContext.load(cartridge_id)
-        existing = {l for l in ctx.get("learnings", [])}
+        existing = {str(l) for l in ctx.get("learnings", []) if isinstance(l, str)}
         if learning not in existing:
             ctx.setdefault("learnings", []).append(learning)
             if len(ctx["learnings"]) > CartridgeContext.MAX_LEARNINGS:
@@ -365,9 +390,7 @@ class GlobalProfile:
 
     @staticmethod
     def save(data: Dict[str, Any]):
-        GLOBAL_PROFILE_FILE.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2)
-        )
+        _atomic_write_json(GLOBAL_PROFILE_FILE, data)
 
     @staticmethod
     def update_from_chat(cartridge_id: str, messages: List[Dict]):
@@ -411,7 +434,9 @@ class GlobalProfile:
                 continue
             for lang, (lo, hi) in lang_ranges.items():
                 if lang not in existing_langs:
-                    if any(lo <= ord(c) <= hi for c in content):
+                    # Require >= 5% of characters in the range to avoid false positives
+                    lang_chars = sum(1 for c in content if lo <= ord(c) <= hi)
+                    if len(content) > 0 and lang_chars / len(content) >= 0.05:
                         profile.setdefault("languages", []).append(lang)
                         existing_langs.add(lang)
 

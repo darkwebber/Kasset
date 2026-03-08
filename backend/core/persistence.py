@@ -2,11 +2,14 @@
 Chat persistence and user memory system.
 Stores conversations and learned user preferences to disk as JSON.
 """
+import os
 import json
 import logging
 import time
 import hashlib
 import secrets
+import fcntl
+import tempfile
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -26,6 +29,35 @@ def _ensure_dirs():
 
 
 _ensure_dirs()
+
+
+def _atomic_write_json(path: Path, data: Any, indent: int = 2):
+    """Write JSON to a file atomically using write-to-temp + rename.
+    Uses fcntl advisory locking to prevent concurrent write corruption."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    try:
+        with open(lock_path, "w") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            try:
+                fd, tmp_path = tempfile.mkstemp(
+                    dir=str(path.parent), suffix=".tmp", prefix=".write_"
+                )
+                try:
+                    with os.fdopen(fd, "w") as f:
+                        json.dump(data, f, ensure_ascii=False, indent=indent)
+                    os.replace(tmp_path, str(path))
+                except Exception:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                    raise
+            finally:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+    except Exception:
+        # Fallback: direct write if locking fails (e.g. filesystem doesn't support locks)
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=indent))
 
 
 # ═══════════════════════════════════════════
@@ -68,7 +100,7 @@ class ChatStore:
             "created_at": existing["created_at"] if existing else now,
             "updated_at": now,
         }
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        _atomic_write_json(path, data)
         logger.info(f"Chat saved: {chat_id} ({len(messages)} messages)")
         return {k: v for k, v in data.items() if k != "messages"}
 
@@ -238,7 +270,7 @@ class UserMemory:
                 self._memories = []
 
     def _save(self):
-        USER_FILE.write_text(json.dumps(self._memories, ensure_ascii=False, indent=2))
+        _atomic_write_json(USER_FILE, self._memories)
 
     # Relevance decay constants
     ARCHIVE_AFTER_DAYS = 90
@@ -508,7 +540,7 @@ class PromptCache:
             keys = list(self._summary_cache.keys())
             for k in keys[:len(keys) - self._max_summaries]:
                 del self._summary_cache[k]
-        self._cache_file.write_text(json.dumps(self._summary_cache))
+        _atomic_write_json(self._cache_file, self._summary_cache, indent=0)
 
     @staticmethod
     def _hash_messages(messages: List[Dict]) -> str:

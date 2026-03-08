@@ -313,16 +313,19 @@ All user data is stored at `~/.kasset/` (never in the repo):
 ## Security Model
 
 - **Sandbox hardening** — `exec()`, `eval()`, `compile()`, `__import__()`, and builtins bypass tricks are blocked in the Python sandbox
+- **Plugin safety** — tool handler paths validated against directory traversal; all dynamic values (handler path, entry point, pre_run) passed via JSON stdin instead of string interpolation to prevent code injection
 - **CORS restriction** — origins restricted to `localhost`, `127.0.0.1`, and private LAN ranges (no wildcard `*`)
 - **Request size limits** — POST/PUT bodies capped at 10 MB to prevent abuse
+- **Rate limiting** — `/api/chat` endpoint rate-limited to 10 requests per 60 seconds per IP
 - **Inference lock** — concurrent model requests are serialized via threading lock to prevent corruption
+- **Atomic writes** — all JSON persistence uses `fcntl` file locking + write-to-temp-then-rename to prevent data corruption from concurrent access
 - **Blocklist + Consent** — destructive commands (`rm`, `sudo`) are blocked; process management (`kill`, `killall`, `pkill`) and write operations (`mkdir`, `cp`, `git commit`, `pip install`) require user approval via in-chat consent UI
 - **Shell chaining** — `&&`, `;`, `||` supported; each sub-command validated individually
 - **Pipes** — `cmd1 | cmd2 | cmd3` supported; each stage validated
 - **Path sandboxing** — file access restricted to home directory and temp folders
 - **Timeouts** — all commands have a 30-second timeout
 - **Output limits** — command output capped at 8000 characters
-- **Plugin isolation** — custom tool handlers run with stdout capture; errors caught and reported
+- **Plugin isolation** — custom tool handlers run in isolated subprocesses with stdout capture; errors caught and reported
 - **Network safety** — remote clients cannot execute code, shell commands, or browse the filesystem
 - **Auth** — scrypt password hashing, session tokens via `secrets.token_urlsafe(48)`, 3-strike lockout per IP
 - **Secure IDs** — chat IDs generated with `secrets.token_hex()` instead of predictable timestamps

@@ -178,5 +178,5 @@
       "description": "Preferred model ID for this kasset (e.g. 'mlx-community/Qwen3.5-9B-MLX-4bit'). If set, the UI will suggest switching to this model when the kasset is loaded."
     }
   },
-  "additionalProperties": false
+  "additionalProperties": true
 }

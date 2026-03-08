@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useRef, useCallback } from "react";
 import { ChevronDown } from "lucide-react";
 import { ErrorBoundary } from "../ErrorBoundary";
 import { getToolMeta } from "./toolMeta";
@@ -8,6 +8,17 @@ import type { ToolCallSegment } from "./types";
 
 const ToolCallCard = React.memo(function ToolCallCard({ segment, onConsent }: { segment: ToolCallSegment; onConsent?: (id: string, approved: boolean) => void }) {
   const [expanded, setExpanded] = useState(false);
+  const [iframeHeight, setIframeHeight] = useState(400);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+
+  const handleIframeLoad = useCallback(() => {
+    try {
+      const iframe = iframeRef.current;
+      if (!iframe?.contentDocument?.body) return;
+      const h = iframe.contentDocument.body.scrollHeight;
+      if (h > 50) setIframeHeight(Math.min(Math.max(h + 16, 200), 800));
+    } catch { /* cross-origin — keep default */ }
+  }, []);
   const meta = getToolMeta(segment.name);
   const isRunning = segment.status === "running";
   const isPreparing = segment.status === "preparing";
@@ -109,11 +120,13 @@ const ToolCallCard = React.memo(function ToolCallCard({ segment, onConsent }: { 
           <ErrorBoundary inline fallbackMessage="Failed to render visualization">
             <div className="rounded-lg overflow-hidden border border-white/5" style={{ background: '#0d1117' }}>
               <iframe
+                ref={iframeRef}
                 srcDoc={segment.html}
                 sandbox="allow-scripts"
                 className="w-full rounded-lg"
-                style={{ height: 500, border: 'none', background: '#0d1117' }}
+                style={{ height: iframeHeight, border: 'none', background: '#0d1117' }}
                 title="Interactive visualization"
+                onLoad={handleIframeLoad}
               />
             </div>
           </ErrorBoundary>
