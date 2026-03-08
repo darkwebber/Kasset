@@ -39,17 +39,72 @@ handler.py must export the entry_point function. Return value:
 
 import json
 import logging
-import importlib.util
+import subprocess
 import traceback
 import sys
-import io
-import contextlib
+import importlib
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
 USER_TOOLS_DIR = Path.home() / ".kasset" / "tools"
+
+
+def _build_runner_script(handler_path: str, entry_point: str, pre_run: str = "") -> str:
+    """Build a self-contained Python script that runs in a subprocess.
+
+    The script:
+    1. Reads JSON args from stdin
+    2. Imports the handler module
+    3. Calls the entry point function
+    4. Writes JSON result to stdout (or plain text)
+    """
+    # Escape for embedding in triple-quoted string
+    handler_path_escaped = handler_path.replace("\\", "\\\\").replace("'", "\\'")
+    entry_escaped = entry_point.replace("'", "\\'")
+    pre_run_escaped = pre_run.replace("\\", "\\\\").replace("'", "\\'") if pre_run else ""
+
+    return f'''
+import sys, json, importlib.util, io, contextlib
+
+# Read args from stdin
+args = json.loads(sys.stdin.read())
+
+# Pre-run imports if specified
+{("exec('" + pre_run_escaped + "')") if pre_run else "pass"}
+
+# Load handler module
+spec = importlib.util.spec_from_file_location("_plugin_handler", r'{handler_path_escaped}')
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+fn = getattr(mod, '{entry_escaped}', None)
+if fn is None:
+    print(json.dumps({{"error": "Entry point '{entry_escaped}' not found"}}))
+    sys.exit(1)
+
+# Capture stdout from the handler
+capture = io.StringIO()
+with contextlib.redirect_stdout(capture):
+    result = fn(**args)
+
+captured = capture.getvalue()
+
+# Normalize and output as JSON
+if result is None:
+    out = captured.strip() or "Tool executed successfully (no output)."
+    print(out)
+elif isinstance(result, dict):
+    if captured:
+        result["output"] = (captured + "\\n" + result.get("output", "")).strip()
+    print(json.dumps(result))
+elif isinstance(result, str):
+    combined = (captured + "\\n" + result).strip() if captured else result
+    print(combined)
+else:
+    print(str(result))
+'''
 
 
 class ToolManifest:
@@ -74,6 +129,7 @@ class ToolManifest:
         self.entry_point: str = data.get("entry_point", "execute")
         self.sandbox: dict = data.get("sandbox", {})
         self.tags: List[str] = data.get("tags", [])
+        self.dependencies: List[str] = data.get("dependencies", [])
 
     @classmethod
     def validate(cls, data: dict) -> List[str]:
@@ -123,6 +179,7 @@ class ToolManifest:
             "entry_point": self.entry_point,
             "sandbox": self.sandbox,
             "tags": self.tags,
+            "dependencies": self.dependencies,
         }
 
 
@@ -133,13 +190,11 @@ class PluginLoader:
         self.tools_dir = tools_dir
         self.tools_dir.mkdir(parents=True, exist_ok=True)
         self.manifests: Dict[str, ToolManifest] = {}
-        self._loaded_modules: Dict[str, Any] = {}
         self.load_all()
 
     def load_all(self):
         """Discover and load all tool plugins from the tools directory."""
         self.manifests.clear()
-        self._loaded_modules.clear()
 
         if not self.tools_dir.exists():
             return
@@ -192,36 +247,58 @@ class PluginLoader:
             for tid, m in self.manifests.items()
         }
 
-    def _load_handler_module(self, manifest: ToolManifest):
-        """Dynamically load the handler Python module."""
-        handler_path = manifest.directory / manifest.handler_file
-        if not handler_path.exists():
-            raise FileNotFoundError(f"Handler not found: {handler_path}")
+    def check_dependencies(self, tool_id: str) -> Dict[str, bool]:
+        """Check which dependencies are installed for a plugin.
+        Returns {package_spec: is_installed}."""
+        manifest = self.manifests.get(tool_id)
+        if not manifest:
+            return {}
+        result = {}
+        for dep in manifest.dependencies:
+            # Extract package name from spec like "plotly>=5.0"
+            pkg_name = dep.split(">=")[0].split("<=")[0].split("==")[0].split(">")[0].split("<")[0].split("!=")[0].strip()
+            try:
+                importlib.import_module(pkg_name.replace("-", "_"))
+                result[dep] = True
+            except ImportError:
+                result[dep] = False
+        return result
 
-        module_name = f"_qwen_plugin_{manifest.id}"
+    def install_dependencies(self, tool_id: str) -> Dict[str, str]:
+        """Install missing dependencies for a plugin.
+        Returns {package_spec: "installed" | "already_installed" | error_message}."""
+        manifest = self.manifests.get(tool_id)
+        if not manifest:
+            return {"error": f"Plugin '{tool_id}' not found"}
 
-        # Remove old module if reloading
-        if module_name in sys.modules:
-            del sys.modules[module_name]
-
-        spec = importlib.util.spec_from_file_location(module_name, str(handler_path))
-        if spec is None or spec.loader is None:
-            raise ImportError(f"Cannot load module from {handler_path}")
-
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = module
-
-        # Pre-run sandbox imports if specified
-        sandbox_cfg = manifest.sandbox
-        if sandbox_cfg.get("pre_run"):
-            exec(sandbox_cfg["pre_run"], module.__dict__)
-
-        spec.loader.exec_module(module)
-        self._loaded_modules[manifest.id] = module
-        return module
+        status = self.check_dependencies(tool_id)
+        results = {}
+        for dep, installed in status.items():
+            if installed:
+                results[dep] = "already_installed"
+                continue
+            try:
+                proc = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", dep],
+                    capture_output=True, text=True, timeout=120,
+                )
+                if proc.returncode == 0:
+                    results[dep] = "installed"
+                    logger.info(f"Installed dependency '{dep}' for plugin '{tool_id}'")
+                else:
+                    results[dep] = f"failed: {proc.stderr.strip()[:200]}"
+                    logger.error(f"Failed to install '{dep}' for '{tool_id}': {proc.stderr.strip()[:200]}")
+            except subprocess.TimeoutExpired:
+                results[dep] = "failed: installation timed out"
+            except Exception as e:
+                results[dep] = f"failed: {str(e)}"
+        return results
 
     def execute_tool(self, tool_id: str, args: dict) -> Any:
-        """Execute a plugin tool with the given arguments.
+        """Execute a plugin tool in an isolated subprocess.
+
+        Communication: JSON over stdin → subprocess runs handler → JSON over stdout.
+        Timeout: manifest.sandbox.timeout (default 30s).
 
         Returns:
             str or dict with keys: output, images (optional), html (optional)
@@ -230,47 +307,65 @@ class PluginLoader:
         if not manifest:
             return f"Error: Plugin tool '{tool_id}' not found"
 
+        handler_path = manifest.directory / manifest.handler_file
+        if not handler_path.exists():
+            return f"Error: Handler not found: {handler_path}"
+
+        # Filter args to only declared parameters
+        valid_args = {k: v for k, v in args.items() if k in manifest.parameters}
+
+        timeout = manifest.sandbox.get("timeout", 30)
+        pre_run = manifest.sandbox.get("pre_run", "")
+
+        # Build the runner script that loads and calls the handler
+        runner_script = _build_runner_script(
+            handler_path=str(handler_path),
+            entry_point=manifest.entry_point,
+            pre_run=pre_run,
+        )
+
+        payload = json.dumps(valid_args)
+
         try:
-            # Load module if not cached
-            if tool_id not in self._loaded_modules:
-                self._load_handler_module(manifest)
+            proc = subprocess.run(
+                [sys.executable, "-c", runner_script],
+                input=payload,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(manifest.directory),
+            )
 
-            module = self._loaded_modules[tool_id]
-            entry_fn = getattr(module, manifest.entry_point, None)
-            if entry_fn is None:
-                return f"Error: Entry point '{manifest.entry_point}' not found in handler"
+            if proc.returncode != 0:
+                stderr = proc.stderr.strip()
+                # Truncate long tracebacks
+                if len(stderr) > 2000:
+                    stderr = stderr[-2000:]
+                logger.error(f"Plugin '{tool_id}' failed (exit {proc.returncode}): {stderr}")
+                return f"Error executing plugin '{tool_id}': {stderr}"
 
-            # Filter args to only declared parameters
-            valid_args = {}
-            for k, v in args.items():
-                if k in manifest.parameters:
-                    valid_args[k] = v
+            stdout = proc.stdout.strip()
+            if not stdout:
+                return "Tool executed successfully (no output)."
 
-            # Capture stdout
-            output_capture = io.StringIO()
-            result = None
-            with contextlib.redirect_stdout(output_capture):
-                result = entry_fn(**valid_args)
-
-            stdout = output_capture.getvalue()
-
-            # Normalize result
-            if result is None:
-                return stdout.strip() or "Tool executed successfully (no output)."
-            if isinstance(result, str):
-                combined = (stdout + "\n" + result).strip() if stdout else result
-                return combined
-            if isinstance(result, dict):
-                # Merge stdout into output
-                if stdout:
-                    result["output"] = (stdout + "\n" + result.get("output", "")).strip()
+            # Try to parse JSON result from the subprocess
+            try:
+                result = json.loads(stdout)
+                # Merge any stderr warnings into output
+                if proc.stderr.strip():
+                    warnings = proc.stderr.strip()[:500]
+                    if isinstance(result, dict):
+                        result["output"] = (result.get("output", "") + f"\n[warnings: {warnings}]").strip()
                 return result
+            except json.JSONDecodeError:
+                # Plain text output
+                return stdout
 
-            return str(result)
-
+        except subprocess.TimeoutExpired:
+            logger.error(f"Plugin '{tool_id}' timed out after {timeout}s")
+            return f"Error: Plugin '{tool_id}' timed out after {timeout} seconds. Try simplifying the operation."
         except Exception as e:
-            tb = traceback.format_exc()
-            logger.error(f"Plugin execution error for {tool_id}: {tb}")
+            logger.error(f"Plugin execution error for {tool_id}: {traceback.format_exc()}")
             return f"Error executing plugin '{tool_id}': {str(e)}"
 
 

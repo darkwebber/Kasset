@@ -6,6 +6,7 @@ import json
 import logging
 import time
 import hashlib
+import secrets
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -40,7 +41,7 @@ class ChatStore:
 
     @staticmethod
     def generate_id() -> str:
-        return hashlib.sha256(f"{time.time()}".encode()).hexdigest()[:12]
+        return secrets.token_hex(6)
 
     @staticmethod
     def save(chat_id: str, messages: List[Dict], cartridge_ids: List[str],
@@ -85,23 +86,104 @@ class ChatStore:
 
     @staticmethod
     def list_all() -> List[Dict]:
-        """List all saved conversations (metadata only, no messages)."""
+        """List all saved conversations (metadata only, no messages).
+        Reads only enough bytes to extract metadata fields without parsing full message content."""
         chats = []
         for f in sorted(CHATS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
             try:
-                data = json.loads(f.read_text())
-                chats.append({
-                    "id": data["id"],
-                    "title": data.get("title", "Untitled"),
-                    "summary": data.get("summary", ""),
-                    "cartridge_ids": data.get("cartridge_ids", []),
-                    "message_count": data.get("message_count", 0),
-                    "created_at": data.get("created_at", ""),
-                    "updated_at": data.get("updated_at", ""),
-                })
+                # For very large files (>1MB), read only the first portion to extract metadata
+                file_size = f.stat().st_size
+                if file_size > 1_000_000:
+                    # Metadata fields are always at the top of the JSON; read first 2KB
+                    raw = f.read_text(encoding="utf-8")[:2048]
+                    # Parse partial JSON to extract metadata
+                    meta = {}
+                    for key in ["id", "title", "summary", "message_count", "created_at", "updated_at"]:
+                        import re as _re
+                        m = _re.search(rf'"{key}"\s*:\s*"([^"]*?)"', raw)
+                        if m:
+                            meta[key] = m.group(1)
+                        else:
+                            m = _re.search(rf'"{key}"\s*:\s*(\d+)', raw)
+                            if m:
+                                meta[key] = int(m.group(1))
+                    # Extract cartridge_ids array
+                    cid_match = _re.search(r'"cartridge_ids"\s*:\s*\[([^\]]*)\]', raw)
+                    if cid_match:
+                        meta["cartridge_ids"] = [s.strip().strip('"') for s in cid_match.group(1).split(',') if s.strip()]
+                    else:
+                        meta["cartridge_ids"] = []
+                    chats.append({
+                        "id": meta.get("id", f.stem),
+                        "title": meta.get("title", "Untitled"),
+                        "summary": meta.get("summary", ""),
+                        "cartridge_ids": meta.get("cartridge_ids", []),
+                        "message_count": meta.get("message_count", 0),
+                        "created_at": meta.get("created_at", ""),
+                        "updated_at": meta.get("updated_at", ""),
+                    })
+                else:
+                    data = json.loads(f.read_text())
+                    chats.append({
+                        "id": data["id"],
+                        "title": data.get("title", "Untitled"),
+                        "summary": data.get("summary", ""),
+                        "cartridge_ids": data.get("cartridge_ids", []),
+                        "message_count": data.get("message_count", 0),
+                        "created_at": data.get("created_at", ""),
+                        "updated_at": data.get("updated_at", ""),
+                    })
             except Exception:
                 continue
         return chats
+
+    @staticmethod
+    def search(query: str, max_results: int = 20) -> List[Dict]:
+        """Search across all saved conversations by message content and title."""
+        if not query or not query.strip():
+            return []
+        q = query.lower().strip()
+        results = []
+        for f in sorted(CHATS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+            try:
+                data = json.loads(f.read_text())
+                title = data.get("title", "")
+                messages = data.get("messages", [])
+
+                # Search title and message content
+                matched_excerpt = ""
+                if q in title.lower():
+                    matched_excerpt = title
+                else:
+                    for msg in messages:
+                        content = msg.get("content", "")
+                        if q in content.lower():
+                            # Extract snippet around match
+                            idx = content.lower().index(q)
+                            start = max(0, idx - 40)
+                            end = min(len(content), idx + len(q) + 60)
+                            snippet = content[start:end].replace("\n", " ").strip()
+                            if start > 0:
+                                snippet = "…" + snippet
+                            if end < len(content):
+                                snippet = snippet + "…"
+                            matched_excerpt = snippet
+                            break
+
+                if matched_excerpt:
+                    results.append({
+                        "id": data["id"],
+                        "title": data.get("title", "Untitled"),
+                        "excerpt": matched_excerpt,
+                        "cartridge_ids": data.get("cartridge_ids", []),
+                        "message_count": data.get("message_count", 0),
+                        "updated_at": data.get("updated_at", ""),
+                    })
+                    if len(results) >= max_results:
+                        break
+            except Exception:
+                continue
+        return results
 
     @staticmethod
     def delete(chat_id: str) -> bool:
@@ -158,6 +240,11 @@ class UserMemory:
     def _save(self):
         USER_FILE.write_text(json.dumps(self._memories, ensure_ascii=False, indent=2))
 
+    # Relevance decay constants
+    ARCHIVE_AFTER_DAYS = 90
+    MAX_CONTEXT_TOKENS = 2000  # Token budget for injected memories
+    CHARS_PER_TOKEN = 3.5
+
     def add(self, content: str, memory_type: str = "fact", source: str = "auto") -> Dict:
         """Add a memory. Deduplicates by checking for similar existing entries."""
         if memory_type not in self.MEMORY_TYPES:
@@ -169,6 +256,7 @@ class UserMemory:
             if existing["content"].lower().strip() == content_lower:
                 # Update timestamp instead of duplicating
                 existing["updated_at"] = datetime.now().isoformat()
+                existing["last_accessed"] = datetime.now().isoformat()
                 existing["hits"] = existing.get("hits", 1) + 1
                 self._save()
                 return existing
@@ -180,6 +268,7 @@ class UserMemory:
             "source": source,
             "created_at": datetime.now().isoformat(),
             "updated_at": datetime.now().isoformat(),
+            "last_accessed": datetime.now().isoformat(),
             "hits": 1,
             "active": True,
         }
@@ -210,11 +299,90 @@ class UserMemory:
             return [m for m in self._memories if m.get("active", True)]
         return list(self._memories)
 
+    def _relevance_score(self, memory: Dict) -> float:
+        """Compute a relevance score for a memory based on recency and usage.
+        Higher = more relevant. Score decays over time."""
+        now = time.time()
+        last_accessed_str = memory.get("last_accessed", memory.get("updated_at", memory.get("created_at", "")))
+        try:
+            last_dt = datetime.fromisoformat(last_accessed_str)
+            days_since = (now - last_dt.timestamp()) / 86400
+        except (ValueError, TypeError):
+            days_since = 30  # fallback
+
+        hits = memory.get("hits", 1)
+
+        # Decay: halve relevance every 30 days; boost by log(hits)
+        import math
+        recency_factor = 0.5 ** (days_since / 30)
+        usage_factor = 1.0 + math.log(max(1, hits))
+
+        # Instructions get a priority boost
+        type_bonus = 2.0 if memory.get("type") == "instruction" else 1.0
+
+        return recency_factor * usage_factor * type_bonus
+
+    def auto_archive_stale(self) -> int:
+        """Archive memories not accessed in ARCHIVE_AFTER_DAYS. Returns count archived."""
+        now = time.time()
+        count = 0
+        for m in self._memories:
+            if not m.get("active", True):
+                continue
+            last_str = m.get("last_accessed", m.get("updated_at", m.get("created_at", "")))
+            try:
+                last_dt = datetime.fromisoformat(last_str)
+                days = (now - last_dt.timestamp()) / 86400
+            except (ValueError, TypeError):
+                days = self.ARCHIVE_AFTER_DAYS + 1
+            if days > self.ARCHIVE_AFTER_DAYS:
+                m["active"] = False
+                count += 1
+        if count:
+            self._save()
+            logger.info(f"Auto-archived {count} stale memories")
+        return count
+
+    def touch(self, memory_id: str):
+        """Update last_accessed timestamp for a memory (called when it's injected into context)."""
+        for m in self._memories:
+            if m["id"] == memory_id:
+                m["last_accessed"] = datetime.now().isoformat()
+                # Don't save on every touch — batch save later
+                break
+
     def get_context_block(self) -> str:
-        """Build a context block string to inject into system prompts."""
+        """Build a context block string to inject into system prompts.
+        Uses relevance scoring to select top-N memories within token budget."""
+        # Auto-archive stale memories first
+        self.auto_archive_stale()
+
         active = self.get_all(active_only=True)
         if not active:
             return ""
+
+        # Score and rank
+        scored = [(m, self._relevance_score(m)) for m in active]
+        scored.sort(key=lambda x: x[1], reverse=True)
+
+        # Select within token budget
+        selected = []
+        token_count = 0
+        header_tokens = 20  # reserve for section headers
+        for m, score in scored:
+            est_tokens = max(1, int(len(m["content"]) / self.CHARS_PER_TOKEN))
+            if token_count + est_tokens + header_tokens > self.MAX_CONTEXT_TOKENS:
+                break
+            selected.append(m)
+            token_count += est_tokens
+            # Touch to update last_accessed
+            self.touch(m["id"])
+
+        if not selected:
+            return ""
+
+        # Batch save after touching
+        self._save()
 
         sections = {
             "instruction": [],
@@ -222,7 +390,7 @@ class UserMemory:
             "fact": [],
             "context": [],
         }
-        for m in active:
+        for m in selected:
             sections.get(m["type"], sections["fact"]).append(m["content"])
 
         lines = ["\n\n## User Profile (learned from previous interactions)"]

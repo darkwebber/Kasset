@@ -1,4 +1,5 @@
 import json
+import hashlib
 import logging
 import re
 import uuid
@@ -16,19 +17,38 @@ from .context_manager import (
 logger = logging.getLogger(__name__)
 
 # ─── Consent state for commands requiring user approval ───
-_consent_state: Dict[str, dict] = {}  # consent_id -> {"event": Event, "approved": bool}
+# Global registry keyed by consent_id. Each Agent instance creates unique IDs,
+# so concurrent streams never collide.
+_consent_registry: Dict[str, dict] = {}  # consent_id -> {"event": Event, "approved": bool}
+_consent_lock = threading.Lock()
+
+def _register_consent(consent_id: str) -> threading.Event:
+    """Register a new consent entry. Returns the Event to wait on."""
+    event = threading.Event()
+    with _consent_lock:
+        _consent_registry[consent_id] = {"event": event, "approved": False}
+    return event
+
+def _pop_consent(consent_id: str) -> dict:
+    """Remove and return a consent entry."""
+    with _consent_lock:
+        return _consent_registry.pop(consent_id, {})
 
 def approve_consent(consent_id: str):
     """Called by api.py when user approves a command."""
-    if consent_id in _consent_state:
-        _consent_state[consent_id]["approved"] = True
-        _consent_state[consent_id]["event"].set()
+    with _consent_lock:
+        entry = _consent_registry.get(consent_id)
+    if entry:
+        entry["approved"] = True
+        entry["event"].set()
 
 def deny_consent(consent_id: str):
     """Called by api.py when user denies a command."""
-    if consent_id in _consent_state:
-        _consent_state[consent_id]["approved"] = False
-        _consent_state[consent_id]["event"].set()
+    with _consent_lock:
+        entry = _consent_registry.get(consent_id)
+    if entry:
+        entry["approved"] = False
+        entry["event"].set()
 
 def parse_thinking(raw: str) -> Tuple[str, str]:
     """Extract thinking content from model output."""
@@ -253,28 +273,85 @@ def _diagnose_tool_call_error(text: str) -> str:
 
 
 def _enrich_tool_error(tool_name: str, tool_args: dict, error_result: str) -> str:
-    """Produce actionable feedback when a tool execution fails."""
+    """Produce actionable feedback when a tool execution fails.
+    Pattern-matches common error types and provides specific remediation hints."""
     hints = []
     err = error_result.lower()
+    err_raw = error_result
 
-    if "no such file" in err or "does not exist" in err:
-        hints.append("The file/path doesn't exist. Use `list_directory` or `search_files` to find the correct path first.")
-    elif "permission denied" in err:
-        hints.append("Permission denied. Try a different path or approach.")
+    # ── File system errors ──
+    if "no such file" in err or "does not exist" in err or "filenotfounderror" in err:
+        path_hint = tool_args.get("path", tool_args.get("directory", ""))
+        hints.append(f"The file/path doesn't exist. Use `list_directory` or `search_files` to verify the correct path first.")
+        if path_hint:
+            # Suggest checking parent directory
+            from pathlib import PurePosixPath
+            parent = str(PurePosixPath(path_hint).parent)
+            hints.append(f"Try: list_directory(\"{parent}\") to see what exists.")
+    elif "permission" in err and "denied" in err:
+        hints.append("Permission denied. The sandbox cannot access this path. Try a different location or use ~/.")
+    elif "isadirectoryerror" in err:
+        hints.append("You tried to read a directory as a file. Use `list_directory` instead of `read_file`.")
+    elif "notadirectoryerror" in err:
+        hints.append("You tried to list a file as a directory. Use `read_file` instead of `list_directory`.")
+
+    # ── Python code errors ──
+    elif "syntaxerror" in err or "indentationerror" in err:
+        # Try to extract line number
+        line_match = re.search(r'line (\d+)', err_raw)
+        line_info = f" at line {line_match.group(1)}" if line_match else ""
+        hints.append(f"Syntax/indentation error{line_info}. Fix the specific line — do NOT rewrite the entire script.")
+    elif "nameerror" in err:
+        var_match = re.search(r"name '(\w+)' is not defined", err_raw)
+        if var_match:
+            hints.append(f"Variable `{var_match.group(1)}` is not defined. Check spelling, or define it before use. Remember: variables persist across execute_python calls.")
+        else:
+            hints.append("A variable is not defined. Check your variable names and ensure they're defined before use.")
+    elif "typeerror" in err:
+        hints.append("Type mismatch. Check function argument types and return values. Common causes: passing None where a value is expected, wrong number of arguments.")
+    elif "keyerror" in err:
+        key_match = re.search(r"KeyError:\s*['\"]?(\w+)", err_raw)
+        key_info = f" Key `{key_match.group(1)}` not found." if key_match else ""
+        hints.append(f"Dictionary key not found.{key_info} Use `.get()` for safe access or check available keys with `.keys()`.")
+    elif "indexerror" in err:
+        hints.append("List index out of range. Check the length of your list/array before indexing. Use `len()` to verify.")
+    elif "valueerror" in err:
+        hints.append("Invalid value. Check that input data is in the expected format (e.g., numeric strings for int(), valid dates for datetime).")
+    elif "attributeerror" in err:
+        attr_match = re.search(r"has no attribute '(\w+)'", err_raw)
+        if attr_match:
+            hints.append(f"Object has no attribute `{attr_match.group(1)}`. Check the object type with `type()` and use `dir()` to see available attributes.")
+        else:
+            hints.append("Attribute error. Verify the object type and available methods.")
+    elif "modulenotfounderror" in err or "no module named" in err:
+        mod_match = re.search(r"No module named ['\"](\w+)", err_raw)
+        mod_name = mod_match.group(1) if mod_match else "the module"
+        hints.append(f"Module `{mod_name}` is not installed. Pre-available: pandas, numpy, matplotlib, scipy, seaborn, plotly, Pillow, sympy. For others, ask the user to `pip install {mod_name}`.")
+    elif "zerodivisionerror" in err:
+        hints.append("Division by zero. Add a check before dividing (e.g., `if denominator != 0:`).")
+
+    # ── Shell command errors ──
     elif "timed out" in err:
-        hints.append("The command took too long (30s limit). Simplify the operation or break it into smaller steps.")
-    elif "syntax" in err or "indentation" in err:
-        hints.append("There's a syntax error in the code. Review and fix it before retrying.")
-    elif "modulenotfounderror" in err or "import" in err:
-        hints.append("A required module is not available. Use only pre-imported packages (pandas, numpy, matplotlib, scipy, seaborn) or ask the user to install it.")
+        hints.append("Command timed out (30s limit). Simplify the operation, add filters (e.g., head/tail), or break into smaller steps.")
     elif "blocked" in err:
-        hints.append("This command is blocked for safety. Try an alternative approach.")
+        hints.append("This command is blocked for safety. Use an alternative approach or a different tool.")
     elif "consent_required" in err:
-        hints.append("This command needs user approval. The user will see a prompt to approve it.")
+        hints.append("This command needs user approval. Wait for the consent prompt.")
+    elif "command not found" in err:
+        cmd_match = re.search(r"(\w+): command not found", err_raw)
+        if cmd_match:
+            hints.append(f"`{cmd_match.group(1)}` is not installed on this system. Try an alternative tool or approach.")
+    elif "exit" in err and re.search(r'exit (\d+)', err):
+        exit_match = re.search(r'exit (\d+)', err)
+        hints.append(f"Command exited with code {exit_match.group(1)}. Check stderr output above for details.")
+
+    # ── Generic fallback ──
+    elif "traceback" in err and not hints:
+        hints.append("An exception occurred. Read the traceback carefully and fix only the failing line(s).")
 
     base = f"Tool result for {tool_name}: {error_result}"
     if hints:
-        base += "\n[Hint: " + " ".join(hints) + "]"
+        base += "\n[Diagnosis: " + " ".join(hints) + "]"
     return base
 
 
@@ -362,9 +439,15 @@ class Agent:
         self.config = config
         self.allow_shell = allow_shell
 
-    @staticmethod
-    def _estimate_tokens(text: str) -> int:
-        """Rough token count estimate from character length."""
+    def _estimate_tokens(self, text: str) -> int:
+        """Token count using actual tokenizer if available, heuristic fallback."""
+        try:
+            proc = getattr(self.model_client, "processor", None)
+            tokenizer = getattr(proc, "tokenizer", None) if proc else None
+            if tokenizer and hasattr(tokenizer, "encode"):
+                return len(tokenizer.encode(text))
+        except Exception:
+            pass
         return max(1, int(len(text) / Agent.CHARS_PER_TOKEN))
 
     def _trim_context(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
@@ -436,6 +519,7 @@ class Agent:
                 "content": f"[{dropped} earlier messages trimmed]"
             })
         result.extend(selected)
+        self._trimmed_count = dropped  # Store for SSE notification
         return result
         
     TOOL_DESCRIPTIONS = {
@@ -443,13 +527,15 @@ class Agent:
         "list_directory": {"desc": "List directory contents with file sizes.", "params": {"path": "Directory path (default: '.')"}},
         "get_system_info": {"desc": "Get system overview: OS, hardware, disk, uptime.", "params": {}},
         "search_files": {"desc": "Search for files matching a glob pattern (max 50 results).", "params": {"pattern": "Glob pattern to match", "directory": "Directory to search (default: '~')"}},
-        "read_file": {"desc": "Read a text file (max 200 lines / 50KB).", "params": {"path": "File path to read", "max_lines": "Max lines to read (default: 100)"}},
-        "run_command": {"desc": "Run shell commands (30s timeout). Supports pipes (|), chaining (&&, ;). Most commands work. Destructive commands (rm, sudo, kill) are blocked. Write operations (mkdir, cp, mv, chmod, pip install, git commit, etc.) require user consent — you'll get a CONSENT_REQUIRED response for those.", "params": {"command": "Shell command to run"}},
+        "read_file": {"desc": "Read a text file. Files under 50KB are shown in full (up to 200 lines). Files over 50KB automatically return a structural overview: imports, function/class signatures with line numbers, exports, plus the first 20 and last 10 lines. Max 500KB.", "params": {"path": "File path to read", "max_lines": "Max lines to read (default: 100, only for files under 50KB)"}},
+        "run_command": {"desc": "Run shell commands (30s timeout). Supports pipes (|), chaining (&&, ;). Most commands work. Destructive commands (rm, sudo) are blocked. Process management (kill, killall, pkill) and write operations (mkdir, cp, mv, chmod, pip install, git commit, etc.) require user consent — you'll get a CONSENT_REQUIRED response for those.", "params": {"command": "Shell command to run"}},
         "calculate": {"desc": "Evaluate a math expression safely. Supports sqrt, log, trig, factorial, pi, e.", "params": {"expression": "Math expression to evaluate"}},
-        "execute_python": {"desc": "Execute Python code in a stateful sandbox. Captures stdout/stderr. Matplotlib plots are AUTO-CAPTURED as images — do NOT call plt.show(). Variables persist across calls. Pre-imported: pandas (pd), numpy (np), matplotlib.pyplot (plt), scipy (+ scipy.stats), seaborn (sns), math, json, csv, re, PIL/PILImage, sklearn (model_selection, preprocessing, metrics, ensemble, linear_model, cluster, decomposition), torch, torchvision. Quick chart helpers: qchart_bar(labels, values, title), qchart_pie(labels, values, title), qchart_line(x, y_series, labels, title), qchart_scatter(x, y, title), qchart_hist(data, bins, title), qchart_heatmap(data, xlabels, ylabels, title). If a package is missing, you'll get MISSING_PACKAGE — ask the user for consent to install it before retrying.", "params": {"code": "Python code to execute"}},
+        "execute_python": {"desc": "Execute Python code in a stateful sandbox. Captures stdout/stderr. Matplotlib plots are AUTO-CAPTURED as images — do NOT call plt.show(). Variables persist across calls. Pre-imported: pandas (pd), numpy (np), matplotlib.pyplot (plt), scipy (+ scipy.stats), seaborn (sns), math, json, csv, re, PIL/PILImage, sklearn (model_selection, preprocessing, metrics, ensemble, linear_model, cluster, decomposition), torch, torchvision. Quick chart helpers: qchart_bar, qchart_pie, qchart_line, qchart_scatter, qchart_hist, qchart_heatmap. Image editing helpers (for Image Editor cartridge): img_load, img_save, img_show, img_adjust, img_hue_shift, img_color_replace, img_color_range_replace, img_tint, img_adjust_highlights, img_adjust_shadows, img_overlay_color, img_get_original, img_crop, img_resize, img_rotate, img_flip, img_blur, img_grayscale, img_edge_detect, img_threshold, img_draw_rect, img_draw_text, img_convert, img_info. If a package is missing, you'll get MISSING_PACKAGE — ask the user for consent to install it before retrying.", "params": {"code": "Python code to execute"}},
         "execute_cpp": {"desc": "Compile and run C++ code (C++17, g++/clang++). Returns compilation errors or program output.", "params": {"code": "C++ source code", "stdin_input": "(optional) stdin input for the program"}},
         "search_web": {"desc": "Search the web using DuckDuckGo. Returns titles, URLs, and snippets for top results.", "params": {"query": "Search query", "max_results": "Number of results (default: 5)"}},
-        "read_url": {"desc": "Fetch and extract readable text content from a webpage URL. Returns markdown-formatted content.", "params": {"url": "Full URL to fetch (include https://)"}},
+        "read_url": {"desc": "Fetch and extract readable text content from a webpage URL. Content is preprocessed: ads, navs, sidebars, and boilerplate are stripped. Returns clean markdown.", "params": {"url": "Full URL to fetch (include https://)"}},
+        "read_rss": {"desc": "Read and parse an RSS or Atom feed. Returns structured entries with title, date, link, and summary.", "params": {"url": "RSS/Atom feed URL", "max_items": "Max entries to return (default: 10)"}},
+        "get_location": {"desc": "Get approximate location from IP geolocation: city, region, country, timezone, coordinates.", "params": {}},
     }
 
     def _build_system_message(self) -> Dict[str, str]:
@@ -464,26 +550,45 @@ class Agent:
             params_str = ", ".join(f'{k}: {v}' for k, v in info["params"].items())
             tool_lines.append(f"- **{t}**({params_str}): {info['desc']}")
         
+        tool_id_list = ", ".join(f"`{t}`" for t in self.config.tools)
         tools_block = (
             "\n\n## Available Tools\n"
             "Call tools using this EXACT format — one tool call per message:\n\n"
             '```\n<tool_call>{"name": "tool_name", "arguments": {"param": "value"}}</tool_call>\n```\n\n'
             "### Tool Call Rules (CRITICAL)\n"
+            f"**You may ONLY call tools from this exact list: {tool_id_list}.** "
+            "Any tool not in this list DOES NOT EXIST. Do NOT invent tool names, do NOT guess tool names from your training data. "
+            "If a tool you want is not listed, use an alternative from the list above or answer without tools.\n\n"
             "1. The JSON inside `<tool_call>` must be valid. For `code` arguments with multi-line code, use `\\n` for newlines and `\\\"` for quotes inside strings.\n"
-            '2. Call **ONE tool at a time**. After the `</tool_call>` tag, STOP generating text. Wait for the tool result before continuing.\n'
-            "3. Do NOT put any text after the `</tool_call>` closing tag.\n"
+            '2. Call **ONE tool at a time**. After the `</tool_call>` tag, STOP generating — do not write any more text. Wait for the tool result.\n'
+            "3. Do NOT put ANY text after the `</tool_call>` closing tag. Not even a period.\n"
             "4. Do NOT wrap tool calls in markdown code fences — just use the raw `<tool_call>` XML tags.\n"
-            "5. When a tool returns an image/plot, the user can already see it. Do NOT describe or recreate it — focus on insights.\n\n"
+            "5. When a tool returns an image/plot, the user can already see it. Do NOT describe or recreate it — focus on insights.\n"
+            "6. Do NOT place `<tool_call>` inside `<think>` blocks. Finish thinking first, then output the tool call.\n\n"
+            "### Code Tool Rules (execute_python)\n"
+            "- **Keep code SHORT** — under 40 lines. Long code will be truncated. Break complex tasks into multiple smaller calls.\n"
+            "- **NumPy images are (H, W, C)** — height × width × channels. To modify the red channel: `img[:, :, 0]`, NOT `img[0]`.\n"
+            "- **Use PIL/Pillow built-ins** for image operations: `ImageEnhance`, `ImageFilter`, `Image.convert('HSV')`. Do NOT manually implement HSV conversion.\n"
+            "- **Matplotlib plots are auto-captured** — do NOT call `plt.show()` or `plt.savefig()`.\n"
+            "- **If code fails, fix only the error** — do NOT rewrite the entire script. Make a minimal targeted edit.\n"
+            "- **Never repeat the same code** — if code failed twice, try a fundamentally different approach or give up and explain.\n\n"
             "### Agentic Behavior\n"
             "You are an autonomous agent that can chain multiple tool calls to accomplish complex tasks. "
-            "For multi-step tasks, think through your plan in your reasoning before acting:\n"
-            "1. **Plan** — decide what information you need and which tools to use in what order.\n"
-            "2. **Act** — call the first tool. You will automatically get the result and can continue.\n"
+            "For multi-step tasks, think through your plan first:\n"
+            "1. **Plan** — decide what information you need and which tools to use.\n"
+            "2. **Act** — call the first tool.\n"
             "3. **Observe** — analyze the result. Decide if you need another tool call or can answer.\n"
-            "4. **Adapt** — if a tool fails, read the error carefully, adjust your approach, and retry with a corrected call.\n"
-            "5. **Synthesize** — once you have all the data, give a clear final answer.\n\n"
-            "You can use up to 10 tool calls per response. Do NOT ask the user to do things you can do with tools — "
-            "just do them. If you need to read a file, list a directory, run code, or search the web, call the tool directly.\n\n"
+            "4. **Adapt** — if a tool fails, read the error carefully. Try a DIFFERENT approach, not the same one.\n"
+            "5. **Synthesize** — once you have enough data, give a clear final answer and STOP.\n\n"
+            "**Error recovery**: If a tool is not available, immediately switch to an available alternative. "
+            "If code fails twice with the same error, stop and explain the issue to the user instead of retrying.\n\n"
+            "### Tool Selection Guide\n"
+            "- **Math**: Use `calculate` for simple arithmetic. Use `execute_python` for anything complex.\n"
+            "- **Files**: Always `read_file` before editing. Use `list_directory` to explore first.\n"
+            "- **Search**: Prefer `search_files` over `run_command find`. Use `search_web` for factual lookups.\n"
+            "- **Shell**: Use `run_command` only when no specialized tool fits.\n"
+            "- **Web**: Use `read_url` to fetch content. Use `search_web` first if you don't have a URL.\n"
+            "- **Images**: If the user attaches an image and you can see it, describe what you see directly. Use `execute_python` with PIL for editing.\n\n"
             + "\n".join(tool_lines)
         )
         
@@ -547,11 +652,20 @@ class Agent:
             }
         })
         
-        # Max rounds of tool calling
-        MAX_TOOL_ROUNDS = 6
+        # Notify frontend if context was trimmed
+        trimmed = getattr(self, '_trimmed_count', 0)
+        if trimmed > 0:
+            yield json.dumps({
+                "type": "context_trimmed",
+                "data": {"dropped_messages": trimmed}
+            })
+        
+        # Max rounds of tool calling — configurable per cartridge
+        MAX_TOOL_ROUNDS = getattr(self.config, 'suggested_max_rounds', 6)
         MAX_PARSE_RETRIES = 2
         consecutive_failures = 0
         session_errors: List[str] = []  # Track errors to prevent repeats
+        _prev_code_hashes: List[str] = []  # Track code hashes to detect identical re-submissions
         
         current_history = list(base_history)
         
@@ -578,12 +692,26 @@ class Agent:
             is_retry_gen = False  # set True during parse-retry re-generations
             yield json.dumps({"type": "status", "data": "Generating..."})
             
-            for chunk in self.model_client.stream_generate(
-                messages=current_history,
-                image=image_path if tool_round == 0 else None,
-                max_tokens=self.config.suggested_tokens,
-                thinking=self.config.suggested_thinking
-            ):
+            # Retry wrapper: one automatic retry on transient inference failures
+            def _stream_with_retry():
+                try:
+                    yield from self.model_client.stream_generate(
+                        messages=current_history,
+                        image=image_path if tool_round == 0 else None,
+                        max_tokens=self.config.suggested_tokens,
+                        thinking=self.config.suggested_thinking
+                    )
+                except Exception as inf_err:
+                    logger.warning(f"Inference failed (attempt 1): {inf_err}, retrying...")
+                    import gc; gc.collect()
+                    yield from self.model_client.stream_generate(
+                        messages=current_history,
+                        image=image_path if tool_round == 0 else None,
+                        max_tokens=self.config.suggested_tokens,
+                        thinking=self.config.suggested_thinking
+                    )
+
+            for chunk in _stream_with_retry():
                 accumulated += chunk
                 
                 # Check for thinking completion to stream actual content
@@ -607,6 +735,17 @@ class Agent:
             # ── 2. Process complete generation ──
             thought, text = parse_thinking(accumulated)
             
+            # If model placed a tool call INSIDE the think block, extract it
+            if thought and not extract_tool_call(text):
+                think_tool = extract_tool_call(thought)
+                if think_tool:
+                    logger.info("Found tool call inside <think> block — extracting it")
+                    # Reconstruct text with the tool call so it gets processed normally
+                    text = f'<tool_call>{json.dumps(think_tool)}</tool_call>'
+            
+            # Strip leading JSON fragments leaked from think blocks (e.g. '"}> properly.')
+            text = re.sub(r'^["\s\}>\.\,]+(?:\s+\w{0,20}\.?)?\s*\n', '', text)
+            
             # Strip leading echo fragments from previous round (e.g. "code.", "intuitive.")
             if tool_round > 0 and text:
                 frag_match = re.match(r'^(\S[^.\n]{0,28}\.)\s*\n\n', text)
@@ -615,17 +754,35 @@ class Agent:
             
             # ── 2a. Detect output limit truncation and auto-continue ──
             _truncated = False
+            _truncated_tool_call = False
             if '<tool_call>' in text and '</tool_call>' not in text:
                 _truncated = True
+                _truncated_tool_call = True
             elif text.count('```') % 2 != 0:
                 _truncated = True
             
             if _truncated and tool_round < MAX_TOOL_ROUNDS - 1:
-                logger.info(f"Detected truncated output (round {tool_round}), auto-continuing")
-                yield json.dumps({"type": "status", "data": "Continuing response…"})
-                current_history.append({"role": "assistant", "content": accumulated})
-                current_history.append({"role": "user", "content": "Your previous response was cut off mid-way due to output length limits. Continue EXACTLY from where you stopped. Do NOT repeat any content already written."})
-                continue
+                logger.info(f"Detected truncated output (round {tool_round}, tool_call={_truncated_tool_call})")
+                if _truncated_tool_call:
+                    # Tool call was truncated — do NOT auto-continue (causes infinite loops)
+                    # Instead, strip the partial tool call and ask model to write shorter code
+                    yield json.dumps({"type": "status", "data": "Code was too long — requesting shorter version…"})
+                    clean_text = re.sub(r'<tool_call>[\s\S]*$', '', text, flags=re.IGNORECASE).strip()
+                    current_history.append({"role": "assistant", "content": clean_text or "(attempted tool call)"})
+                    current_history.append({"role": "user", "content": (
+                        "[SYSTEM] Your tool call was truncated because the code was too long. "
+                        "You MUST write much shorter code — under 30 lines. Strategies:\n"
+                        "1. Break the task into smaller steps across multiple tool calls.\n"
+                        "2. Use built-in library functions instead of manual implementations.\n"
+                        "3. Remove comments and combine simple lines.\n"
+                        "Do NOT repeat the same long code. Write a SHORTER version now."
+                    )})
+                    continue
+                else:
+                    yield json.dumps({"type": "status", "data": "Continuing response…"})
+                    current_history.append({"role": "assistant", "content": accumulated})
+                    current_history.append({"role": "user", "content": "Your previous response was cut off mid-way due to output length limits. Continue EXACTLY from where you stopped. Do NOT repeat any content already written."})
+                    continue
 
             tool_req = extract_tool_call(text)
 
@@ -693,6 +850,22 @@ class Agent:
             tool_name = tool_req.get("name", "")
             tool_args = tool_req.get("arguments", {})
             
+            # Detect identical code re-submissions (loop detection)
+            if tool_name in ("execute_python", "execute_cpp") and "code" in tool_args:
+                code_hash = hashlib.md5(tool_args["code"].encode()).hexdigest()
+                if code_hash in _prev_code_hashes:
+                    logger.warning(f"Identical code re-submission detected (hash={code_hash[:8]}), forcing stop")
+                    yield json.dumps({"type": "status", "data": "Detected repeated code — stopping loop."})
+                    current_history.append({"role": "assistant", "content": "(repeated identical code)"})
+                    current_history.append({"role": "user", "content": (
+                        "[SYSTEM] You just submitted the EXACT SAME code again. This is a loop. "
+                        "STOP calling tools. Either explain what you're trying to do and what's failing, "
+                        "or try a completely different approach with much simpler code."
+                    )})
+                    consecutive_failures = max(consecutive_failures, 3)
+                    continue
+                _prev_code_hashes.append(code_hash)
+            
             start_data = {"name": tool_name, "args": tool_args}
             if tool_name in ("execute_python", "execute_cpp") and "code" in tool_args:
                 start_data["code"] = tool_args["code"]
@@ -706,17 +879,28 @@ class Agent:
                 sandbox_images = []
                 html_artifact = ""
             elif tool_name not in self.config.tools:
-                tool_result = f"Error: Tool '{tool_name}' is not enabled in this cartridge."
+                available = ", ".join(self.config.tools)
+                tool_result = (
+                    f"Error: Tool '{tool_name}' does not exist. "
+                    f"The ONLY tools you can use are: {available}. "
+                    f"Pick one of these tools instead. Do NOT retry '{tool_name}'."
+                )
                 sandbox_images = []
                 html_artifact = ""
             else:
-                raw_result = execute_tool(tool_name, tool_args)
-                if isinstance(raw_result, dict):
-                    tool_result = raw_result.get("output", "")
-                    sandbox_images = raw_result.get("images", [])
-                    html_artifact = raw_result.get("html", "")
-                else:
-                    tool_result = str(raw_result)
+                try:
+                    raw_result = execute_tool(tool_name, tool_args)
+                    if isinstance(raw_result, dict):
+                        tool_result = raw_result.get("output", "")
+                        sandbox_images = raw_result.get("images", [])
+                        html_artifact = raw_result.get("html", "")
+                    else:
+                        tool_result = str(raw_result)
+                        sandbox_images = []
+                        html_artifact = ""
+                except Exception as tool_err:
+                    logger.error(f"Tool '{tool_name}' crashed: {tool_err}")
+                    tool_result = f"Error: Tool '{tool_name}' failed unexpectedly: {str(tool_err)[:200]}"
                     sandbox_images = []
                     html_artifact = ""
 
@@ -725,13 +909,12 @@ class Agent:
                 cmd_match = re.search(r'`([^`]+)`', tool_result)
                 cmd = cmd_match.group(1) if cmd_match else tool_args.get("command", "")
                 consent_id = str(uuid.uuid4())
-                event = threading.Event()
-                _consent_state[consent_id] = {"event": event, "approved": False}
+                event = _register_consent(consent_id)
                 yield json.dumps({"type": "consent_required", "data": {
                     "id": consent_id, "command": cmd, "tool": tool_name
                 }})
                 event.wait(timeout=120)
-                state = _consent_state.pop(consent_id, {})
+                state = _pop_consent(consent_id)
                 if state.get("approved"):
                     approved_result = run_approved_command(cmd)
                     tool_result = str(approved_result) if not isinstance(approved_result, dict) else approved_result.get("output", str(approved_result))
@@ -748,7 +931,12 @@ class Agent:
             # ── 4. Build enriched context for next round ──
             is_failure = tool_result in ("(no output)", "") or str(tool_result).startswith("Error:") or "Traceback" in str(tool_result)
             consecutive_failures = consecutive_failures + 1 if is_failure else 0
-            
+
+            # Loop detection: if the model retries the exact same tool+args, force stop sooner
+            call_sig = f"{tool_name}:{json.dumps(tool_args, sort_keys=True)[:200]}"
+            if is_failure and call_sig in session_errors:
+                consecutive_failures = max(consecutive_failures, 3)  # Immediate escalation for repeated identical failures
+
             if consecutive_failures >= 3:
                 yield json.dumps({"type": "status", "data": "Multiple tools failed. Generating final response…"})
                 failure_note = "\nIMPORTANT: Multiple tools have failed. Stop calling tools and give your best final answer with whatever data you have."
@@ -776,6 +964,7 @@ class Agent:
             if is_failure:
                 err_summary = f"{tool_name}({json.dumps(tool_args)[:80]}): {str(tool_result)[:120]}"
                 session_errors.append(err_summary)
+                session_errors.append(call_sig)  # Store call signature for loop detection
             if session_errors:
                 result_context += f"\n[Previous errors in this session — do NOT repeat these: {'; '.join(session_errors[-3:])}]"
             result_context += failure_note
@@ -785,7 +974,7 @@ class Agent:
             history_text = re.sub(r'<tool_call>[\s\S]*$', '', history_text, flags=re.IGNORECASE)
             history_text = re.sub(r'<\|tool_call\|>[\s\S]*$', '', history_text)
             history_text = history_text.strip()
-            current_history.append({"role": "assistant", "content": history_text or "(used tool)"})
+            current_history.append({"role": "assistant", "content": history_text or "[Calling tool...]"})
             current_history.append({"role": "user", "content": result_context})
             
             if consecutive_failures >= 3:
@@ -802,38 +991,33 @@ class Agent:
             yield json.dumps({"type": "token", "data": final_text})
             yield json.dumps({"type": "done", "data": final_text})
         
-        # Post-conversation: extract user memories
-        try:
-            extracted = user_memory.extract_memories_from_conversation(history)
-            new_memories = []
-            for mem_type, mem_content in extracted:
-                mem = user_memory.add(mem_content, memory_type=mem_type, source="auto")
-                if mem.get("hits", 1) == 1:  # Only report newly created
-                    new_memories.append(mem)
-            if new_memories:
-                yield json.dumps({
-                    "type": "memory_update",
-                    "data": [{"content": m["content"], "type": m["type"]} for m in new_memories]
-                })
-                logger.info(f"Extracted {len(new_memories)} new memories from conversation")
-        except Exception as e:
-            logger.warning(f"Memory extraction failed: {e}")
+        # Post-conversation: extract memories & update context in background thread
+        def _post_conversation_tasks():
+            try:
+                extracted = user_memory.extract_memories_from_conversation(history)
+                for mem_type, mem_content in extracted:
+                    user_memory.add(mem_content, memory_type=mem_type, source="auto")
+                if extracted:
+                    logger.info(f"Extracted {len(extracted)} memories from conversation (async)")
+            except Exception as e:
+                logger.warning(f"Memory extraction failed: {e}")
 
-        # Post-conversation: update cartridge context and global profile
-        try:
-            cid = self.config.active_cartridge_ids[0] if self.config.active_cartridge_ids else None
-            if cid:
-                title = ""
-                for msg in history:
-                    if msg.get("role") == "user":
-                        t = msg["content"].strip()
-                        if not t.startswith("[Attached file:") and not t.startswith("Tool result"):
-                            title = t[:60]
-                            break
-                CartridgeContext.update_from_chat(cid, history, chat_title=title)
-                GlobalProfile.update_from_chat(cid, history)
-        except Exception as e:
-            logger.warning(f"Context update failed: {e}")
+            try:
+                cid = self.config.active_cartridge_ids[0] if self.config.active_cartridge_ids else None
+                if cid:
+                    title = ""
+                    for msg in history:
+                        if msg.get("role") == "user":
+                            t = msg["content"].strip()
+                            if not t.startswith("[Attached file:") and not t.startswith("Tool result"):
+                                title = t[:60]
+                                break
+                    CartridgeContext.update_from_chat(cid, history, chat_title=title)
+                    GlobalProfile.update_from_chat(cid, history)
+            except Exception as e:
+                logger.warning(f"Context update failed: {e}")
+
+        threading.Thread(target=_post_conversation_tasks, daemon=True).start()
 
         # Cleanup temp image files created during inference
         self.model_client.cleanup_temp_files()

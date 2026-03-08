@@ -41,12 +41,21 @@ _ensure_dirs()
 class UserSettings:
     """User preferences and toggles for context management."""
 
+    DEFAULT_RSS_FEEDS = [
+        {"name": "Hacker News", "url": "https://news.ycombinator.com/rss"},
+        {"name": "TechCrunch", "url": "https://techcrunch.com/feed/"},
+        {"name": "Ars Technica", "url": "https://feeds.arstechnica.com/arstechnica/index"},
+        {"name": "The Verge", "url": "https://www.theverge.com/rss/index.xml"},
+        {"name": "BBC News", "url": "http://feeds.bbci.co.uk/news/rss.xml"},
+    ]
+
     DEFAULTS = {
         "context": {
             "use_session_summary": True,
             "use_cartridge_context": True,
             "use_global_profile": True,
-        }
+        },
+        "rss_feeds": [],
     }
 
     def __init__(self):
@@ -89,6 +98,16 @@ class UserSettings:
         if section not in self._settings:
             self._settings[section] = {}
         self._settings[section].update(values)
+        self._save()
+
+    def get_rss_feeds(self) -> list:
+        feeds = self._settings.get("rss_feeds", [])
+        if not feeds:
+            return list(self.DEFAULT_RSS_FEEDS)
+        return feeds
+
+    def set_rss_feeds(self, feeds: list):
+        self._settings["rss_feeds"] = feeds
         self._save()
 
 

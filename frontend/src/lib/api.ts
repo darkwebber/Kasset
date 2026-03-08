@@ -57,22 +57,47 @@ export function authFetch(url: string, init?: RequestInit): Promise<Response> {
 }
 
 /**
+ * Callback invoked when a 401 is detected on an API response.
+ * Set by page.tsx to trigger the auth modal without a hard reload.
+ */
+let _onSessionExpired: (() => void) | null = null;
+
+export function onSessionExpired(cb: () => void) {
+  _onSessionExpired = cb;
+}
+
+/**
  * Install a global fetch interceptor that transparently adds the auth token
  * to all API requests. This avoids changing every fetch() call across the app.
  * Only targets requests to the backend (port 7861).
+ * Also intercepts 401 responses to trigger re-authentication for network clients.
  */
 if (typeof window !== "undefined") {
   const _originalFetch = window.fetch.bind(window);
   (window as any).fetch = function(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url;
+    const isApiCall = url.includes(":7861/api/");
     const token = localStorage.getItem(AUTH_TOKEN_KEY);
-    if (token && url.includes(":7861/api/")) {
+    let fetchPromise: Promise<Response>;
+    if (token && isApiCall) {
       const headers = new Headers(init?.headers);
       if (!headers.has("x-auth-token")) {
         headers.set("x-auth-token", token);
       }
-      return _originalFetch(input, { ...init, headers });
+      fetchPromise = _originalFetch(input, { ...init, headers });
+    } else {
+      fetchPromise = _originalFetch(input, init);
     }
-    return _originalFetch(input, init);
+    // Intercept 401s on API calls — session expired or revoked
+    if (isApiCall && !url.includes("/api/auth/")) {
+      fetchPromise = fetchPromise.then(response => {
+        if (response.status === 401 && _onSessionExpired) {
+          clearAuthToken();
+          _onSessionExpired();
+        }
+        return response;
+      });
+    }
+    return fetchPromise;
   };
 }

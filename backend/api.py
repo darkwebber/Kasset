@@ -18,10 +18,11 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Kasset API")
 
-# Allow any origin so LAN clients (e.g. mobile on same network) can connect
+# CORS: allow localhost frontends and LAN clients.
+# We use allow_origin_regex to match localhost, 127.0.0.1, and any private LAN IP.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -32,8 +33,12 @@ from .core.network_auth import (
     is_password_configured, setup_password, verify_password,
     is_ip_locked_out, record_failed_attempt, get_lockout_remaining,
     create_session, validate_session, revoke_session, cleanup_sessions,
+    load_sessions_from_disk,
     MAX_FAILED_ATTEMPTS, LOCKOUT_DURATION_SECONDS, _failed_attempts,
 )
+
+# Restore persisted sessions on startup so network clients survive backend restarts
+load_sessions_from_disk()
 
 LOCAL_ADDRS = {"127.0.0.1", "::1", "localhost"}
 BLOCKED_NETWORK_PATHS = {
@@ -47,7 +52,23 @@ BLOCKED_NETWORK_WRITE_PATHS = {
     "/api/forge/tools",         # creating/modifying tool code
 }
 # Auth endpoints are always accessible (no token needed)
-AUTH_PATHS = {"/api/auth/status", "/api/auth/setup", "/api/auth/login", "/api/auth/logout"}
+AUTH_PATHS = {"/api/auth/status", "/api/auth/setup", "/api/auth/login", "/api/auth/logout", "/api/health"}
+
+MAX_REQUEST_BODY = 10 * 1024 * 1024  # 10 MB max for chat/save requests
+
+class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+    """Reject request bodies that exceed the size limit."""
+    async def dispatch(self, request: Request, call_next):
+        if request.method in ("POST", "PUT"):
+            content_length = request.headers.get("content-length")
+            if content_length and int(content_length) > MAX_REQUEST_BODY:
+                # Allow file uploads (handled separately with their own limit)
+                if "/api/fs/upload" not in request.url.path and "/api/forge/import" not in request.url.path:
+                    return JSONResponse(
+                        {"error": f"Request body too large. Maximum is {MAX_REQUEST_BODY // (1024*1024)} MB."},
+                        status_code=413,
+                    )
+        return await call_next(request)
 
 class NetworkSafetyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -106,9 +127,11 @@ class NetworkSafetyMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 app.add_middleware(NetworkSafetyMiddleware)
+app.add_middleware(RequestSizeLimitMiddleware)
 
-# Initialize subsystems
-model_client = ModelClient()
+# Initialize subsystems — model loads async so server starts immediately
+model_client = ModelClient(lazy=True)
+model_client.load_model_async()
 cartridge_loader = CartridgeLoader()
 
 # --- API Models ---
@@ -127,6 +150,162 @@ class MemoryRequest(BaseModel):
 
 class MemoryUpdateRequest(BaseModel):
     content: str
+
+# ═══════════════════════════════════════════
+# HEALTH CHECK
+# ═══════════════════════════════════════════
+
+@app.get("/api/health")
+def health_check():
+    """Returns server and model status. Used by frontend to detect readiness."""
+    return {
+        "server": "ok",
+        "model": model_client.model_status(),
+    }
+
+
+@app.get("/api/models")
+def list_models():
+    """List all available models from the HuggingFace cache."""
+    models = ModelClient.list_available_models()
+    current = model_client.model_path
+    return {
+        "models": models,
+        "current": current,
+        "status": model_client.model_status(),
+    }
+
+
+@app.post("/api/model/switch")
+async def switch_model(request: Request):
+    """Switch to a different model. Local-only endpoint.
+    Body: { "model_path": "mlx-community/SomeModel-4bit" }
+    """
+    is_local = getattr(request.state, "is_local", False)
+    if not is_local:
+        return JSONResponse({"error": "Model switching is only available from the local machine."}, status_code=403)
+
+    body = await request.json()
+    new_path = body.get("model_path", "").strip()
+    if not new_path:
+        return JSONResponse({"error": "model_path is required"}, status_code=400)
+
+    if model_client._loading:
+        return JSONResponse({"error": "A model is currently loading. Please wait."}, status_code=409)
+
+    old_path = model_client.model_path
+    model_client.model_path = new_path
+    model_client.model = None
+    model_client.processor = None
+    model_client._image_cache.clear()
+
+    import gc
+    gc.collect()
+
+    model_client.load_model_async()
+    logger.info(f"Model switch initiated: {old_path} -> {new_path}")
+    return {"status": "loading", "model": new_path, "previous": old_path}
+
+
+# ═══════════════════════════════════════════
+# CONTEXT PREVIEW
+# ═══════════════════════════════════════════
+
+@app.post("/api/context/preview")
+async def context_preview(request: Request):
+    """Preview the full context that would be injected for a cartridge stack.
+    Body: { "cartridge_ids": ["..."] }
+    Returns each context section with its content and estimated token count.
+    """
+    body = await request.json()
+    cartridge_ids = body.get("cartridge_ids", [])
+    if not cartridge_ids:
+        return JSONResponse({"error": "cartridge_ids required"}, status_code=400)
+
+    try:
+        config = cartridge_loader.load_stack(cartridge_ids)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
+
+    from .core.persistence import user_memory
+    from .core.agent import Agent
+
+    # Estimate tokens with heuristic (no model needed)
+    def est(text: str) -> int:
+        return max(1, int(len(text) / 3.5)) if text else 0
+
+    sections = []
+
+    # 1. System prompt
+    sections.append({
+        "name": "System Prompt",
+        "tokens": est(config.merged_prompt),
+        "preview": config.merged_prompt[:500] + ("..." if len(config.merged_prompt) > 500 else ""),
+    })
+
+    # 2. Tool descriptions block
+    all_descs = dict(Agent.TOOL_DESCRIPTIONS)
+    try:
+        from .core.plugin_loader import plugin_loader
+        all_descs.update(plugin_loader.get_tool_descriptions())
+    except Exception:
+        pass
+    tool_lines = []
+    for t in config.tools:
+        info = all_descs.get(t, {"desc": t, "params": {}})
+        params_str = ", ".join(f'{k}: {v}' for k, v in info["params"].items())
+        tool_lines.append(f"- {t}({params_str}): {info['desc']}")
+    tools_text = "\n".join(tool_lines)
+    sections.append({
+        "name": "Tool Descriptions",
+        "tokens": est(tools_text),
+        "preview": tools_text[:400] + ("..." if len(tools_text) > 400 else ""),
+    })
+
+    # 3. User memory
+    mem_block = user_memory.get_context_block()
+    if mem_block:
+        sections.append({
+            "name": "User Memory",
+            "tokens": est(mem_block),
+            "preview": mem_block[:400] + ("..." if len(mem_block) > 400 else ""),
+        })
+
+    # 4. Cartridge context
+    try:
+        from .core.context_layers import CartridgeContext
+        cid = cartridge_ids[0] if cartridge_ids else None
+        if cid:
+            cart_block = CartridgeContext.get_context_block(cid)
+            if cart_block:
+                sections.append({
+                    "name": "Kasset Context",
+                    "tokens": est(cart_block),
+                    "preview": cart_block[:400] + ("..." if len(cart_block) > 400 else ""),
+                })
+    except Exception:
+        pass
+
+    # 5. Global profile
+    try:
+        from .core.context_layers import GlobalProfile
+        gp_block = GlobalProfile.get_context_block()
+        if gp_block:
+            sections.append({
+                "name": "Global Profile",
+                "tokens": est(gp_block),
+                "preview": gp_block[:400] + ("..." if len(gp_block) > 400 else ""),
+            })
+    except Exception:
+        pass
+
+    total_tokens = sum(s["tokens"] for s in sections)
+    return {
+        "sections": sections,
+        "total_tokens": total_tokens,
+        "max_tokens": 28000,
+    }
+
 
 # ═══════════════════════════════════════════
 # NETWORK AUTHENTICATION ENDPOINTS
@@ -333,6 +512,14 @@ def load_kasset_stack(request: dict):
 async def chat_stream_endpoint(request: Request):
     """SSE endpoint for streaming chat with tool execution."""
     try:
+        # Guard: model must be loaded before accepting chat requests
+        if not model_client.is_healthy():
+            status = model_client.model_status()
+            if status["status"] == "loading":
+                return JSONResponse({"error": "Model is still loading. Please wait a moment and try again."}, status_code=503)
+            else:
+                return JSONResponse({"error": f"Model is not available: {status.get('error', 'unknown error')}"}, status_code=503)
+
         body = await request.json()
         chat_req = ChatRequest(**body)
         is_local = getattr(request.state, "is_local", True)
@@ -352,22 +539,97 @@ async def chat_stream_endpoint(request: Request):
         # Generate or reuse chat_id
         chat_id = chat_req.chat_id or ChatStore.generate_id()
 
+        STREAM_TIMEOUT = 300  # 5 minutes max total stream duration
+
         def event_generator():
+            start_time = time.time()
             try:
                 # Send chat_id to frontend so it can track this conversation
                 yield f"data: {json.dumps({'type': 'chat_id', 'data': chat_id})}\n\n"
                 
                 for event_json in agent.chat_stream(chat_req.messages, image_path):
+                    if time.time() - start_time > STREAM_TIMEOUT:
+                        logger.warning(f"Stream timeout ({STREAM_TIMEOUT}s) for chat {chat_id}")
+                        yield f"data: {json.dumps({'type': 'error', 'data': 'Response timed out after 5 minutes. Try a simpler request or break the task into steps.'})}\n\n"
+                        break
                     yield f"data: {event_json}\n\n"
             except GeneratorExit:
                 logger.info(f"Client disconnected for chat {chat_id}")
             except Exception as e:
                 logger.error(f"Stream error: {e}")
+                yield f"data: {json.dumps({'type': 'error', 'data': f'Stream error: {str(e)}'})}\n\n"
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
     except Exception as e:
         logger.error(f"Chat error: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ═══════════════════════════════════════════
+# WORKFLOW EXECUTION
+# ═══════════════════════════════════════════
+
+@app.post("/api/workflow/execute")
+async def execute_workflow(request: Request):
+    """Execute a cartridge workflow step-by-step via SSE.
+    Body: { "cartridge_id": "...", "workflow_name": "...", "chat_id": "..." (optional) }
+    Each workflow step is sent to the agent as a user message. Results stream back via SSE.
+    """
+    if not model_client.is_healthy():
+        status = model_client.model_status()
+        if status["status"] == "loading":
+            return JSONResponse({"error": "Model is still loading."}, status_code=503)
+        return JSONResponse({"error": "Model is not available."}, status_code=503)
+
+    body = await request.json()
+    cartridge_id = body.get("cartridge_id", "")
+    workflow_name = body.get("workflow_name", "")
+    chat_id = body.get("chat_id") or ChatStore.generate_id()
+    is_local = getattr(request.state, "is_local", True)
+
+    # Look up the workflow
+    workflows = cartridge_loader.get_workflows(cartridge_id)
+    workflow = next((w for w in workflows if w["name"] == workflow_name), None)
+    if not workflow:
+        return JSONResponse({"error": f"Workflow '{workflow_name}' not found in cartridge '{cartridge_id}'"}, status_code=404)
+
+    config = cartridge_loader.load_stack([cartridge_id])
+
+    def workflow_generator():
+        try:
+            yield f"data: {json.dumps({'type': 'chat_id', 'data': chat_id})}\n\n"
+            yield f"data: {json.dumps({'type': 'workflow_start', 'data': {'name': workflow_name, 'total_steps': len(workflow['steps'])}})}\n\n"
+
+            history = []
+            for step_idx, step_prompt in enumerate(workflow["steps"]):
+                yield f"data: {json.dumps({'type': 'workflow_step', 'data': {'step': step_idx + 1, 'total': len(workflow['steps']), 'prompt': step_prompt}})}\n\n"
+
+                history.append({"role": "user", "content": step_prompt})
+                agent = Agent(model_client, config, allow_shell=is_local)
+
+                step_events = []
+                for event_json in agent.chat_stream(history, None):
+                    yield f"data: {event_json}\n\n"
+                    try:
+                        evt = json.loads(event_json)
+                        step_events.append(evt)
+                    except Exception:
+                        pass
+
+                # Extract assistant response for history continuity
+                tokens = [e.get("data", "") for e in step_events if e.get("type") == "token"]
+                assistant_text = "".join(tokens) if tokens else "(completed)"
+                history.append({"role": "assistant", "content": assistant_text})
+
+            yield f"data: {json.dumps({'type': 'workflow_done', 'data': workflow_name})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'data': 'Workflow complete'})}\n\n"
+        except GeneratorExit:
+            logger.info(f"Workflow stream disconnected: {workflow_name}")
+        except Exception as e:
+            logger.error(f"Workflow error: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'data': f'Workflow error: {str(e)}'})}\n\n"
+
+    return StreamingResponse(workflow_generator(), media_type="text/event-stream")
 
 
 # ═══════════════════════════════════════════
@@ -378,6 +640,11 @@ async def chat_stream_endpoint(request: Request):
 def list_chats():
     """List all saved conversations."""
     return {"chats": chat_store.list_all()}
+
+@app.get("/api/chats/search")
+def search_chats(q: str = ""):
+    """Search across all saved conversations by content."""
+    return {"results": chat_store.search(q)}
 
 @app.get("/api/chats/{chat_id}")
 def get_chat(chat_id: str):
@@ -492,6 +759,42 @@ async def update_settings(section: str, request: Request):
     body = await request.json()
     user_settings.update_section(section, body)
     return {"settings": user_settings.get_all()}
+
+
+# ═══════════════════════════════════════════
+# RSS FEED MANAGEMENT
+# ═══════════════════════════════════════════
+
+@app.get("/api/rss-feeds")
+def get_rss_feeds():
+    """Get user's configured RSS feeds."""
+    return {"feeds": user_settings.get_rss_feeds()}
+
+@app.put("/api/rss-feeds")
+async def set_rss_feeds(request: Request):
+    """Replace all RSS feeds."""
+    body = await request.json()
+    feeds = body.get("feeds", [])
+    user_settings.set_rss_feeds(feeds)
+    return {"feeds": user_settings.get_rss_feeds()}
+
+@app.post("/api/rss-feeds")
+async def add_rss_feed(request: Request):
+    """Add a single RSS feed."""
+    body = await request.json()
+    feeds = user_settings.get_rss_feeds()
+    feeds.append({"name": body.get("name", ""), "url": body.get("url", "")})
+    user_settings.set_rss_feeds(feeds)
+    return {"feeds": feeds}
+
+@app.delete("/api/rss-feeds/{index}")
+def delete_rss_feed(index: int):
+    """Delete an RSS feed by index."""
+    feeds = user_settings.get_rss_feeds()
+    if 0 <= index < len(feeds):
+        feeds.pop(index)
+        user_settings.set_rss_feeds(feeds)
+    return {"feeds": user_settings.get_rss_feeds()}
 
 
 # ═══════════════════════════════════════════
@@ -650,6 +953,25 @@ async def forge_test_tool(request: Request):
     return {"result": result}
 
 
+@app.get("/api/forge/tools/{tool_id}/deps")
+def forge_check_deps(tool_id: str):
+    """Check dependency status for a plugin tool."""
+    manifest = plugin_loader.get_manifest(tool_id)
+    if not manifest:
+        return JSONResponse({"error": f"Tool '{tool_id}' not found"}, status_code=404)
+    deps = plugin_loader.check_dependencies(tool_id)
+    return {"tool_id": tool_id, "dependencies": deps, "all_installed": all(deps.values()) if deps else True}
+
+
+@app.post("/api/forge/tools/{tool_id}/deps/install")
+def forge_install_deps(tool_id: str):
+    """Install missing dependencies for a plugin tool. Local-only."""
+    results = plugin_loader.install_dependencies(tool_id)
+    if "error" in results:
+        return JSONResponse(results, status_code=404)
+    return {"tool_id": tool_id, "results": results}
+
+
 @app.get("/api/forge/tool-meta")
 def forge_tool_meta():
     """Get frontend rendering metadata for all plugin tools."""
@@ -692,6 +1014,100 @@ def forge_delete_kasset(cartridge_id: str):
 def forge_all_tool_ids():
     """Return all available tool IDs (builtin + plugins) for kasset editor."""
     return {"tool_ids": get_all_tool_ids()}
+
+
+# ── Export / Import ──────────────────────────────────────
+
+@app.get("/api/forge/export/{cartridge_id}")
+def forge_export_kasset(cartridge_id: str):
+    """Export a kasset + its plugin tools as a .kasset zip bundle.
+    Returns the zip file for download."""
+    import zipfile, io, shutil
+    from fastapi.responses import StreamingResponse
+
+    raw = cartridge_loader.get_cartridge_raw(cartridge_id)
+    if not raw:
+        return JSONResponse({"error": f"Kasset '{cartridge_id}' not found"}, status_code=404)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        # 1. cartridge.json
+        zf.writestr("cartridge.json", json.dumps(raw, indent=2))
+
+        # 2. Bundle any user-created tools referenced by the kasset
+        tool_ids = raw.get("tools", [])
+        for tid in tool_ids:
+            manifest = plugin_loader.get_manifest(tid)
+            if manifest:
+                tool_dir = manifest.directory
+                for fpath in tool_dir.rglob("*"):
+                    if fpath.is_file():
+                        arcname = f"tools/{tid}/{fpath.relative_to(tool_dir)}"
+                        zf.write(str(fpath), arcname)
+
+    buf.seek(0)
+    version = raw.get("version", "1.0.0")
+    filename = f"kasset-{cartridge_id}-v{version}.zip"
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/api/forge/import")
+async def forge_import_kasset(request: Request):
+    """Import a .kasset zip bundle. Expects multipart file upload."""
+    import zipfile, io
+
+    form = await request.form()
+    file = form.get("file")
+    if not file:
+        return JSONResponse({"error": "No file uploaded"}, status_code=400)
+
+    contents = await file.read()
+    try:
+        buf = io.BytesIO(contents)
+        with zipfile.ZipFile(buf, "r") as zf:
+            names = zf.namelist()
+
+            # Must contain cartridge.json
+            if "cartridge.json" not in names:
+                return JSONResponse({"error": "Invalid .kasset bundle: missing cartridge.json"}, status_code=400)
+
+            # 1. Import cartridge
+            cart_data = json.loads(zf.read("cartridge.json"))
+            cartridge_loader.save_user_cartridge(cart_data)
+            cartridge_id = cart_data.get("id", "unknown")
+
+            # 2. Import tools
+            imported_tools = []
+            tool_files = [n for n in names if n.startswith("tools/") and not n.endswith("/")]
+            for tf in tool_files:
+                # tools/<tool_id>/filename
+                parts = tf.split("/", 2)
+                if len(parts) < 3:
+                    continue
+                tool_id = parts[1]
+                rel_path = parts[2]
+                dest = plugin_loader.tools_dir / tool_id / rel_path
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(zf.read(tf))
+                if tool_id not in imported_tools:
+                    imported_tools.append(tool_id)
+
+            # Reload plugins
+            if imported_tools:
+                plugin_loader.reload()
+
+            return {
+                "imported": cartridge_id,
+                "tools_imported": imported_tools,
+            }
+    except zipfile.BadZipFile:
+        return JSONResponse({"error": "Invalid zip file"}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.post("/api/forge/unlock-secret")

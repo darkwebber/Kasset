@@ -5,14 +5,17 @@ import Console from "@/components/Console";
 import CartridgeCarousel from "@/components/CartridgeCarousel";
 import ForgeStudio from "@/components/studio/ForgeStudio";
 import NetworkAuthModal from "@/components/NetworkAuthModal";
+import ToastContainer from "@/components/Toast";
+import Onboarding from "@/components/Onboarding";
 import { useCartridgeStore } from "@/stores/cartridgeStore";
-import { getApiBase, isLocalClient } from "@/lib/api";
+import { getApiBase, isLocalClient, onSessionExpired } from "@/lib/api";
 
 export default function Home() {
-  const { loadAvailableCartridges, activeConfig } = useCartridgeStore();
+  const { loadAvailableCartridges, loadActiveStack, activeConfig } = useCartridgeStore();
   const [isBooting, setIsBooting] = useState(true);
   const [showCarousel, setShowCarousel] = useState(true);
   const [showForge, setShowForge] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
 
   // Auth state
   const [authChecked, setAuthChecked] = useState(false);
@@ -41,6 +44,13 @@ export default function Home() {
       setAuthChecked(true);
     };
     checkAuth();
+
+    // Register 401 interceptor — if a session expires mid-use, show login modal
+    if (!isLocalClient()) {
+      onSessionExpired(() => {
+        setAuthMode("login");
+      });
+    }
   }, []);
 
   useEffect(() => {
@@ -49,6 +59,10 @@ export default function Home() {
     if (authMode) return;
     const init = async () => {
       await loadAvailableCartridges();
+      // Check if first launch
+      if (typeof window !== "undefined" && !localStorage.getItem("kasset-onboarded")) {
+        setShowOnboarding(true);
+      }
       setTimeout(() => setIsBooting(false), 2000);
     };
     init();
@@ -95,6 +109,18 @@ export default function Home() {
       {showForge && (
         <ForgeStudio onClose={() => { setShowForge(false); loadAvailableCartridges(); }} />
       )}
+
+      {showOnboarding && (
+        <Onboarding
+          onComplete={() => setShowOnboarding(false)}
+          onSelectCartridge={(id) => {
+            loadActiveStack([id]);
+            setShowCarousel(false);
+          }}
+        />
+      )}
+
+      <ToastContainer />
     </main>
   );
 }

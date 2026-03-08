@@ -26,6 +26,7 @@
     position: relative;
     background-color: var(--color-console-bg);
     overflow: hidden;
+    isolation: isolate;
   }
   
   .crt-screen::before {
@@ -44,7 +45,7 @@
       rgba(0,0,0,var(--scanline))
     );
     background-size: 100% 4px;
-    z-index: 50;
+    z-index: 9999;
     pointer-events: none;
   }
   
@@ -57,7 +58,7 @@
     bottom: 0;
     right: 0;
     background: var(--tint);
-    z-index: 49;
+    z-index: 9998;
     pointer-events: none;
     box-shadow: inset 0 0 100px rgba(0,0,0,0.9);
   }
@@ -235,9 +236,28 @@
 @media (max-width: 640px) {
   .crt-scroll::-webkit-scrollbar { width: 3px; }
   .crt-scroll::-webkit-scrollbar-track { background: transparent; border: none; }
+  /* Reduce scanline intensity on mobile */
+  .crt-screen::before { opacity: 0.3; }
+  .crt-screen::after { opacity: 0.5; }
+  .crt-overlay { opacity: 0.3; }
 }
 
 /* Keyboard shortcut badges — hide on touch devices */
 @media (pointer: coarse) {
   .kbd-hint { display: none; }
+}
+
+/* Accessibility: reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .crt-screen::before { opacity: 0 !important; } /* disable scanlines */
+  .crt-screen::after { opacity: 0 !important; }  /* disable glow */
+  .crt-overlay { opacity: 0 !important; }
+  .text-glow { text-shadow: none !important; }
+  .animate-blink { animation: none !important; opacity: 1 !important; }
+  .animate-pulse { animation: none !important; }
 }

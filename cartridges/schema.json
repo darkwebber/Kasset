@@ -165,6 +165,17 @@
     "suggested_thinking": {
       "type": "boolean",
       "description": "Whether CoT should be on by default"
+    },
+    "suggested_max_rounds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 30,
+      "default": 6,
+      "description": "Maximum number of tool-calling rounds per turn"
+    },
+    "suggested_model": {
+      "type": "string",
+      "description": "Preferred model ID for this kasset (e.g. 'mlx-community/Qwen3.5-9B-MLX-4bit'). If set, the UI will suggest switching to this model when the kasset is loaded."
     }
   },
   "additionalProperties": false

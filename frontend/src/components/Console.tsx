@@ -11,7 +11,14 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import FileExplorer from "./explorer/FileExplorer";
 import ChatDrawer from "./ChatDrawer";
+import { ErrorBoundary } from "./ErrorBoundary";
+import { showToast } from "./Toast";
 import CommandPalette from "./CommandPalette";
+import type { ToolCallSegment, ThinkingSegment, TextSegment, Segment, Message } from "./chat/types";
+import { TOOL_META, getToolMeta, TOOL_DISPLAY, TOOL_EXAMPLES } from "./chat/toolMeta";
+import ThinkingBlock from "./chat/ThinkingBlock";
+import ToolCallCard from "./chat/ToolCallCard";
+import WelcomeScreen from "./chat/WelcomeScreen";
 import Tutorial from "./Tutorial";
 import { useCartridgeStore } from "@/stores/cartridgeStore";
 import { useChatStore } from "@/stores/chatStore";
@@ -23,354 +30,78 @@ import dynamic from "next/dynamic";
 const MermaidDiagram = dynamic(() => import("./MermaidDiagram"), { ssr: false });
 
 // ═══════════════════════════════════════════
-// TYPES — structured message segments
-// ═══════════════════════════════════════════
-
-interface ToolCallSegment {
-  kind: "tool";
-  name: string;
-  args: Record<string, any>;
-  result?: string;
-  images?: string[];
-  html?: string;
-  consentId?: string;
-  consentCommand?: string;
-  status: "running" | "done" | "error" | "consent" | "preparing";
-}
-
-interface ThinkingSegment {
-  kind: "thinking";
-  content: string;
-  durationMs?: number;
-  collapsed: boolean;
-}
-
-interface TextSegment {
-  kind: "text";
-  content: string;
-}
-
-type Segment = ToolCallSegment | ThinkingSegment | TextSegment;
-
-interface Message {
-  role: "user" | "assistant" | "system";
-  content: string;
-  segments?: Segment[];
-}
-
-// ═══════════════════════════════════════════
-// TOOL ICONS & LABELS
-// ═══════════════════════════════════════════
-
-const TOOL_META: Record<string, { icon: React.ReactNode; label: string; color: string }> = {
-  read_file:       { icon: <FileText size={13} />,   label: "Reading file",       color: "#60a5fa" },
-  run_command:     { icon: <Terminal size={13} />,    label: "Running command",    color: "#a78bfa" },
-  execute_python:  { icon: <Play size={13} />,        label: "Running Python",     color: "#34d399" },
-  execute_cpp:     { icon: <Play size={13} />,        label: "Running C++",        color: "#38bdf8" },
-  search_files:    { icon: <Search size={13} />,      label: "Searching files",    color: "#fbbf24" },
-  list_directory:  { icon: <FolderOpen size={13} />,  label: "Listing directory",  color: "#fb923c" },
-  calculate:       { icon: <Calculator size={13} />,  label: "Calculating",        color: "#f472b6" },
-  get_current_time:{ icon: <Clock size={13} />,       label: "Getting time",       color: "#38bdf8" },
-  get_system_info: { icon: <Terminal size={13} />,    label: "System info",        color: "#818cf8" },
-};
-
-function getToolMeta(name: string) {
-  return TOOL_META[name] || { icon: <Wrench size={13} />, label: name, color: "#94a3b8" };
-}
-
-const TOOL_DISPLAY: Record<string, string> = {
-  run_command: "Shell",
-  execute_python: "Python",
-  execute_cpp: "C++",
-  read_file: "File Reader",
-  search_files: "Search",
-  list_directory: "Browse",
-  calculate: "Math",
-  get_current_time: "Clock",
-  get_system_info: "System",
-  search_web: "Web Search",
-  read_url: "URL Reader",
-};
-
-const TOOL_EXAMPLES: Record<string, string> = {
-  run_command: "Show my disk usage and top processes",
-  execute_python: "Plot a sine wave using matplotlib",
-  read_file: "Read my ~/.zshrc and explain what it does",
-  search_files: "Find all Python files in my home directory",
-  list_directory: "What's in my Downloads folder?",
-  calculate: "What's the square root of 2048?",
-  get_system_info: "What are my system specs?",
-  get_current_time: "What time is it right now?",
-  execute_cpp: "Write and run a C++ hello world program",
-  search_web: "Search for the latest AI news",
-  read_url: "Summarize the top story on Hacker News",
-};
-
-// ═══════════════════════════════════════════
-// SUB-COMPONENTS
+// SUB-COMPONENTS (CopyButton stays here; others extracted to chat/)
 // ═══════════════════════════════════════════
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <button
-      onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
-      className="absolute top-2 right-2 p-1.5 rounded bg-white/5 hover:bg-white/10 text-white/40 hover:text-white/80 transition-all opacity-0 group-hover:opacity-100"
-      title="Copy code"
+      onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
+      className="absolute top-1 right-1 p-1 rounded bg-white/5 text-white/25 hover:text-white/60 hover:bg-white/10 transition-all opacity-0 group-hover/code:opacity-100"
     >
-      {copied ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
+      {copied ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
     </button>
   );
 }
 
-const ThinkingBlock = React.memo(function ThinkingBlock({ segment, onToggle }: { segment: ThinkingSegment; onToggle: () => void }) {
-  const isStreaming = !segment.durationMs;
-  const durationStr = segment.durationMs ? `${(segment.durationMs / 1000).toFixed(1)}s` : null;
+/** Strip raw tags and leaked JSON fragments from content for clean display */
+const _cleanRegexes = [
+  { re: /<think>[\s\S]*?<\/think>/gi },
+  { re: /<think>[\s\S]*$/gi },
+  { re: /<\/think>/gi },
+  { re: /<tool_call>[\s\S]*?<\/tool_call>/gi },
+  { re: /<tool_call>[\s\S]*$/gi },
+  { re: /<\/tool_call>/gi },
+  { re: /<\|tool_call\|>[\s\S]*?<\|\/tool_call\|>/gi },
+  { re: /<\|tool_call\|>[\s\S]*$/gi },
+  { re: /<\|\/tool_call\|>/gi },
+  // Leaked JSON fragments from truncated tool calls (e.g. '"}> properly.' or '"}>  time.')
+  { re: /"\s*\}\s*>\s*[^<\n]{0,30}\.?\s*$/gm },
+  // Raw JSON tool call objects that leaked through
+  { re: /\{"name"\s*:\s*"[\w]+"\s*,\s*"arguments"\s*:\s*\{[\s\S]*?\}\s*\}/gi },
+  // Backend placeholder text that can leak into output
+  { re: /\(used tool\)/gi },
+  { re: /\[Calling tool\.\.\.\]/gi },
+];
 
-  return (
-    <div className="my-2">
-      <button
-        onClick={onToggle}
-        className="flex items-center gap-2 text-[11px] font-mono text-white/30 hover:text-white/50 transition-colors group"
-      >
-        {segment.collapsed
-          ? <ChevronRight size={12} className="text-white/20" />
-          : <ChevronDown size={12} className="text-white/20" />
-        }
-        {isStreaming ? (
-          <>
-            <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse" />
-            <span className="text-[var(--accent)]/60">Thinking...</span>
-          </>
-        ) : (
-          <>
-            <Clock size={11} className="text-white/20" />
-            <span>Thought for {durationStr}</span>
-          </>
-        )}
-      </button>
-      {!segment.collapsed && (
-        <div className="ml-5 mt-1.5 pl-3 border-l border-white/5 text-[11px] text-white/25 font-mono leading-relaxed max-h-40 overflow-y-auto crt-scroll whitespace-pre-wrap">
-          {segment.content}
-        </div>
-      )}
-    </div>
-  );
-});
-
-const ToolCallCard = React.memo(function ToolCallCard({ segment, onConsent }: { segment: ToolCallSegment; onConsent?: (id: string, approved: boolean) => void }) {
-  const [expanded, setExpanded] = useState(false);
-  const meta = getToolMeta(segment.name);
-  const isRunning = segment.status === "running";
-  const isPreparing = segment.status === "preparing";
-  const isConsent = segment.status === "consent";
-  const hasImages = segment.images && segment.images.length > 0;
-  const hasHtml = !!segment.html;
-
-  const formatArgs = (args: Record<string, any>) => {
-    const entries = Object.entries(args);
-    if (entries.length === 0) return null;
-    const [, firstVal] = entries[0];
-    const valStr = typeof firstVal === "string" ? firstVal : JSON.stringify(firstVal);
-    return { value: valStr, extra: entries.length > 1 ? entries.length - 1 : 0 };
-  };
-
-  const argInfo = formatArgs(segment.args);
-
-  return (
-    <div className="my-2 rounded-lg border overflow-hidden transition-all"
-      style={{ borderColor: `${meta.color}20` }}
-    >
-      {/* Header */}
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2.5 px-3 py-2 text-left transition-all hover:bg-white/[0.02]"
-      >
-        <div className="flex items-center justify-center w-6 h-6 rounded-md"
-          style={{ background: `${meta.color}15`, color: meta.color }}
-        >
-          {isRunning || isPreparing ? <span className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" /> : meta.icon}
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-medium" style={{ color: isConsent ? '#f59e0b' : meta.color }}>
-              {isPreparing ? "Writing code…" : isRunning ? meta.label + "..." : isConsent ? "Approval Required" : meta.label}
-            </span>
-            {argInfo && (
-              <span className="text-[10px] text-white/25 font-mono truncate max-w-[300px]">
-                {argInfo.value.length > 60 ? argInfo.value.slice(0, 60) + "..." : argInfo.value}
-              </span>
-            )}
-          </div>
-        </div>
-        {segment.result && (
-          <ChevronDown size={12} className={`text-white/20 transition-transform ${expanded ? "rotate-0" : "-rotate-90"}`} />
-        )}
-      </button>
-
-      {/* Live code preview during preparation */}
-      {isPreparing && segment.args?.code && (
-        <div className="px-3 pb-2.5">
-          <div className="bg-black/40 rounded border border-white/5 p-2.5 text-[11px] text-[var(--accent)]/60 font-mono max-h-48 overflow-y-auto crt-scroll whitespace-pre-wrap leading-relaxed">
-            {segment.args.code}
-            <span className="inline-block w-[2px] h-[14px] bg-[var(--accent)] animate-blink ml-0.5 align-text-bottom" />
-          </div>
-        </div>
-      )}
-
-      {/* Expanded text result */}
-      {expanded && segment.result && (
-        <div className="px-3 pb-2.5 pt-0">
-          <div className="bg-black/40 rounded border border-white/5 p-2.5 text-[11px] text-white/50 font-mono max-h-48 overflow-y-auto crt-scroll whitespace-pre-wrap leading-relaxed">
-            {segment.result}
-          </div>
-        </div>
-      )}
-
-      {/* Consent approval buttons */}
-      {isConsent && segment.consentId && (
-        <div className="px-3 pb-3">
-          <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
-            <p className="text-[11px] text-white/60 mb-2">
-              This command requires your approval:
-            </p>
-            <code className="block text-[11px] text-amber-400/90 font-mono bg-black/30 rounded px-2 py-1.5 mb-3">
-              {segment.consentCommand || segment.args?.command || ''}
-            </code>
-            <div className="flex gap-2">
-              <button
-                onClick={() => onConsent?.(segment.consentId!, true)}
-                className="px-3 py-1.5 rounded-md text-[11px] font-medium bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 transition-colors"
-              >
-                Approve
-              </button>
-              <button
-                onClick={() => onConsent?.(segment.consentId!, false)}
-                className="px-3 py-1.5 rounded-md text-[11px] font-medium bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors"
-              >
-                Deny
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* HTML artifact (Plotly, custom tools) — rendered in sandboxed iframe */}
-      {hasHtml && (
-        <div className="px-3 pb-3">
-          <div className="rounded-lg overflow-hidden border border-white/5" style={{ background: '#0d1117' }}>
-            <iframe
-              srcDoc={segment.html}
-              sandbox="allow-scripts allow-same-origin"
-              className="w-full rounded-lg"
-              style={{ height: 500, border: 'none', background: '#0d1117' }}
-              title="Interactive visualization"
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Images always visible inline — not hidden behind expand */}
-      {hasImages && (
-        <div className="px-3 pb-3 space-y-2">
-          {segment.images!.map((src, i) => (
-            <div key={i} className="rounded-lg overflow-hidden bg-black/60 border border-white/5">
-              <img src={src} alt={`Plot ${i + 1}`} className="w-full max-h-[400px] object-contain rounded-lg" />
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-});
-
-function WelcomeScreen({ cartridgeName, cartridgeIcon, bootMessage, tools, suggestedPrompts, onSendPrompt }: {
-  cartridgeName: string;
-  cartridgeIcon: string;
-  bootMessage: string;
-  tools: string[];
-  suggestedPrompts: string[];
-  onSendPrompt: (prompt: string) => void;
-}) {
-  const examples = useMemo(() => {
-    // Prefer cartridge-defined prompts
-    if (suggestedPrompts.length > 0) return suggestedPrompts.slice(0, 4);
-    // Fallback to tool-based examples
-    const picks: string[] = [];
-    for (const toolId of tools) {
-      if (TOOL_EXAMPLES[toolId] && picks.length < 4) {
-        picks.push(TOOL_EXAMPLES[toolId]);
-      }
-    }
-    if (picks.length === 0) {
-      picks.push("Hello! What can you do?", "Tell me about yourself");
-    }
-    return picks;
-  }, [tools, suggestedPrompts]);
-
-  return (
-    <div className="flex-1 flex flex-col items-center justify-center px-3 sm:px-6 py-4 sm:py-8 min-h-0 select-none">
-      <div className="text-4xl sm:text-5xl mb-2 sm:mb-3 drop-shadow-lg" style={{ filter: 'drop-shadow(0 0 12px var(--glow))' }}>{cartridgeIcon}</div>
-      <div className="text-sm sm:text-base font-bold text-white/75 mb-0.5">
-        {cartridgeName}
-      </div>
-      <div className="text-[11px] text-[var(--accent)]/50 font-mono text-center max-w-sm mb-5 sm:mb-8">
-        {bootMessage}
-      </div>
-
-      {/* Example prompts — 2-col grid on desktop */}
-      <div className="w-full max-w-lg mb-5 sm:mb-8">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 sm:gap-2">
-          {examples.map((prompt, i) => (
-            <button
-              key={i}
-              onClick={() => onSendPrompt(prompt)}
-              className="text-left px-3 py-2.5 rounded-lg border border-white/[0.05] hover:border-[var(--accent)]/25 bg-white/[0.02] hover:bg-[var(--accent)]/[0.04] text-white/35 hover:text-white/70 text-[11px] sm:text-xs font-mono transition-all leading-relaxed group cursor-pointer active:scale-[0.99]"
-            >
-              <span className="opacity-40 group-hover:opacity-70 mr-1">›</span> {prompt}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Tool badges — compact */}
-      {tools.length > 0 && (
-        <div className="flex flex-wrap justify-center gap-1 mb-5 max-w-md">
-          {tools.map(toolId => {
-            const meta = getToolMeta(toolId);
-            const display = TOOL_DISPLAY[toolId] || toolId.replace(/_/g, " ");
-            return (
-              <div key={toolId} className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-white/[0.02] border border-white/[0.04] text-[8px] font-mono">
-                <span style={{ color: `${meta.color}66` }}>{meta.icon}</span>
-                <span className="text-white/20">{display}</span>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Keyboard hints */}
-      <div className="hidden sm:flex items-center gap-4 text-[10px] text-white/25 font-mono">
-        <span>⌘K commands</span>
-        <span className="text-white/10">·</span>
-        <span>⌘N new chat</span>
-        <span className="text-white/10">·</span>
-        <span>⌘/ tutorial</span>
-      </div>
-    </div>
-  );
-}
-
-/** Strip raw tags from content for clean display */
 function cleanContent(text: string): string {
   let c = text;
-  c = c.replace(/<think>[\s\S]*?<\/think>/gi, "");
-  c = c.replace(/<think>[\s\S]*$/gi, "");
-  c = c.replace(/<\/think>/gi, "");
-  c = c.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, "");
-  c = c.replace(/<tool_call>[\s\S]*$/gi, "");
-  c = c.replace(/<\/tool_call>/gi, "");
+  for (const { re } of _cleanRegexes) {
+    re.lastIndex = 0;
+    c = c.replace(re, "");
+  }
+  // Clean up multiple blank lines left behind after stripping
+  c = c.replace(/\n{3,}/g, "\n\n");
   return c.trim();
+}
+
+/**
+ * Lightweight streaming extractor: instead of running full cleanContent on every token,
+ * extract only the visible text after </think> (if present) and before <tool_call>.
+ * O(1) string operations per token instead of 6 regex passes.
+ */
+function extractStreamText(accumulated: string): string {
+  let start = 0;
+  const thinkEnd = accumulated.lastIndexOf("</think>");
+  if (thinkEnd >= 0) {
+    start = thinkEnd + 8;
+  } else if (accumulated.includes("<think>")) {
+    return ""; // Still inside thinking block
+  }
+  let text = accumulated.substring(start);
+  // Trim anything from <tool_call> onward (both formats)
+  const toolIdx = text.indexOf("<tool_call>");
+  if (toolIdx >= 0) text = text.substring(0, toolIdx);
+  const toolIdx2 = text.indexOf("<|tool_call|>");
+  if (toolIdx2 >= 0) text = text.substring(0, toolIdx2);
+  // Trim leaked JSON fragments like '"}> properly.'
+  const jsonLeakIdx = text.search(/"\s*\}\s*>\s*[^<\n]{0,30}\.?\s*$/m);
+  if (jsonLeakIdx >= 0) text = text.substring(0, jsonLeakIdx);
+  // Trim raw JSON tool call objects
+  const rawJsonIdx = text.indexOf('{"name"');
+  if (rawJsonIdx >= 0) text = text.substring(0, rawJsonIdx);
+  return text.trim();
 }
 
 // ═══════════════════════════════════════════
@@ -428,7 +159,14 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
   };
 
   const handleLoadChat = (loadedMessages: any[], _cartridgeIds: string[], loadedChatId?: string) => {
-    setMessages(loadedMessages);
+    // Hydrate legacy messages: ensure assistant messages have segments for proper rendering
+    const hydrated = loadedMessages.map((m: any) => {
+      if (m.role === "assistant" && (!m.segments || m.segments.length === 0) && m.content) {
+        return { ...m, segments: [{ kind: "text" as const, content: m.content }] };
+      }
+      return m;
+    });
+    setMessages(hydrated);
     if (loadedChatId) {
       setChatId(loadedChatId);
       chatIdRef.current = loadedChatId;
@@ -832,19 +570,38 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
 
     let segments: Segment[] = [];
     let rawAccumulated = "";
+    let rafPending = false;
+    let rafId: number | null = null;
 
-    const pushSegment = (seg: Segment) => {
-      segments = [...segments, seg];
+    const flushSegments = () => {
       setStreamSegments([...segments]);
+      rafPending = false;
     };
 
-    const updateLastSegment = (updater: (s: Segment) => Segment) => {
+    const scheduleRender = () => {
+      if (!rafPending) {
+        rafPending = true;
+        rafId = requestAnimationFrame(flushSegments);
+      }
+    };
+
+    const pushSegment = (seg: Segment, immediate = false) => {
+      segments = [...segments, seg];
+      if (immediate) { flushSegments(); } else { scheduleRender(); }
+    };
+
+    const updateLastSegment = (updater: (s: Segment) => Segment, immediate = false) => {
       if (segments.length === 0) return;
       segments = [...segments.slice(0, -1), updater(segments[segments.length - 1])];
-      setStreamSegments([...segments]);
+      if (immediate) { flushSegments(); } else { scheduleRender(); }
     };
 
+    let finalized = false;
     const finalizeSegments = () => {
+      if (finalized) return; // Guard against double-finalization
+      finalized = true;
+      // Cancel any pending RAF before finalizing
+      if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; rafPending = false; }
       // Collapse any open thinking
       const lastIdx = segments.length - 1;
       if (lastIdx >= 0 && segments[lastIdx].kind === "thinking" && !(segments[lastIdx] as ThinkingSegment).durationMs) {
@@ -857,15 +614,38 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
         .join("\n\n");
       setMessages((prev) => {
         const updated = [...prev, { role: "assistant" as const, content: finalText, segments: [...segments] }];
-        // Auto-save chat after response completes
+        // Auto-save chat after response completes — with retry + localStorage fallback
         const cid = chatIdRef.current;
         if (cid && activeConfig) {
-          const saveable = updated.map(m => ({ role: m.role, content: m.content }));
-          fetch(`${getApiBase()}/api/chats/${cid}/save`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ messages: saveable, cartridge_ids: activeConfig.active_cartridge_ids }),
-          }).catch(e => console.error("Auto-save failed:", e));
+          const saveable = updated.map(m => ({
+            role: m.role,
+            content: m.content,
+            ...(m.segments && m.segments.length > 0 ? { segments: m.segments } : {}),
+          }));
+          const payload = { messages: saveable, cartridge_ids: activeConfig.active_cartridge_ids };
+          const saveToServer = async (retries = 2) => {
+            for (let attempt = 0; attempt <= retries; attempt++) {
+              try {
+                const res = await fetch(`${getApiBase()}/api/chats/${cid}/save`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(payload),
+                });
+                if (res.ok) {
+                  // Clear localStorage fallback on success
+                  try { localStorage.removeItem(`kasset-draft-${cid}`); } catch {}
+                  return;
+                }
+              } catch {}
+              if (attempt < retries) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+            }
+            // All retries failed — persist to localStorage as fallback
+            try {
+              localStorage.setItem(`kasset-draft-${cid}`, JSON.stringify(payload));
+              console.warn(`Auto-save failed after retries. Draft saved to localStorage (${cid})`);
+            } catch (e) { console.error("localStorage fallback also failed:", e); }
+          };
+          saveToServer();
         }
         return updated;
       });
@@ -881,7 +661,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
         signal: controller.signal,
         body: JSON.stringify({
           cartridge_ids: activeConfig.active_cartridge_ids,
-          messages: msgHistory,
+          messages: msgHistory.map(m => ({ role: m.role, content: m.content })),
           image_path: imagePath,
           chat_id: chatId,
         }),
@@ -892,9 +672,15 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let sseBuffer = "";
+      const STALL_TIMEOUT_MS = 90_000; // 90s watchdog per chunk
 
       while (true) {
-        const { value, done } = await reader.read();
+        // Watchdog: if no data arrives within STALL_TIMEOUT_MS, abort
+        const readPromise = reader.read();
+        const timeoutPromise = new Promise<{ value: undefined; done: true }>((_, reject) =>
+          setTimeout(() => reject(new Error("Stream stalled — no data received for 90 seconds")), STALL_TIMEOUT_MS)
+        );
+        const { value, done } = await Promise.race([readPromise, timeoutPromise]);
         if (done) break;
         
         sseBuffer += decoder.decode(value, { stream: true });
@@ -950,7 +736,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
               soundThinkEnd();
             } else if (data.type === "token") {
               rawAccumulated += data.data;
-              const cleanText = cleanContent(rawAccumulated);
+              const cleanText = extractStreamText(rawAccumulated);
               if (cleanText) {
                 // Remove ⏳ status placeholder if present
                 if (segments.length > 0 && segments[segments.length - 1].kind === "text" && (segments[segments.length - 1] as TextSegment).content.startsWith("⏳")) {
@@ -979,6 +765,12 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
                         .replace(/\\n/g, '\n').replace(/\\t/g, '\t')
                         .replace(/\\"/g, '"').replace(/\\\\/g, '\\');
                       if (partialCode.endsWith('\\')) partialCode = partialCode.slice(0, -1);
+                      // Strip trailing JSON/XML artifacts from partial code preview
+                      partialCode = partialCode
+                        .replace(/"\s*\}\s*\}\s*$/, '')         // trailing "}}
+                        .replace(/<\/tool_call>\s*$/, '')        // trailing </tool_call>
+                        .replace(/"\s*\}\s*$/, '')               // trailing "}
+                        .trimEnd();
                     } catch { /* ignore partial parse */ }
                   }
                 }
@@ -1020,7 +812,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
                   name: data.data.name,
                   args: data.data.args,
                   status: "running" as const,
-                }));
+                }), true);
               } else {
                 // Remove transient segments: ⏳ placeholders or short text fragments (< 30 chars like "this.")
                 while (segments.length > 0) {
@@ -1044,7 +836,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
                   name: data.data.name,
                   args: data.data.args,
                   status: "running",
-                });
+                }, true);
               }
               soundToolStart();
             } else if (data.type === "consent_required") {
@@ -1053,7 +845,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
                 consentId: data.data.id,
                 consentCommand: data.data.command,
                 status: "consent",
-              } as ToolCallSegment));
+              } as ToolCallSegment), true);
             } else if (data.type === "tool_result") {
               const imgs = data.data.images || [];
               const htmlArtifact = data.data.html || "";
@@ -1063,7 +855,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
                 images: imgs.length > 0 ? [...((s as ToolCallSegment).images || []), ...imgs] : (s as ToolCallSegment).images,
                 html: htmlArtifact || (s as ToolCallSegment).html,
                 status: "done",
-              } as ToolCallSegment));
+              } as ToolCallSegment), true);
               soundToolDone();
               rawAccumulated = "";
             } else if (data.type === "done") {
@@ -1081,24 +873,52 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
           }
         }
       }
+      // Stream ended — ensure finalization even without explicit "done" event
+      // (handles backend crashes, connection drops, and abnormal stream termination)
+      if (!finalized) {
+        finalizeSegments();
+        loadChatList();
+      }
     } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
+      const isAbort = (error instanceof DOMException && error.name === "AbortError")
+        || (error instanceof Error && error.name === "AbortError")
+        || controller.signal.aborted;
+      if (isAbort) {
         // User stopped generation — finalize what we have so far
-        if (segments.length > 0) {
-          finalizeSegments();
-        } else {
-          setStreamSegments([]);
-          setIsGenerating(false);
+        if (!finalized) {
+          if (segments.length > 0) {
+            finalizeSegments();
+          } else {
+            finalized = true;
+            setStreamSegments([]);
+            setIsGenerating(false);
+          }
         }
         soundTick();
         return;
       }
-      const errMsg = error instanceof Error ? error.message : "Connection failed";
-      setMessages((prev) => [...prev, { role: "assistant", content: `⚠️ ${errMsg}` }]);
-      setStreamSegments([]);
-      setIsGenerating(false);
+      // Abort the fetch and cancel the reader to prevent dangling connections
+      if (abortRef.current) { try { abortRef.current.abort(); } catch {} }
       abortRef.current = null;
+      const errMsg = error instanceof Error ? error.message : "Connection failed";
+      if (!finalized) {
+        segments = [...segments, { kind: "text" as const, content: `⚠️ ${errMsg}` }];
+        finalizeSegments();
+      } else {
+        setMessages((prev) => [...prev, { role: "assistant", content: `⚠️ ${errMsg}` }]);
+        setStreamSegments([]);
+        setIsGenerating(false);
+      }
       soundError();
+    } finally {
+      // Absolute safety net — ensure isGenerating is ALWAYS reset
+      // Use setTimeout to let React batched updates settle first
+      setTimeout(() => {
+        setIsGenerating((prev) => {
+          if (prev) { abortRef.current = null; }
+          return false;
+        });
+      }, 100);
     }
   };
 
@@ -1275,51 +1095,6 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
       className="w-full max-w-5xl h-[100dvh] sm:h-[90vh] bg-[var(--color-console-bezel)] rounded-none sm:rounded-3xl p-3 sm:p-6 md:p-10 shadow-2xl flex flex-col border-0 sm:border border-white/5 relative"
       style={themeStyle}
     >
-      {showExplorer && (
-        <FileExplorer 
-          onSelect={handleFileSelect} 
-          onClose={() => setShowExplorer(false)} 
-        />
-      )}
-
-      {showDrawer && (
-        <ChatDrawer
-          onLoadChat={handleLoadChat}
-          onNewChat={handleNewChat}
-          onClose={() => { setShowDrawer(false); loadChatList(); }}
-        />
-      )}
-
-      {showPalette && (
-        <CommandPalette
-          onClose={() => setShowPalette(false)}
-          onNewChat={handleNewChat}
-          onOpenHistory={() => { setShowDrawer(true); soundTick(); }}
-          onExportChat={handleExportChat}
-          onCopyChat={handleCopyChat}
-          onOpenForge={onOpenForge}
-          onOpenHelp={() => setShowTutorial(true)}
-          onToggleMute={toggleMute}
-          onEjectCartridge={() => { soundCartridgeEject(); ejectCartridge(); onChangeCartridge(); }}
-          isMuted={muted}
-          cartridgeName={currentCartridge?.name || "Kasset"}
-          hasMessages={messages.length > 0}
-        />
-      )}
-
-      {showTutorial && (
-        <Tutorial onClose={() => setShowTutorial(false)} />
-      )}
-
-      {showSnake && (
-        <SnakeGame
-          onClose={() => setShowSnake(false)}
-          onUnlock={() => {
-            if (typeof window !== "undefined") localStorage.setItem("kasset-nsfw-unlocked", "true");
-          }}
-        />
-      )}
-
       {/* Hardware Accents — LEDs + context meter */}
       <div className="absolute top-2 sm:top-4 left-3 sm:left-6 flex items-center gap-2 sm:gap-3">
         <div className="flex gap-1.5 sm:gap-2">
@@ -1335,7 +1110,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
               }
             }}
           />
-          <div className={`w-2.5 h-2.5 sm:w-3 sm:h-3 rounded-full ${isGenerating ? "bg-[var(--accent)] animate-pulse crt-glow" : "bg-white/20"}`} />
+          <div aria-label={isGenerating ? "Generating response" : "Idle"} className={`w-2.5 h-2.5 sm:w-3 sm:h-3 rounded-full ${isGenerating ? "bg-[var(--accent)] animate-pulse crt-glow" : "bg-white/20"}`} />
         </div>
         {contextInfo && (
           <div className="hidden sm:flex items-center gap-2 ml-2" title={`${contextInfo.estimated_tokens} / ${contextInfo.max_tokens} tokens`}>
@@ -1356,26 +1131,27 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
       
       {/* Top Bar — controls */}
       <div className="absolute top-2 sm:top-4 right-3 sm:right-8 flex items-center gap-0.5 sm:gap-1 no-select">
-        <button onClick={handleNewChat} className="p-2 sm:p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all" title="New Chat (⌘N)">
+        <button onClick={handleNewChat} aria-label="New Chat" className="p-2 sm:p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all" title="New Chat (⌘N)">
           <Plus size={15} />
         </button>
-        <button onClick={() => { setShowDrawer(true); soundTick(); }} className="p-2 sm:p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all" title="Chat History">
+        <button onClick={() => { setShowDrawer(true); soundTick(); }} aria-label="Chat History" className="p-2 sm:p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all" title="Chat History">
           <History size={15} />
         </button>
-        <button onClick={() => { setShowPalette(true); soundTick(); }} className="p-2 sm:p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all" title="Command Palette (⌘K)">
+        <button onClick={() => { setShowPalette(true); soundTick(); }} aria-label="Command Palette" className="p-2 sm:p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all" title="Command Palette (⌘K)">
           <Command size={15} />
         </button>
         {onOpenForge && (
-          <button onClick={onOpenForge} className="p-2 sm:p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all" title="Kasset Forge (⌘⇧F)">
+          <button onClick={onOpenForge} aria-label="Kasset Forge" className="p-2 sm:p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all" title="Kasset Forge (⌘⇧F)">
             <Wrench size={15} />
           </button>
         )}
-        <button onClick={() => { setShowTutorial(true); soundTick(); }} className="p-2 sm:p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all" title="Quick Guide (⌘/)">
+        <button onClick={() => { setShowTutorial(true); soundTick(); }} aria-label="Quick Guide" className="p-2 sm:p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all" title="Quick Guide (⌘/)">
           <HelpCircle size={15} />
         </button>
         <button
           onClick={toggleMute}
           className={`hidden sm:block p-1.5 rounded transition-all ${muted ? "text-white/15" : "text-white/30 hover:text-[var(--accent)] hover:bg-white/5"}`}
+          aria-label={muted ? "Unmute sounds" : "Mute sounds"}
           title={muted ? "Unmute sounds" : "Mute sounds"}
         >
           {muted ? <VolumeX size={15} /> : <Volume2 size={15} />}
@@ -1385,7 +1161,18 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
           {currentCartridge && <span className="text-sm sm:text-base leading-none">{currentCartridge.icon}</span>}
           <span className="max-w-[60px] sm:max-w-[120px] truncate text-glow">{currentCartridge?.name?.toUpperCase() || (activeConfig ? activeConfig.active_cartridge_ids[0].toUpperCase() : "NO KASSET")}</span>
           <button 
-            onClick={() => { soundCartridgeEject(); ejectCartridge(); onChangeCartridge(); }}
+            onClick={() => {
+              const cartridgeIds = activeConfig?.active_cartridge_ids;
+              const name = currentCartridge?.name || "Kasset";
+              soundCartridgeEject();
+              ejectCartridge();
+              onChangeCartridge();
+              if (cartridgeIds?.length) {
+                showToast(`Ejected ${name}`, () => {
+                  useCartridgeStore.getState().loadActiveStack(cartridgeIds);
+                }, 3000);
+              }
+            }}
             className="hover:text-white active:text-white transition-colors text-[var(--accent)]/50 hover:text-[var(--accent)]"
             title="Eject Kasset"
           >
@@ -1396,6 +1183,63 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
 
       {/* Screen Area */}
       <div className="flex-1 min-h-0 mt-8 sm:mt-10 rounded-xl sm:rounded-2xl border-2 sm:border-4 border-black/80 crt-screen p-3 sm:p-6 overflow-hidden flex flex-col relative">
+        {/* Modals — rendered INSIDE crt-screen so ::before scanlines cover them */}
+        {showExplorer && (
+          <FileExplorer 
+            onSelect={handleFileSelect} 
+            onClose={() => setShowExplorer(false)} 
+          />
+        )}
+
+        {showDrawer && (
+          <ChatDrawer
+            onLoadChat={handleLoadChat}
+            onNewChat={handleNewChat}
+            onClose={() => { setShowDrawer(false); loadChatList(); }}
+          />
+        )}
+
+        {showPalette && (
+          <CommandPalette
+            onClose={() => setShowPalette(false)}
+            onNewChat={handleNewChat}
+            onOpenHistory={() => { setShowDrawer(true); soundTick(); }}
+            onExportChat={handleExportChat}
+            onCopyChat={handleCopyChat}
+            onOpenForge={onOpenForge}
+            onOpenHelp={() => setShowTutorial(true)}
+            onToggleMute={toggleMute}
+            onEjectCartridge={() => {
+              const cartridgeIds = activeConfig?.active_cartridge_ids;
+              const name = currentCartridge?.name || "Kasset";
+              soundCartridgeEject();
+              ejectCartridge();
+              onChangeCartridge();
+              if (cartridgeIds?.length) {
+                showToast(`Ejected ${name}`, () => {
+                  useCartridgeStore.getState().loadActiveStack(cartridgeIds);
+                }, 3000);
+              }
+            }}
+            isMuted={muted}
+            cartridgeName={currentCartridge?.name || "Kasset"}
+            hasMessages={messages.length > 0}
+          />
+        )}
+
+        {showTutorial && (
+          <Tutorial onClose={() => setShowTutorial(false)} />
+        )}
+
+        {showSnake && (
+          <SnakeGame
+            onClose={() => setShowSnake(false)}
+            onUnlock={() => {
+              if (typeof window !== "undefined") localStorage.setItem("kasset-nsfw-unlocked", "true");
+            }}
+          />
+        )}
+
         {showWelcome ? (
           <WelcomeScreen
             cartridgeName={currentCartridge?.name || activeConfig!.active_cartridge_ids[0]}
@@ -1406,7 +1250,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
             onSendPrompt={handleWelcomePrompt}
           />
         ) : (
-        <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto crt-scroll pr-2 sm:pr-4 space-y-3 sm:space-y-4">
+        <div ref={scrollRef} role="log" aria-live="polite" aria-label="Chat messages" className="flex-1 min-h-0 overflow-y-auto crt-scroll pr-2 sm:pr-4 space-y-3 sm:space-y-4">
           {/* Compact tool info strip — always visible at top of chat */}
           {activeConfig && activeConfig.tools.length > 0 && (
             <div className="flex flex-wrap items-center gap-1 pb-2 border-b border-white/[0.04] sticky top-0 z-10 bg-black/80 backdrop-blur-sm pt-1 -mt-1">
@@ -1478,15 +1322,19 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
                         renderUserContent(msg.content)
                       )
                     ) : msg.segments && msg.segments.length > 0 ? (
-                      renderSegments(msg.segments, false)
+                      <ErrorBoundary inline fallbackMessage="Failed to render response">
+                        {renderSegments(msg.segments, false)}
+                      </ErrorBoundary>
                     ) : (
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm, remarkMath]}
-                        rehypePlugins={[rehypeKatex]}
-                        components={mdComponents}
-                      >
-                        {cleanContent(msg.content)}
-                      </ReactMarkdown>
+                      <ErrorBoundary inline fallbackMessage="Failed to render markdown">
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm, remarkMath]}
+                          rehypePlugins={[rehypeKatex]}
+                          components={mdComponents}
+                        >
+                          {cleanContent(msg.content)}
+                        </ReactMarkdown>
+                      </ErrorBoundary>
                     )}
                   </div>
 
@@ -1497,7 +1345,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
                       {isBot && (
                         <button
                           onClick={() => handleCopy(idx)}
-                          className="p-1 rounded text-white/20 hover:text-white/60 hover:bg-white/5 transition-all"
+                          className="p-2 sm:p-1 rounded text-white/20 hover:text-white/60 hover:bg-white/5 transition-all"
                           title="Copy response"
                         >
                           {copiedIdx === idx ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
@@ -1507,7 +1355,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
                       {isBot && isLast && (
                         <button
                           onClick={() => handleRetry(idx)}
-                          className="p-1 rounded text-white/20 hover:text-white/60 hover:bg-white/5 transition-all"
+                          className="p-2 sm:p-1 rounded text-white/20 hover:text-white/60 hover:bg-white/5 transition-all"
                           title="Regenerate response"
                         >
                           <RefreshCw size={12} />
@@ -1517,7 +1365,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
                       {isUser && (
                         <button
                           onClick={() => handleStartEdit(idx)}
-                          className="p-1 rounded text-white/20 hover:text-white/60 hover:bg-white/5 transition-all"
+                          className="p-2 sm:p-1 rounded text-white/20 hover:text-white/60 hover:bg-white/5 transition-all"
                           title="Edit message"
                         >
                           <Pencil size={12} />
@@ -1527,7 +1375,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
                       {!isLast && (
                         <button
                           onClick={() => handleRevert(idx)}
-                          className="p-1 rounded text-white/20 hover:text-white/60 hover:bg-white/5 transition-all"
+                          className="p-2 sm:p-1 rounded text-white/20 hover:text-white/60 hover:bg-white/5 transition-all"
                           title="Revert to here (delete everything after)"
                         >
                           <Scissors size={12} />
@@ -1537,7 +1385,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
                       {isUser && (
                         <button
                           onClick={() => handleDeleteMessage(idx)}
-                          className="p-1 rounded text-white/20 hover:text-red-400/60 hover:bg-white/5 transition-all"
+                          className="p-2 sm:p-1 rounded text-white/20 hover:text-red-400/60 hover:bg-white/5 transition-all"
                           title="Delete message"
                         >
                           <Trash2 size={12} />
@@ -1554,7 +1402,9 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
           {streamSegments.length > 0 && (
             <div className="flex justify-start">
               <div className="max-w-[85%] prose-crt">
-                {renderSegments(streamSegments, true)}
+                <ErrorBoundary inline fallbackMessage="Stream render error">
+                  {renderSegments(streamSegments, true)}
+                </ErrorBoundary>
               </div>
             </div>
           )}
@@ -1627,6 +1477,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
               <button 
                 type="button"
                 onClick={handleStop}
+                aria-label="Stop generating"
                 className="p-2 rounded-xl bg-red-500/15 text-red-400 hover:bg-red-500/25 border border-red-500/20 transition-all shrink-0 mb-0.5"
                 title="Stop generating"
               >
@@ -1636,6 +1487,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
               <button 
                 type="submit"
                 disabled={(!input.trim() && attachments.length === 0) || !activeConfig}
+                aria-label="Send message"
                 className="p-2 rounded-xl bg-[var(--accent)]/15 text-[var(--accent)] hover:bg-[var(--accent)]/25 border border-[var(--accent)]/20 transition-all disabled:opacity-20 disabled:hover:bg-[var(--accent)]/15 shrink-0 mb-0.5"
                 title="Send message"
               >

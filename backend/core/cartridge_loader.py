@@ -43,7 +43,9 @@ class Cartridge(BaseModel):
     suggested_prompts: List[str] = []
     suggested_tokens: int = 4096
     suggested_thinking: bool = True
+    suggested_max_rounds: int = 6
     memory_enabled: bool = False
+    suggested_model: Optional[str] = None
 
 class LoadedConfig(BaseModel):
     merged_prompt: str
@@ -54,6 +56,8 @@ class LoadedConfig(BaseModel):
     suggested_prompts: List[str]
     suggested_tokens: int
     suggested_thinking: bool
+    suggested_max_rounds: int = 6
+    suggested_model: Optional[str] = None
 
 class CartridgeLoader:
     def __init__(self, cartridges_dir: str = "cartridges/builtins"):
@@ -62,6 +66,8 @@ class CartridgeLoader:
         self.user_dir.mkdir(parents=True, exist_ok=True)
         self.registry: Dict[str, Cartridge] = {}
         self._sources: Dict[str, str] = {}  # id -> "builtin" | "user"
+        self._file_mtimes: Dict[str, float] = {}  # path -> last mtime
+        self._path_to_id: Dict[str, str] = {}  # path -> cartridge id
         self.load_all()
 
     def load_all(self):
@@ -71,6 +77,53 @@ class CartridgeLoader:
         self._load_from_dir(self.builtins_dir, "builtin")
         self._load_from_dir(self.user_dir, "user")
 
+    def _refresh(self):
+        """Incrementally refresh: only re-parse files whose mtime changed or are new.
+        Also removes cartridges whose files were deleted."""
+        current_files: Dict[str, tuple] = {}  # path_str -> (directory, source)
+        for directory, source in [(self.builtins_dir, "builtin"), (self.user_dir, "user")]:
+            if not directory.exists():
+                continue
+            for path in directory.glob("*.json"):
+                current_files[str(path)] = (path, source)
+
+        # Detect deleted files
+        deleted_paths = set(self._file_mtimes.keys()) - set(current_files.keys())
+        for dp in deleted_paths:
+            cid = self._path_to_id.pop(dp, None)
+            self._file_mtimes.pop(dp, None)
+            if cid:
+                self.registry.pop(cid, None)
+                self._sources.pop(cid, None)
+
+        # Load new or modified files
+        changed = False
+        for path_str, (path, source) in current_files.items():
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            if path_str in self._file_mtimes and self._file_mtimes[path_str] == mtime:
+                continue  # Unchanged
+            # Parse and register
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                cart = Cartridge(**data)
+                # If this path previously held a different cartridge id, remove the old one
+                old_id = self._path_to_id.get(path_str)
+                if old_id and old_id != cart.id:
+                    self.registry.pop(old_id, None)
+                    self._sources.pop(old_id, None)
+                self.registry[cart.id] = cart
+                self._sources[cart.id] = source
+                self._file_mtimes[path_str] = mtime
+                self._path_to_id[path_str] = cart.id
+                changed = True
+                logger.info(f"Refreshed {source} cartridge: {cart.id} v{cart.version}")
+            except Exception as e:
+                logger.error(f"Failed to load cartridge {path}: {e}")
+        return changed
+
     def _load_from_dir(self, directory: Path, source: str):
         """Load cartridges from a directory."""
         if not directory.exists():
@@ -79,8 +132,15 @@ class CartridgeLoader:
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 cart = Cartridge(**data)
+                # Warn on ID collision between user and builtin
+                if cart.id in self.registry and self._sources.get(cart.id) != source:
+                    logger.warning(
+                        f"User cartridge '{cart.id}' overrides builtin cartridge with same ID"
+                    )
                 self.registry[cart.id] = cart
                 self._sources[cart.id] = source
+                self._file_mtimes[str(path)] = path.stat().st_mtime
+                self._path_to_id[str(path)] = cart.id
                 logger.info(f"Loaded {source} cartridge: {cart.id} v{cart.version}")
             except Exception as e:
                 logger.error(f"Failed to load cartridge {path}: {e}")
@@ -117,6 +177,16 @@ class CartridgeLoader:
             return None
         return json.loads(cart.model_dump_json())
 
+    def get_workflows(self, cartridge_id: str) -> List[Dict[str, Any]]:
+        """Return workflows for a cartridge."""
+        cart = self.registry.get(cartridge_id)
+        if not cart or not cart.workflows:
+            return []
+        return [
+            {"name": w.name, "description": w.description, "steps": w.steps}
+            for w in cart.workflows
+        ]
+
     def list_available(self) -> List[Dict[str, Any]]:
         """Return list of available cartridges for the store/drawer UI."""
         return [
@@ -131,6 +201,7 @@ class CartridgeLoader:
                 "role": c.stacking.role,
                 "source": self._sources.get(c.id, "builtin"),
                 "tools": c.tools,
+                "workflows": [{"name": w.name, "description": w.description} for w in c.workflows],
                 "theme": {
                     "accent_color": c.theme.accent_color,
                     "glow_color": c.theme.glow_color,
@@ -141,7 +212,7 @@ class CartridgeLoader:
 
     def load_stack(self, cartridge_ids: List[str]) -> LoadedConfig:
         """Merge a stack of cartridges into a single config."""
-        self.load_all()  # Refresh from disk so JSON edits are picked up
+        self._refresh()  # Incrementally check for changed/new/deleted files
         carts = []
         for cid in cartridge_ids:
             if cid not in self.registry:
@@ -150,6 +221,20 @@ class CartridgeLoader:
 
         if not carts:
             raise ValueError("No cartridges specified")
+
+        # Enforce stacking constraints
+        id_set = set(cartridge_ids)
+        for c in carts:
+            for conflict in c.stacking.conflicts_with:
+                if conflict in id_set:
+                    raise ValueError(
+                        f"Cartridge '{c.id}' conflicts with '{conflict}' — they cannot be stacked together"
+                    )
+            for req in c.stacking.requires:
+                if req not in id_set:
+                    raise ValueError(
+                        f"Cartridge '{c.id}' requires '{req}' to be loaded"
+                    )
 
         # Sort by priority (higher priority = processed later = overwrites earlier)
         carts.sort(key=lambda c: c.stacking.priority)
@@ -188,6 +273,17 @@ class CartridgeLoader:
                 if p not in suggested_prompts:
                     suggested_prompts.append(p)
 
+        # Validate tool IDs against known tools (warn, don't error — plugins may load later)
+        try:
+            from .tool_registry import BUILTIN_TOOLS
+            from .plugin_loader import plugin_loader
+            known_tools = set(BUILTIN_TOOLS.keys()) | set(plugin_loader.manifests.keys())
+            for t in tools_set:
+                if t not in known_tools:
+                    logger.warning(f"Cartridge references unknown tool '{t}' — it may not work at runtime")
+        except Exception:
+            pass  # Don't fail stack loading if validation imports fail
+
         return LoadedConfig(
             merged_prompt=merged_prompt.strip(),
             tools=list(tools_set),
@@ -196,5 +292,7 @@ class CartridgeLoader:
             active_cartridge_ids=cartridge_ids,
             suggested_prompts=suggested_prompts[:6],
             suggested_tokens=carts[-1].suggested_tokens,
-            suggested_thinking=carts[-1].suggested_thinking
+            suggested_thinking=carts[-1].suggested_thinking,
+            suggested_max_rounds=max(c.suggested_max_rounds for c in carts),
+            suggested_model=next((c.suggested_model for c in reversed(carts) if c.suggested_model), None),
         )

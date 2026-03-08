@@ -119,8 +119,69 @@ def search_files(pattern: str, directory: str = "~") -> str:
         return f"Error: {str(e)}"
 
 
+def _extract_code_structure(content: str, ext: str) -> str:
+    """Extract structural overview from a large code file: imports, class/function signatures, exports."""
+    lines = content.splitlines()
+    sections = []
+    
+    # Collect imports (first contiguous block)
+    imports = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#') or stripped.startswith('//') or stripped.startswith('/*'):
+            if imports:
+                break
+            continue
+        if any(stripped.startswith(kw) for kw in ('import ', 'from ', 'require(', 'const ', 'using ', '#include')):
+            imports.append(line)
+        elif imports:
+            break
+    if imports:
+        sections.append("── Imports ──\n" + "\n".join(imports[:30]))
+    
+    # Extract class/function/interface/type signatures
+    sigs = []
+    sig_patterns = [
+        # Python
+        (r'^\s*(class\s+\w+[^:]*:)', 'py'),
+        (r'^\s*((?:async\s+)?def\s+\w+\s*\([^)]*\)[^:]*:)', 'py'),
+        # TypeScript/JavaScript
+        (r'^(export\s+(?:default\s+)?(?:class|function|const|interface|type|enum)\s+\w+[^{;]*)', 'ts'),
+        (r'^((?:export\s+)?interface\s+\w+[^{]*)', 'ts'),
+        (r'^((?:export\s+)?type\s+\w+\s*=)', 'ts'),
+        (r'^((?:export\s+)?enum\s+\w+)', 'ts'),
+        # C/C++/Rust
+        (r'^(\w[\w\s\*&:<>]*\s+\w+\s*\([^)]*\)\s*(?:const\s*)?(?:override\s*)?(?:noexcept\s*)?)\s*\{?', 'c'),
+        (r'^(struct\s+\w+)', 'c'),
+    ]
+    
+    for i, line in enumerate(lines):
+        for pattern, _ in sig_patterns:
+            m = re.match(pattern, line)
+            if m:
+                sig = m.group(1).rstrip('{').rstrip(':').strip()
+                # Add line number for reference
+                sigs.append(f"  L{i+1}: {sig}")
+                break
+    
+    if sigs:
+        sections.append("── Signatures (" + str(len(sigs)) + ") ──\n" + "\n".join(sigs[:60]))
+    
+    # Exports (for JS/TS)
+    if ext in ('.ts', '.tsx', '.js', '.jsx', '.mjs'):
+        exports = []
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('export default') or stripped.startswith('module.exports'):
+                exports.append(f"  L{i+1}: {stripped[:120]}")
+        if exports:
+            sections.append("── Exports ──\n" + "\n".join(exports[:10]))
+    
+    return "\n\n".join(sections)
+
+
 def read_file(path: str, max_lines: int = 100) -> str:
-    """Read a text file (max 200 lines / 50KB)."""
+    """Read a text file. For files over 50KB, returns a structural overview instead of erroring."""
     try:
         fp = Path(path).expanduser().resolve()
         err = _check_path_access(fp)
@@ -129,15 +190,36 @@ def read_file(path: str, max_lines: int = 100) -> str:
         if not fp.is_file(): return f"Error: '{path}' is not a file"
         
         size = fp.stat().st_size
-        if size > 50 * 1024:
-            return f"Error: File too large ({size / 1024:.0f}KB, max 50KB). Try run_command with head/tail."
+        if size > 500 * 1024:
+            return f"Error: File too large ({size / 1024:.0f}KB, max 500KB). Try run_command with head/tail."
         
         try:
             content = fp.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             return "Error: Binary file detected - cannot display"
-            
+        
         lines = content.splitlines()
+        
+        # Large file: return structural overview instead of erroring
+        if size > 50 * 1024:
+            ext = fp.suffix.lower()
+            overview = _extract_code_structure(content, ext)
+            header = f"=== {fp.name} ({len(lines)} lines, {size // 1024}KB) — STRUCTURAL OVERVIEW ===\n"
+            header += f"(File too large for full read. Showing imports, signatures, and exports.)\n\n"
+            if overview:
+                result = header + overview
+                # Also show first 20 and last 10 lines for context
+                head = "\n".join(lines[:20])
+                tail = "\n".join(lines[-10:])
+                result += f"\n\n── First 20 lines ──\n{head}"
+                result += f"\n\n── Last 10 lines ──\n{tail}"
+                return result
+            else:
+                # Fallback: show head + tail
+                head = "\n".join(lines[:50])
+                tail = "\n".join(lines[-20:])
+                return header + head + f"\n\n... ({len(lines) - 70} lines omitted) ...\n\n" + tail
+            
         max_lines = min(max(1, int(max_lines)), 200)
         if len(lines) > max_lines:
             content = "\n".join(lines[:max_lines]) + f"\n... ({len(lines) - max_lines} more lines)"
@@ -200,8 +282,6 @@ BLOCKED_COMMANDS = frozenset({
     "mkfs", "dd", "format", "fdisk",
     # System control
     "shutdown", "reboot", "halt", "poweroff", "init",
-    # Process killing
-    "kill", "killall", "pkill",
     # User / group management
     "passwd", "chpasswd", "useradd", "userdel", "usermod",
     "groupadd", "groupdel", "groupmod", "visudo",
@@ -222,6 +302,8 @@ CONSENT_COMMANDS = frozenset({
     "crontab",
     "launchctl",
     "wget",
+    # Process management — needs user consent instead of hard block
+    "kill", "killall", "pkill",
 })
 
 # Multi-command tools: only specific subcommands need consent
@@ -241,6 +323,61 @@ CONSENT_SUBCOMMANDS = {
     "diskutil": frozenset({"erase", "partition", "mount", "unmount", "rename"}),
 }
 
+# Shell wrappers that can execute arbitrary commands
+_SHELL_INTERPRETERS = frozenset({
+    "bash", "sh", "zsh", "ksh", "csh", "tcsh", "fish", "dash",
+})
+
+# Scripting interpreters that can execute arbitrary code
+_SCRIPT_INTERPRETERS = frozenset({
+    "python", "python3", "python2", "perl", "ruby", "node", "php",
+})
+
+# Command wrappers that pass-through to other commands
+_COMMAND_WRAPPERS = frozenset({
+    "env", "nice", "nohup", "time", "timeout", "strace", "ltrace",
+    "xargs", "watch",
+})
+
+def _extract_inner_command(parts: list) -> list:
+    """Extract the actual command from wrapper patterns like 'env cmd', 'bash -c "cmd"', etc."""
+    if not parts:
+        return parts
+    cmd = parts[0]
+
+    # Handle command wrappers: strip wrapper and recurse
+    if cmd in _COMMAND_WRAPPERS:
+        # Skip flags and find the actual command
+        rest = parts[1:]
+        while rest and rest[0].startswith('-'):
+            rest = rest[1:]
+        if rest:
+            return _extract_inner_command(rest)
+        return parts
+
+    # Handle shell -c "command": parse the inner command string
+    if cmd in _SHELL_INTERPRETERS:
+        for i, arg in enumerate(parts[1:], 1):
+            if arg in ('-c', '--'):
+                # The next argument is the actual command string
+                if i + 1 < len(parts):
+                    inner_cmd = parts[i + 1]
+                    try:
+                        return shlex.split(inner_cmd)
+                    except ValueError:
+                        return inner_cmd.split()
+                return parts
+        # Shell without -c (e.g., "bash script.sh") — needs consent
+        return parts
+
+    # Handle script interpreters: python -c "code", perl -e "code"
+    if cmd in _SCRIPT_INTERPRETERS:
+        for arg in parts[1:]:
+            if arg in ('-c', '-e'):
+                return parts  # Will be caught by consent below
+
+    return parts
+
 def _check_command_safety(segment: str) -> str:
     """Check safety of a single command segment.
     Returns: 'safe', 'consent', or 'Error: ...' message."""
@@ -253,14 +390,48 @@ def _check_command_safety(segment: str) -> str:
         return f"Error: Could not parse: {segment}"
     if not parts:
         return "safe"
+
     cmd = parts[0]
-    # Hard block
+
+    # Hard block on the outer command
     if cmd in BLOCKED_COMMANDS:
         return f"Error: '{cmd}' is blocked for safety."
+
+    # Unwrap wrappers and check the inner command too
+    inner_parts = _extract_inner_command(parts)
+    if inner_parts and inner_parts is not parts:
+        inner_cmd = inner_parts[0]
+        if inner_cmd in BLOCKED_COMMANDS:
+            return f"Error: '{inner_cmd}' is blocked for safety (detected inside wrapper)."
+        # Check inner arguments for blocked commands
+        for arg in inner_parts[1:]:
+            if arg in BLOCKED_COMMANDS:
+                return f"Error: '{arg}' is blocked (detected inside wrapper)."
+        # Check inner command for consent requirements
+        if inner_cmd in CONSENT_COMMANDS:
+            return "consent"
+        if inner_cmd in CONSENT_SUBCOMMANDS and len(inner_parts) > 1:
+            subcmd = inner_parts[1].lstrip("-")
+            if subcmd in CONSENT_SUBCOMMANDS[inner_cmd]:
+                return "consent"
+
+    # Shell interpreters with -c flag always need consent (arbitrary code execution)
+    if cmd in _SHELL_INTERPRETERS:
+        for arg in parts[1:]:
+            if arg == '-c':
+                return "consent"
+
+    # Script interpreters with inline code always need consent
+    if cmd in _SCRIPT_INTERPRETERS:
+        for arg in parts[1:]:
+            if arg in ('-c', '-e'):
+                return "consent"
+
     # Check arguments for blocked commands (prevent tricks like 'env sudo ...')
     for arg in parts[1:]:
         if arg in BLOCKED_COMMANDS:
             return f"Error: '{arg}' is blocked."
+
     # Full-command consent
     if cmd in CONSENT_COMMANDS:
         return "consent"
@@ -447,37 +618,135 @@ def search_web(query: str, max_results: int = 5) -> str:
     except Exception as e:
         return f"Error performing web search: {str(e)}"
 
+def _clean_web_content(html_text: str, max_chars: int = 8000) -> str:
+    """Preprocess extracted web content: strip boilerplate, ads, navs, and compress to useful info."""
+    soup = BeautifulSoup(html_text, 'html.parser')
+    
+    # Remove non-content elements
+    for tag in soup(["script", "style", "nav", "footer", "header", "iframe", "noscript",
+                     "aside", "form", "button", "svg", "figure", "figcaption"]):
+        tag.decompose()
+    
+    # Remove ad/tracking divs by common class/id patterns
+    ad_patterns = re.compile(r'(ad[sv]?[-_]|banner|popup|modal|cookie|consent|newsletter|subscribe|sidebar|widget|social|share|comment|related)', re.I)
+    for el in soup.find_all(attrs={"class": ad_patterns}):
+        el.decompose()
+    for el in soup.find_all(attrs={"id": ad_patterns}):
+        el.decompose()
+    
+    # Remove empty elements
+    for el in soup.find_all():
+        if not el.get_text(strip=True) and el.name not in ('img', 'br', 'hr'):
+            el.decompose()
+    
+    markdown_text = markdownify.markdownify(str(soup), heading_style="ATX")
+    
+    # Clean up
+    clean = re.sub(r'\n{3,}', '\n\n', markdown_text)
+    clean = re.sub(r'(\[.*?\]\(javascript:.*?\))', '', clean)  # JS links
+    clean = re.sub(r'!\[.*?\]\(data:.*?\)', '', clean)  # data URIs
+    clean = re.sub(r'\[([^\]]*)\]\(\s*\)', r'\1', clean)  # empty links
+    clean = re.sub(r'^\s*[\*\-]\s*$', '', clean, flags=re.MULTILINE)  # empty list items
+    clean = re.sub(r'\n{3,}', '\n\n', clean).strip()
+    
+    if len(clean) > max_chars:
+        return clean[:max_chars] + "\n\n... (Content truncated)"
+    return clean
+
+
 def read_url(url: str) -> str:
-    """Read and extract text content from a webpage URL."""
+    """Read and extract text content from a webpage URL with smart content preprocessing."""
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
-        
-        # Parse HTML and convert to markdown
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Remove script and style elements
-        for script in soup(["script", "style", "nav", "footer", "iframe", "noscript"]):
-            script.decompose()
-            
-        markdown_text = markdownify.markdownify(str(soup), heading_style="ATX")
-        
-        # Clean up excessive newlines
-        clean_text = re.sub(r'\n{3,}', '\n\n', markdown_text).strip()
-        
-        if len(clean_text) > 8000:
-            return clean_text[:8000] + "\n\n... (Content truncated due to length)"
-        return clean_text
+        return _clean_web_content(response.text)
     except requests.RequestException as e:
         return f"Error fetching URL: {str(e)}"
     except Exception as e:
         return f"Error processing webpage: {str(e)}"
 
+
+def read_rss(url: str, max_items: int = 10) -> str:
+    """Read and parse an RSS/Atom feed. Returns structured feed entries."""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (compatible; KassetBot/1.0)"
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'xml')
+        
+        # Try RSS format first
+        items = soup.find_all('item')
+        if not items:
+            # Try Atom format
+            items = soup.find_all('entry')
+        
+        if not items:
+            return f"No feed items found at {url}. Is this a valid RSS/Atom feed URL?"
+        
+        feed_title = ""
+        channel = soup.find('channel')
+        if channel and channel.find('title'):
+            feed_title = channel.find('title').get_text(strip=True)
+        elif soup.find('feed') and soup.find('feed').find('title'):
+            feed_title = soup.find('feed').find('title').get_text(strip=True)
+        
+        output = f"📡 Feed: {feed_title}\n{'─' * 40}\n\n" if feed_title else ""
+        
+        for i, item in enumerate(items[:max_items], 1):
+            title = item.find('title')
+            link = item.find('link')
+            pub_date = item.find('pubDate') or item.find('published') or item.find('updated')
+            desc = item.find('description') or item.find('summary') or item.find('content')
+            
+            title_text = title.get_text(strip=True) if title else "No title"
+            link_text = link.get_text(strip=True) if link and link.string else (link.get('href', '') if link else '')
+            date_text = pub_date.get_text(strip=True) if pub_date else ""
+            
+            # Clean description HTML
+            desc_text = ""
+            if desc:
+                desc_soup = BeautifulSoup(desc.get_text(), 'html.parser')
+                desc_text = desc_soup.get_text(strip=True)[:200]
+            
+            output += f"{i}. **{title_text}**\n"
+            if date_text:
+                output += f"   📅 {date_text}\n"
+            if link_text:
+                output += f"   🔗 {link_text}\n"
+            if desc_text:
+                output += f"   {desc_text}\n"
+            output += "\n"
+        
+        return output.strip()
+    except Exception as e:
+        return f"Error reading RSS feed: {str(e)}"
+
+
+def get_location() -> str:
+    """Get approximate location based on IP geolocation. Returns city, region, country, timezone."""
+    try:
+        response = requests.get("http://ip-api.com/json/?fields=status,message,country,regionName,city,timezone,lat,lon,query", timeout=5)
+        data = response.json()
+        if data.get("status") == "success":
+            return (
+                f"Location: {data.get('city', '?')}, {data.get('regionName', '?')}, {data.get('country', '?')}\n"
+                f"Timezone: {data.get('timezone', '?')}\n"
+                f"Coordinates: {data.get('lat', '?')}, {data.get('lon', '?')}\n"
+                f"IP: {data.get('query', '?')}"
+            )
+        return f"Could not determine location: {data.get('message', 'unknown error')}"
+    except Exception as e:
+        return f"Error getting location: {str(e)}"
+
 BUILTIN_TOOLS = {
     "get_current_time": get_current_time,
+    "get_location": get_location,
     "list_directory": list_directory,
     "get_system_info": get_system_info,
     "search_files": search_files,
@@ -488,6 +757,7 @@ BUILTIN_TOOLS = {
     "execute_cpp": execute_cpp,
     "search_web": search_web,
     "read_url": read_url,
+    "read_rss": read_rss,
 }
 
 # Backwards compat

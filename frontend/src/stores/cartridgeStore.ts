@@ -35,6 +35,8 @@ export interface LoadedConfig {
   suggested_prompts: string[];
   suggested_tokens: number;
   suggested_thinking: boolean;
+  suggested_max_rounds: number;
+  suggested_model: string | null;
 }
 
 interface CartridgeState {
@@ -59,9 +61,11 @@ export const useCartridgeStore = create<CartridgeState>((set, get) => ({
   loadAvailableCartridges: async () => {
     try {
       const res = await fetch(`${getApiBase()}/api/kassets`);
+      if (!res.ok) throw new Error(`Failed to load cartridges (${res.status})`);
       const data = await res.json();
-      set({ availableCartridges: data.cartridges });
+      set({ availableCartridges: data.cartridges || [], error: null });
     } catch (error: any) {
+      console.error("Failed to load cartridges", error);
       set({ error: error.message });
     }
   },

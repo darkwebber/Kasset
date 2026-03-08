@@ -202,9 +202,15 @@ def _img_load(path: str):
         pass  # keep alpha
     elif img.mode != 'RGB':
         img = img.convert('RGB')
+    abs_p = os.path.abspath(p)
     # Track as current working image for cross-turn persistence
-    _SHARED_GLOBALS['_current_image_path'] = os.path.abspath(p)
+    _SHARED_GLOBALS['_current_image_path'] = abs_p
     _SHARED_GLOBALS['_current_image'] = img
+    # Track original image separately (only set on first load, not on _current_edit reloads)
+    workspace = os.path.join(os.path.expanduser("~"), ".kasset", "workspace")
+    if not abs_p.startswith(workspace):
+        _SHARED_GLOBALS['_original_image'] = img.copy()
+        _SHARED_GLOBALS['_original_image_path'] = abs_p
     return img
 
 def _img_save(img, path: str = None, fmt: str = None, quality: int = 92):
@@ -353,6 +359,211 @@ def _img_color_replace(img, from_color, to_color, tolerance: int = 30):
     arr[mask] = tc
     return _Img.fromarray(arr)
 
+# ── Named color ranges for HSV-based operations ──
+_COLOR_RANGES = {
+    'red':     ((0, 50, 50),   (10, 255, 255),  (170, 50, 50),  (180, 255, 255)),
+    'orange':  ((10, 50, 50),  (25, 255, 255),  None, None),
+    'yellow':  ((25, 50, 50),  (35, 255, 255),  None, None),
+    'green':   ((35, 50, 50),  (85, 255, 255),  None, None),
+    'cyan':    ((85, 50, 50),  (100, 255, 255), None, None),
+    'blue':    ((100, 50, 50), (130, 255, 255), None, None),
+    'purple':  ((130, 50, 50), (155, 255, 255), None, None),
+    'magenta': ((155, 50, 50), (170, 255, 255), None, None),
+    'pink':    ((155, 30, 150),(175, 255, 255), None, None),
+    'brown':   ((10, 50, 20),  (25, 200, 150),  None, None),
+    'white':   ((0, 0, 200),   (180, 30, 255),  None, None),
+    'black':   ((0, 0, 0),     (180, 255, 50),  None, None),
+    'gray':    ((0, 0, 50),    (180, 30, 200),  None, None),
+}
+
+def _resolve_color_name(name: str):
+    """Resolve a color name to a target RGB tuple."""
+    _name_to_rgb = {
+        'red': (220, 30, 30), 'orange': (240, 160, 30), 'yellow': (240, 230, 40),
+        'green': (30, 180, 50), 'cyan': (30, 210, 210), 'blue': (40, 60, 220),
+        'purple': (140, 40, 200), 'magenta': (210, 40, 180), 'pink': (240, 130, 170),
+        'brown': (140, 80, 30), 'white': (255, 255, 255), 'black': (10, 10, 10),
+        'gray': (130, 130, 130), 'grey': (130, 130, 130), 'gold': (218, 175, 32),
+        'golden': (218, 175, 32), 'teal': (0, 160, 160), 'navy': (20, 20, 100),
+        'lime': (50, 220, 50), 'violet': (130, 50, 200), 'indigo': (75, 0, 130),
+        'maroon': (128, 0, 0), 'olive': (128, 128, 0), 'salmon': (250, 128, 114),
+        'coral': (255, 127, 80), 'turquoise': (64, 224, 208), 'lavender': (180, 130, 220),
+    }
+    return _name_to_rgb.get(name.lower().strip())
+
+def _img_color_range_replace(img, from_color: str, to_color, tolerance: int = 30):
+    """Replace all pixels of a named color range with a target color.
+    from_color: color name like 'yellow', 'blue', 'red', 'green', 'purple', etc.
+    to_color: color name (str) OR (R,G,B) tuple.
+    tolerance: widens the HSV range (0-100). Default 30.
+    Usage: img = img_color_range_replace(img, 'yellow', 'purple')
+           img = img_color_range_replace(img, 'blue', (0, 255, 0), tolerance=40)"""
+    import numpy as _np
+    from PIL import Image as _Img
+    import colorsys
+
+    # Resolve to_color
+    if isinstance(to_color, str):
+        tc = _resolve_color_name(to_color)
+        if tc is None:
+            raise ValueError(f"Unknown color name: '{to_color}'. Use an (R,G,B) tuple or known name.")
+    else:
+        tc = tuple(to_color)
+
+    from_key = from_color.lower().strip()
+    if from_key not in _COLOR_RANGES:
+        raise ValueError(f"Unknown source color: '{from_color}'. Known: {', '.join(sorted(_COLOR_RANGES.keys()))}")
+
+    lo1, hi1, lo2, hi2 = _COLOR_RANGES[from_key]
+
+    # Widen range by tolerance
+    def widen(lo, hi, tol):
+        s_tol = int(tol * 2.55)  # scale 0-100 to 0-255
+        v_tol = int(tol * 2.55)
+        return (
+            max(lo[0] - tol // 6, 0), max(lo[1] - s_tol, 0), max(lo[2] - v_tol, 0)
+        ), (
+            min(hi[0] + tol // 6, 180), min(hi[1] + s_tol, 255), min(hi[2] + v_tol, 255)
+        )
+
+    # Convert to HSV (PIL's HSV uses 0-255 for H, unlike OpenCV's 0-180)
+    hsv = _np.array(img.convert('HSV'))
+    # Scale PIL H (0-255) to OpenCV-style H (0-180) for range matching
+    h_scaled = (hsv[:, :, 0].astype(_np.float32) / 255.0 * 180.0).astype(_np.uint8)
+    s = hsv[:, :, 1]
+    v = hsv[:, :, 2]
+
+    lo1_w, hi1_w = widen(lo1, hi1, tolerance)
+    mask = (
+        (h_scaled >= lo1_w[0]) & (h_scaled <= hi1_w[0]) &
+        (s >= lo1_w[1]) & (s <= hi1_w[1]) &
+        (v >= lo1_w[2]) & (v <= hi1_w[2])
+    )
+    # Second range for wrap-around colors like red
+    if lo2 is not None:
+        lo2_w, hi2_w = widen(lo2, hi2, tolerance)
+        mask2 = (
+            (h_scaled >= lo2_w[0]) & (h_scaled <= hi2_w[0]) &
+            (s >= lo2_w[1]) & (s <= hi2_w[1]) &
+            (v >= lo2_w[2]) & (v <= hi2_w[2])
+        )
+        mask = mask | mask2
+
+    # Blend: replace matched pixels with target color, preserving luminance
+    arr = _np.array(img.convert('RGB')).copy()
+    tc_arr = _np.array(tc, dtype=_np.uint8)
+
+    # Preserve relative brightness by blending with original luminance
+    orig_luma = (0.299 * arr[:,:,0] + 0.587 * arr[:,:,1] + 0.114 * arr[:,:,2])
+    tc_luma = 0.299 * tc_arr[0] + 0.587 * tc_arr[1] + 0.114 * tc_arr[2]
+    scale = _np.where(tc_luma > 0, orig_luma / (tc_luma + 1e-6), 1.0)
+    scale = _np.clip(scale, 0.3, 2.5)
+
+    for c in range(3):
+        chan = arr[:, :, c].astype(_np.float32)
+        chan[mask] = _np.clip(tc_arr[c] * scale[mask], 0, 255)
+        arr[:, :, c] = chan.astype(_np.uint8)
+
+    matched = int(_np.sum(mask))
+    total = mask.shape[0] * mask.shape[1]
+    print(f"Replaced {matched:,} pixels ({matched*100/total:.1f}%) from '{from_color}' to target color.")
+    return _Img.fromarray(arr)
+
+def _img_tint(img, color, strength: float = 0.3):
+    """Apply a color tint/wash over the entire image.
+    color: color name (str) or (R,G,B) tuple. strength: 0.0-1.0 (default 0.3).
+    Usage: img = img_tint(img, 'green', 0.4)
+           img = img_tint(img, (255, 200, 0), 0.2)"""
+    import numpy as _np
+    from PIL import Image as _Img
+    if isinstance(color, str):
+        tc = _resolve_color_name(color)
+        if tc is None:
+            raise ValueError(f"Unknown color name: '{color}'.")
+    else:
+        tc = tuple(color)
+    strength = max(0.0, min(1.0, strength))
+    arr = _np.array(img.convert('RGB')).astype(_np.float32)
+    tint = _np.array(tc, dtype=_np.float32)
+    result = arr * (1.0 - strength) + tint * strength
+    return _Img.fromarray(_np.clip(result, 0, 255).astype(_np.uint8))
+
+def _img_adjust_highlights(img, brightness: float = 1.3, saturation: float = 1.0, threshold: float = 0.65):
+    """Adjust brightness/saturation of only the bright areas (highlights).
+    threshold: 0.0-1.0, pixels above this luminance are affected (default 0.65).
+    Usage: img = img_adjust_highlights(img, brightness=1.4, saturation=1.3)"""
+    import numpy as _np
+    from PIL import Image as _Img, ImageEnhance as _Enh
+    arr = _np.array(img.convert('RGB')).astype(_np.float32)
+    gray = _np.mean(arr, axis=2) / 255.0
+    # Soft mask with feathering
+    mask = _np.clip((gray - threshold) / (1.0 - threshold + 1e-6), 0, 1)
+    mask3 = _np.stack([mask]*3, axis=2)
+    # Apply adjustments to a copy
+    adjusted = img.copy()
+    if brightness != 1.0:
+        adjusted = _Enh.Brightness(adjusted).enhance(brightness)
+    if saturation != 1.0:
+        adjusted = _Enh.Color(adjusted).enhance(saturation)
+    adj_arr = _np.array(adjusted).astype(_np.float32)
+    # Blend: adjusted in highlight regions, original elsewhere
+    result = arr * (1.0 - mask3) + adj_arr * mask3
+    return _Img.fromarray(_np.clip(result, 0, 255).astype(_np.uint8))
+
+def _img_adjust_shadows(img, brightness: float = 1.3, saturation: float = 1.0, threshold: float = 0.35):
+    """Adjust brightness/saturation of only the dark areas (shadows).
+    threshold: 0.0-1.0, pixels below this luminance are affected (default 0.35).
+    Usage: img = img_adjust_shadows(img, brightness=1.5)"""
+    import numpy as _np
+    from PIL import Image as _Img, ImageEnhance as _Enh
+    arr = _np.array(img.convert('RGB')).astype(_np.float32)
+    gray = _np.mean(arr, axis=2) / 255.0
+    mask = _np.clip((threshold - gray) / (threshold + 1e-6), 0, 1)
+    mask3 = _np.stack([mask]*3, axis=2)
+    adjusted = img.copy()
+    if brightness != 1.0:
+        adjusted = _Enh.Brightness(adjusted).enhance(brightness)
+    if saturation != 1.0:
+        adjusted = _Enh.Color(adjusted).enhance(saturation)
+    adj_arr = _np.array(adjusted).astype(_np.float32)
+    result = arr * (1.0 - mask3) + adj_arr * mask3
+    return _Img.fromarray(_np.clip(result, 0, 255).astype(_np.uint8))
+
+def _img_overlay_color(img, color, mode: str = 'multiply', opacity: float = 0.5):
+    """Overlay a color onto the image with a blending mode.
+    color: name (str) or (R,G,B). mode: 'multiply', 'screen', 'overlay'. opacity: 0.0-1.0.
+    Usage: img = img_overlay_color(img, 'gold', mode='overlay', opacity=0.3)"""
+    import numpy as _np
+    from PIL import Image as _Img
+    if isinstance(color, str):
+        tc = _resolve_color_name(color)
+        if tc is None:
+            raise ValueError(f"Unknown color name: '{color}'.")
+    else:
+        tc = tuple(color)
+    opacity = max(0.0, min(1.0, opacity))
+    arr = _np.array(img.convert('RGB')).astype(_np.float32) / 255.0
+    c = _np.array(tc, dtype=_np.float32) / 255.0
+    if mode == 'multiply':
+        blended = arr * c
+    elif mode == 'screen':
+        blended = 1.0 - (1.0 - arr) * (1.0 - c)
+    elif mode == 'overlay':
+        low = 2.0 * arr * c
+        high = 1.0 - 2.0 * (1.0 - arr) * (1.0 - c)
+        blended = _np.where(arr < 0.5, low, high)
+    else:
+        raise ValueError(f"Unknown blend mode: '{mode}'. Use 'multiply', 'screen', or 'overlay'.")
+    result = arr * (1.0 - opacity) + blended * opacity
+    return _Img.fromarray((_np.clip(result, 0, 1) * 255).astype(_np.uint8))
+
+def _img_get_original():
+    """Get the original (unedited) image from the current session.
+    Usage: original = img_get_original()"""
+    if '_original_image' in _SHARED_GLOBALS and _SHARED_GLOBALS['_original_image'] is not None:
+        return _SHARED_GLOBALS['_original_image'].copy()
+    raise RuntimeError("No original image stored. Load an image first with img_load().")
+
 def _img_info(img):
     """Get image metadata. Usage: img_info(img)"""
     return f"Size: {img.size[0]}x{img.size[1]}, Mode: {img.mode}, Format: {getattr(img, 'format', 'N/A')}"
@@ -375,6 +586,12 @@ _SHARED_GLOBALS['img_blur'] = _img_blur
 _SHARED_GLOBALS['img_edge_detect'] = _img_edge_detect
 _SHARED_GLOBALS['img_threshold'] = _img_threshold
 _SHARED_GLOBALS['img_color_replace'] = _img_color_replace
+_SHARED_GLOBALS['img_color_range_replace'] = _img_color_range_replace
+_SHARED_GLOBALS['img_tint'] = _img_tint
+_SHARED_GLOBALS['img_adjust_highlights'] = _img_adjust_highlights
+_SHARED_GLOBALS['img_adjust_shadows'] = _img_adjust_shadows
+_SHARED_GLOBALS['img_overlay_color'] = _img_overlay_color
+_SHARED_GLOBALS['img_get_original'] = _img_get_original
 _SHARED_GLOBALS['img_info'] = _img_info
 
 
@@ -411,6 +628,66 @@ def _get_workspace_dir() -> str:
     return workspace
 
 
+# ──────────────────────────────────────────
+# PYTHON CODE SAFETY PRE-CHECK
+# ──────────────────────────────────────────
+
+# Patterns that indicate potentially destructive operations
+_DANGEROUS_PATTERNS = [
+    # Direct OS-level command execution
+    (r'\bos\.system\s*\(', 'os.system() — use run_command tool instead'),
+    (r'\bos\.popen\s*\(', 'os.popen() — use run_command tool instead'),
+    (r'\bos\.exec[vlpe]*\s*\(', 'os.exec*() — direct process replacement not allowed'),
+    (r'\bos\.spawn[vlpe]*\s*\(', 'os.spawn*() — use run_command tool instead'),
+    (r'\bos\.remove\s*\(', 'os.remove() — file deletion requires run_command tool'),
+    (r'\bos\.unlink\s*\(', 'os.unlink() — file deletion requires run_command tool'),
+    (r'\bos\.rmdir\s*\(', 'os.rmdir() — directory removal requires run_command tool'),
+    (r'\bos\.removedirs\s*\(', 'os.removedirs() — directory removal requires run_command tool'),
+    # Subprocess
+    (r'\bsubprocess\.\w+\s*\(', 'subprocess — use run_command tool for shell commands'),
+    # shutil destructive ops
+    (r'\bshutil\.rmtree\s*\(', 'shutil.rmtree() — recursive deletion not allowed'),
+    (r'\bshutil\.move\s*\(', 'shutil.move() — file moves require run_command tool'),
+    # ctypes / low-level
+    (r'\bctypes\b', 'ctypes — low-level C interface not allowed in sandbox'),
+    # Networking (exfiltration risk)
+    (r'\bsocket\.socket\s*\(', 'socket — direct network access not allowed'),
+    (r'\burllib\.request\b', 'urllib.request — use read_url tool instead'),
+    (r'\brequests\.(get|post|put|delete|patch|head)\s*\(', 'requests — use read_url tool instead'),
+    # Dynamic import tricks
+    (r'\b__import__\s*\(', '__import__() — use normal import statements'),
+    (r'\bimportlib\.import_module\s*\(', 'importlib — use normal import statements'),
+    # Code generation / eval / exec
+    (r'\beval\s*\(', 'eval() — not allowed in sandbox'),
+    (r'\bexec\s*\(', 'exec() — not allowed in sandbox'),
+    (r'\bcompile\s*\(', 'compile() — not allowed in sandbox'),
+    # Bypass tricks
+    (r'\bgetattr\s*\(\s*__builtins__', 'getattr(__builtins__) — not allowed in sandbox'),
+    (r'\bchr\s*\(.*\)\s*\+\s*chr\s*\(', 'chr() string building — not allowed in sandbox'),
+]
+
+_DANGEROUS_COMPILED = [(re.compile(p), msg) for p, msg in _DANGEROUS_PATTERNS]
+
+def _check_python_safety(code: str) -> list:
+    """
+    Scan Python code for dangerous patterns. Returns a list of
+    (pattern_description, line_number) tuples for any matches found.
+    Skips patterns found inside comments or string literals (best-effort).
+    """
+    violations = []
+    lines = code.split('\n')
+    for line_no, line in enumerate(lines, 1):
+        # Strip comments
+        stripped = re.sub(r'#.*$', '', line)
+        # Skip empty lines
+        if not stripped.strip():
+            continue
+        for pattern, desc in _DANGEROUS_COMPILED:
+            if pattern.search(stripped):
+                violations.append((desc, line_no))
+    return violations
+
+
 def execute_python_sandbox(code: str) -> dict:
     """
     Executes Python code safely, capturing stdout/stderr, matplotlib plots, and Plotly HTML.
@@ -418,6 +695,21 @@ def execute_python_sandbox(code: str) -> dict:
     and optionally 'html' (str) for interactive Plotly figures.
     Uses a shared global environment so variables persist across executions.
     """
+    # Pre-execution safety check
+    violations = _check_python_safety(code)
+    if violations:
+        details = "\n".join(f"  Line {ln}: {desc}" for desc, ln in violations)
+        return {
+            "output": (
+                f"[BLOCKED] The code contains {len(violations)} potentially dangerous operation(s):\n"
+                f"{details}\n\n"
+                f"These operations are not allowed in the Python sandbox for safety. "
+                f"Use the appropriate tools instead (run_command for shell ops, read_url for web requests). "
+                f"Rewrite your code to avoid these patterns."
+            ),
+            "images": [],
+        }
+
     output_capture = io.StringIO()
     images = []
     html_artifact = ""

@@ -43,7 +43,6 @@ interface ChatState {
 }
 
 import { getApiBase } from "@/lib/api";
-const API = getApiBase();
 
 export const useChatStore = create<ChatState>((set, get) => ({
   chatList: [],
@@ -52,17 +51,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   loadChatList: async () => {
     try {
-      const res = await fetch(`${API}/api/chats`);
+      const res = await fetch(`${getApiBase()}/api/chats`);
+      if (!res.ok) throw new Error(`Failed to load chats (${res.status})`);
       const data = await res.json();
       set({ chatList: data.chats || [] });
     } catch (e) {
       console.error("Failed to load chat list", e);
+      set({ chatList: [] });
     }
   },
 
   loadChat: async (chatId: string) => {
     try {
-      const res = await fetch(`${API}/api/chats/${chatId}`);
+      const res = await fetch(`${getApiBase()}/api/chats/${chatId}`);
+      if (!res.ok) throw new Error(`Failed to load chat (${res.status})`);
       const data = await res.json();
       if (data.chat) {
         set({ activeChatId: chatId });
@@ -76,7 +78,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   deleteChat: async (chatId: string) => {
     try {
-      await fetch(`${API}/api/chats/${chatId}`, { method: "DELETE" });
+      await fetch(`${getApiBase()}/api/chats/${chatId}`, { method: "DELETE" });
       set((s) => ({
         chatList: s.chatList.filter((c) => c.id !== chatId),
         activeChatId: s.activeChatId === chatId ? null : s.activeChatId,
@@ -92,7 +94,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   loadMemories: async () => {
     try {
-      const res = await fetch(`${API}/api/memory`);
+      const res = await fetch(`${getApiBase()}/api/memory`);
       const data = await res.json();
       set({ memories: data.memories || [] });
     } catch (e) {
@@ -102,7 +104,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   addMemory: async (content: string, type: string) => {
     try {
-      await fetch(`${API}/api/memory`, {
+      await fetch(`${getApiBase()}/api/memory`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content, memory_type: type }),
@@ -115,7 +117,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   deleteMemory: async (memoryId: string) => {
     try {
-      await fetch(`${API}/api/memory/${memoryId}`, { method: "DELETE" });
+      await fetch(`${getApiBase()}/api/memory/${memoryId}`, { method: "DELETE" });
       set((s) => ({ memories: s.memories.filter((m) => m.id !== memoryId) }));
     } catch (e) {
       console.error("Failed to delete memory", e);
@@ -124,7 +126,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   updateMemory: async (memoryId: string, content: string) => {
     try {
-      await fetch(`${API}/api/memory/${memoryId}`, {
+      await fetch(`${getApiBase()}/api/memory/${memoryId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content }),

@@ -152,3 +152,46 @@ export function soundNewChat() {
   playTone(440, 0.06, 0.04, "triangle");
   setTimeout(() => playTone(660, 0.1, 0.04, "triangle"), 60);
 }
+
+// ─── Snake Game Sounds ───
+
+/** Soft beep when snake eats food */
+export function soundSnakeEat() {
+  playTone(880, 0.08, 0.06, "square");
+  setTimeout(() => playTone(1100, 0.06, 0.04, "square"), 40);
+}
+
+/** Low buzz when snake hits wall or itself */
+export function soundSnakeCrash() {
+  playNoise(0.15, 0.08);
+  playTone(180, 0.2, 0.08, "sawtooth");
+  setTimeout(() => playTone(150, 0.15, 0.06, "sawtooth"), 80);
+}
+
+/** Quick tick for direction change */
+export function soundSnakeTurn() {
+  playTone(440, 0.02, 0.03, "square");
+}
+
+/** Rising chime when level increases */
+export function soundSnakeLevelUp() {
+  playTone(523, 0.1, 0.04, "sine");
+  setTimeout(() => playTone(659, 0.1, 0.04, "sine"), 60);
+  setTimeout(() => playTone(784, 0.12, 0.05, "sine"), 120);
+  setTimeout(() => playTone(1047, 0.15, 0.06, "sine"), 200);
+}
+
+/** Success fanfare when unlocking the secret */
+export function soundSnakeUnlock() {
+  playTone(523, 0.15, 0.05, "square");
+  setTimeout(() => playTone(659, 0.15, 0.05, "square"), 100);
+  setTimeout(() => playTone(784, 0.15, 0.05, "square"), 200);
+  setTimeout(() => playTone(1047, 0.2, 0.07, "square"), 300);
+  setTimeout(() => playTone(1319, 0.25, 0.08, "square"), 450);
+}
+
+/** Game start beep */
+export function soundSnakeStart() {
+  playTone(440, 0.1, 0.05, "square");
+  setTimeout(() => playTone(660, 0.1, 0.05, "square"), 80);
+}

@@ -35,6 +35,44 @@ _sessions: Dict[str, float] = {}          # token -> expiry_timestamp
 _failed_attempts: Dict[str, list] = {}    # ip -> [timestamp, timestamp, ...]
 
 
+def _persist_sessions():
+    """Save active sessions to the auth file (must be called under _lock)."""
+    try:
+        data = {}
+        if AUTH_FILE.exists():
+            try:
+                data = json.loads(AUTH_FILE.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        data["sessions"] = {t: exp for t, exp in _sessions.items()}
+        AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+        AUTH_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        try:
+            os.chmod(AUTH_FILE, 0o600)
+        except OSError:
+            pass
+    except Exception:
+        pass
+
+
+def load_sessions_from_disk():
+    """Restore sessions from disk on startup. Prunes expired ones."""
+    now = time.time()
+    with _lock:
+        try:
+            if AUTH_FILE.exists():
+                data = json.loads(AUTH_FILE.read_text(encoding="utf-8"))
+                saved = data.get("sessions", {})
+                for token, expiry in saved.items():
+                    if isinstance(expiry, (int, float)) and expiry > now:
+                        _sessions[token] = expiry
+                # Persist cleaned set
+                if saved:
+                    _persist_sessions()
+        except (json.JSONDecodeError, OSError):
+            pass
+
+
 def _load_auth_data() -> dict:
     """Load auth data from disk."""
     if AUTH_FILE.exists():
@@ -79,7 +117,7 @@ def setup_password(password: str) -> bool:
     Returns True on success. Fails if password is too short.
     Can be called again to change the password (invalidates all sessions).
     """
-    if len(password) < 4:
+    if len(password) < 8:
         return False
 
     salt = secrets.token_bytes(32)
@@ -150,10 +188,11 @@ def get_lockout_remaining(ip: str) -> int:
 
 
 def create_session() -> str:
-    """Create a new session token."""
+    """Create a new session token. Persists to disk for restart resilience."""
     token = secrets.token_urlsafe(48)
     with _lock:
         _sessions[token] = time.time() + TOKEN_EXPIRY_SECONDS
+        _persist_sessions()
     return token
 
 
@@ -175,6 +214,7 @@ def revoke_session(token: str):
     """Revoke a session token."""
     with _lock:
         _sessions.pop(token, None)
+        _persist_sessions()
 
 
 def cleanup_sessions():
@@ -184,3 +224,5 @@ def cleanup_sessions():
         expired = [t for t, exp in _sessions.items() if now > exp]
         for t in expired:
             del _sessions[t]
+        if expired:
+            _persist_sessions()

@@ -15,7 +15,6 @@ interface SettingsState {
 }
 
 import { getApiBase } from "@/lib/api";
-const API = getApiBase();
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   context: {
@@ -27,7 +26,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   loadSettings: async () => {
     try {
-      const res = await fetch(`${API}/api/settings`);
+      const res = await fetch(`${getApiBase()}/api/settings`);
       const data = await res.json();
       if (data.settings?.context) {
         set({ context: data.settings.context, loaded: true });
@@ -41,7 +40,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     const updated = { ...get().context, [key]: value };
     set({ context: updated });
     try {
-      await fetch(`${API}/api/settings/context`, {
+      await fetch(`${getApiBase()}/api/settings/context`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updated),

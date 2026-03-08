@@ -19,8 +19,8 @@ export default function NetworkAuthModal({ mode, onAuthenticated }: NetworkAuthM
   const [retryAfter, setRetryAfter] = useState(0);
 
   const handleSetup = async () => {
-    if (password.length < 4) {
-      setError("Password must be at least 4 characters.");
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters.");
       return;
     }
     if (password !== confirmPassword) {

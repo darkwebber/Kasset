@@ -18,7 +18,7 @@
 
 ## Features
 
-- **Kasset System** — swap between 10 specialized agents: General Assistant, Code Pilot, Tutor, Data Analyst, Terminal, Writer, DevOps, Web Pilot, 3D Visualizer, Image Editor
+- **Kasset System** — swap between 10 specialized agents with stacking constraint enforcement (conflicts, requirements)
 - **Image Editor** — natural-language image editing with 18 built-in helpers (adjust, crop, hue shift, blur, draw, threshold, etc.) and cross-turn image persistence
 - **Kasset Forge** — create your own kassets and custom tools through an in-app GUI studio
 - **Tool Plugin System** — extend the agent with custom Python tools (3D charts, audio, web artifacts, anything)
@@ -28,7 +28,7 @@
 - **HTML Artifacts** — custom tools can return interactive HTML rendered inline (Plotly, web apps, visualizations)
 - **Network Access** — access Kasset from your phone/tablet on the same Wi-Fi, with password-protected authentication
 - **Smart Continuation** — auto-detects when model output is truncated and seamlessly continues the response
-- **Context Management** — session summaries, per-kasset memory, global user profile
+- **Context Management** — session summaries with trim notifications, per-kasset memory, global user profile, async post-conversation processing
 - **Inline Attachments** — attach files/directories as inline chips in your messages
 - **Visualization** — matplotlib plots auto-captured, built-in `qchart_*` helpers, Plotly 3D support
 - **Persistent Memory** — learns your preferences across conversations
@@ -81,13 +81,15 @@ Open **http://localhost:3000** and press **Ctrl+C** to stop both servers.
 | `list_directory` | Browse files with sizes |
 | `get_system_info` | OS, hardware, disk, uptime |
 | `search_files` | Glob-based recursive file search |
-| `read_file` | Read text files (up to 50 KB) |
-| `run_command` | Shell commands with consent flow for write operations |
+| `read_file` | Read text files — under 50 KB shown fully, over 50 KB returns structural overview (imports, signatures, exports). Max 500 KB |
+| `run_command` | Shell commands with consent flow for write operations and process management |
 | `calculate` | Safe math evaluator (sqrt, trig, factorial, etc.) |
 | `execute_python` | Stateful Python sandbox with pandas, numpy, matplotlib, scipy, seaborn, scikit-learn, Plotly, PIL |
 | `execute_cpp` | Compile and run C++ code (C++17) |
 | `search_web` | DuckDuckGo web search |
-| `read_url` | Fetch and extract text from web pages |
+| `read_url` | Fetch and extract text from web pages — ads, navs, and boilerplate auto-stripped |
+| `read_rss` | Read RSS/Atom feeds — returns structured entries with title, date, link, summary |
+| `get_location` | IP-based geolocation — city, region, country, timezone, coordinates |
 
 ## Image Editing
 
@@ -310,7 +312,11 @@ All user data is stored at `~/.kasset/` (never in the repo):
 
 ## Security Model
 
-- **Blocklist + Consent** — destructive commands (`rm`, `sudo`, `kill`) are blocked; write operations (`mkdir`, `cp`, `git commit`, `pip install`) require user approval via in-chat consent UI
+- **Sandbox hardening** — `exec()`, `eval()`, `compile()`, `__import__()`, and builtins bypass tricks are blocked in the Python sandbox
+- **CORS restriction** — origins restricted to `localhost`, `127.0.0.1`, and private LAN ranges (no wildcard `*`)
+- **Request size limits** — POST/PUT bodies capped at 10 MB to prevent abuse
+- **Inference lock** — concurrent model requests are serialized via threading lock to prevent corruption
+- **Blocklist + Consent** — destructive commands (`rm`, `sudo`) are blocked; process management (`kill`, `killall`, `pkill`) and write operations (`mkdir`, `cp`, `git commit`, `pip install`) require user approval via in-chat consent UI
 - **Shell chaining** — `&&`, `;`, `||` supported; each sub-command validated individually
 - **Pipes** — `cmd1 | cmd2 | cmd3` supported; each stage validated
 - **Path sandboxing** — file access restricted to home directory and temp folders
@@ -319,6 +325,7 @@ All user data is stored at `~/.kasset/` (never in the repo):
 - **Plugin isolation** — custom tool handlers run with stdout capture; errors caught and reported
 - **Network safety** — remote clients cannot execute code, shell commands, or browse the filesystem
 - **Auth** — scrypt password hashing, session tokens via `secrets.token_urlsafe(48)`, 3-strike lockout per IP
+- **Secure IDs** — chat IDs generated with `secrets.token_hex()` instead of predictable timestamps
 
 ## API Reference
 
@@ -353,6 +360,10 @@ All user data is stored at `~/.kasset/` (never in the repo):
 | `/api/context/kasset/{id}` | DELETE | Clear kasset context |
 | `/api/context/global` | GET | Get global user profile |
 | `/api/context/global` | DELETE | Clear global profile |
+| `/api/rss-feeds` | GET | Get configured RSS feeds |
+| `/api/rss-feeds` | PUT | Replace all RSS feeds |
+| `/api/rss-feeds` | POST | Add a single RSS feed |
+| `/api/rss-feeds/{index}` | DELETE | Delete an RSS feed by index |
 
 ### Kasset Forge
 

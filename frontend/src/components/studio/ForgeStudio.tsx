@@ -39,6 +39,7 @@ const EMPTY_MANIFEST = {
   icon: "wrench", color: "#60a5fa", parameters: {} as Record<string, any>,
   output_type: "text", handler: "handler.py", entry_point: "execute",
   sandbox: { timeout: 30, imports: [] as string[], pre_run: "" }, tags: [] as string[],
+  dependencies: [] as string[],
 };
 
 const DEFAULT_HANDLER = `def execute(**kwargs):
@@ -297,6 +298,9 @@ function CartridgeEditor({ cartridge, allTools, onSave, onDelete, onCancel, isNe
             <Toggle checked={data.suggested_thinking} onChange={v => set("suggested_thinking", v)} label="Thinking" />
             <Toggle checked={data.memory_enabled} onChange={v => set("memory_enabled", v)} label="Memory" />
           </div>
+          <Field label="Suggested Model" hint="Preferred model for this kasset (optional)">
+            <TextInput value={(data as any).suggested_model || ""} onChange={v => setData(d => ({ ...d, suggested_model: v || undefined } as any))} mono placeholder="mlx-community/Qwen3.5-9B-MLX-4bit" />
+          </Field>
         </div>
       )}
 
@@ -314,12 +318,29 @@ function CartridgeEditor({ cartridge, allTools, onSave, onDelete, onCancel, isNe
           className="flex items-center gap-1.5 px-3.5 py-[7px] bg-[var(--accent)]/12 hover:bg-[var(--accent)]/20 text-[var(--accent)] rounded-md text-[11px] font-medium transition-all disabled:opacity-25">
           <Save size={13} /> {saving ? "Saving..." : "Save"}
         </button>
-        <button onClick={() => {
-          const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a"); a.href = url; a.download = `${data.id || "kasset"}.json`;
-          document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-        }} className="flex items-center gap-1 px-3 py-[7px] text-white/25 hover:text-white/50 hover:bg-white/[0.04] rounded-md text-[11px] font-medium transition-all" title="Export as JSON">
+        <button onClick={async () => {
+          if (!isNew && data.id) {
+            // Export as .kasset zip bundle via API (includes tools)
+            try {
+              const res = await fetch(`${getApiBase()}/api/forge/export/${data.id}`);
+              if (!res.ok) throw new Error("Export failed");
+              const blob = await res.blob();
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a"); a.href = url; a.download = `kasset-${data.id}-v${data.version || "1.0.0"}.zip`;
+              document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+            } catch { /* Fallback to JSON */
+              const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a"); a.href = url; a.download = `${data.id || "kasset"}.json`;
+              document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+            }
+          } else {
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a"); a.href = url; a.download = `${data.id || "kasset"}.json`;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+          }
+        }} className="flex items-center gap-1 px-3 py-[7px] text-white/25 hover:text-white/50 hover:bg-white/[0.04] rounded-md text-[11px] font-medium transition-all" title="Export as .kasset bundle">
           <Download size={12} /> Export
         </button>
         <button onClick={onCancel} className="px-3 py-[7px] text-white/25 hover:text-white/45 rounded-md text-[11px] font-medium transition-all hover:bg-white/[0.04]">Cancel</button>
@@ -344,6 +365,8 @@ function ToolEditor({ manifest: initManifest, handlerCode: initCode, onSave, onD
   const [saving, setSaving] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
+  const [depStatus, setDepStatus] = useState<Record<string, string> | null>(null);
+  const [installingDeps, setInstallingDeps] = useState(false);
 
   const set = (key: string, value: any) => setManifest((m: any) => ({ ...m, [key]: value }));
   const autoId = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
@@ -379,6 +402,31 @@ function ToolEditor({ manifest: initManifest, handlerCode: initCode, onSave, onD
       setTestResult(`Error: ${err.message}`);
     }
     setTesting(false);
+  };
+
+  const checkDeps = async () => {
+    if (!manifest.id) return;
+    try {
+      const res = await fetch(`${API}/api/forge/tools/${manifest.id}/deps`);
+      if (res.ok) {
+        const data = await res.json();
+        setDepStatus(Object.fromEntries(
+          Object.entries(data.dependencies || {}).map(([k, v]) => [k, v ? "installed" : "missing"])
+        ));
+      }
+    } catch {}
+  };
+
+  const installDeps = async () => {
+    if (!manifest.id) return;
+    setInstallingDeps(true);
+    try {
+      const res = await fetch(`${API}/api/forge/tools/${manifest.id}/deps/install`, { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        setDepStatus(data.results || {});
+      }
+    } catch {} finally { setInstallingDeps(false); }
   };
 
   return (
@@ -434,11 +482,35 @@ function ToolEditor({ manifest: initManifest, handlerCode: initCode, onSave, onD
       <SectionHeader title="Sandbox Settings" open={showSandbox} onToggle={() => setShowSandbox(!showSandbox)} />
       {showSandbox && (
         <div className="space-y-2.5 pl-3 border-l border-white/[0.04]">
+          <Field label="Dependencies" hint="Comma-separated pip packages (e.g. plotly>=5.0, librosa)">
+            <TextInput value={(manifest.dependencies || []).join(", ")} onChange={v => set("dependencies", v.split(",").map((s: string) => s.trim()).filter(Boolean))} mono placeholder="plotly>=5.0, librosa" />
+          </Field>
+          {(manifest.dependencies || []).length > 0 && manifest.id && (
+            <div className="flex items-center gap-2">
+              <button onClick={checkDeps} className="text-[10px] text-white/30 hover:text-white/60 font-mono transition-colors">Check</button>
+              <button onClick={installDeps} disabled={installingDeps}
+                className="text-[10px] text-[var(--accent)]/60 hover:text-[var(--accent)] font-mono transition-colors disabled:opacity-30">
+                {installingDeps ? "Installing…" : "Install Missing"}
+              </button>
+              {depStatus && (
+                <div className="flex gap-1.5 flex-wrap">
+                  {Object.entries(depStatus).map(([pkg, status]) => (
+                    <span key={pkg} className={`text-[9px] font-mono px-1.5 py-0.5 rounded ${
+                      status === "installed" || status === "already_installed"
+                        ? "bg-emerald-500/10 text-emerald-400/70"
+                        : status === "missing"
+                        ? "bg-red-500/10 text-red-400/70"
+                        : "bg-yellow-500/10 text-yellow-400/70"
+                    }`}>
+                      {pkg.split(">=")[0].split("==")[0]}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <Field label="Pre-run Code" hint="Executed before handler loads (for imports)">
             <TextInput value={manifest.sandbox?.pre_run || ""} onChange={v => set("sandbox", { ...manifest.sandbox, pre_run: v })} mono placeholder="import plotly.graph_objects as go" />
-          </Field>
-          <Field label="Pip Packages" hint="Comma-separated packages needed">
-            <TextInput value={(manifest.sandbox?.imports || []).join(", ")} onChange={v => set("sandbox", { ...manifest.sandbox, imports: v.split(",").map((s: string) => s.trim()).filter(Boolean) })} mono placeholder="plotly, librosa" />
           </Field>
           <Field label="Timeout (seconds)">
             <TextInput value={String(manifest.sandbox?.timeout || 30)} onChange={v => set("sandbox", { ...manifest.sandbox, timeout: parseInt(v) || 30 })} mono />
@@ -626,130 +698,172 @@ export default function ForgeStudio({ onClose }: { onClose: () => void }) {
   const builtinTools = tools.filter(t => t.source === "builtin");
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md">
-      <div className="relative w-full max-w-3xl mx-0 sm:mx-4 max-h-[100vh] sm:max-h-[90vh] bg-gradient-to-b from-[#0c0c14] to-[#08080e] border-0 sm:border border-white/[0.08] rounded-none sm:rounded-2xl shadow-[0_25px_60px_-12px_rgba(0,0,0,0.7)] overflow-hidden flex flex-col"
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-xl">
+      {/* Ambient glow behind modal */}
+      <div className="absolute inset-0 pointer-events-none overflow-hidden">
+        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[600px] h-[400px] rounded-full opacity-[0.03]"
+          style={{ background: "radial-gradient(ellipse, var(--accent), transparent 70%)" }} />
+      </div>
+
+      <div className="relative w-full max-w-3xl mx-0 sm:mx-4 max-h-[100dvh] sm:max-h-[92vh] bg-[#09090f]/98 border-0 sm:border border-white/[0.07] rounded-none sm:rounded-2xl shadow-[0_0_0_1px_rgba(255,255,255,0.03),0_32px_80px_-16px_rgba(0,0,0,0.8)] overflow-hidden flex flex-col"
         style={{ "--accent": "#60a5fa" } as React.CSSProperties}>
 
-        {/* Accent gradient bar */}
-        <div className="h-[2px] w-full bg-gradient-to-r from-transparent via-[var(--accent)]/40 to-transparent shrink-0" />
+        {/* Top accent line */}
+        <div className="h-px w-full shrink-0" style={{ background: "linear-gradient(90deg, transparent 10%, var(--accent) 50%, transparent 90%)", opacity: 0.3 }} />
 
         {/* Header */}
-        <div className="flex items-center justify-between px-5 sm:px-6 py-3 sm:py-3.5 shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-gradient-to-br from-[var(--accent)]/12 to-transparent rounded-lg border border-[var(--accent)]/8">
-              <Wrench size={16} className="text-[var(--accent)]/80" />
+        <div className="flex items-center justify-between px-5 sm:px-6 py-4 shrink-0 border-b border-white/[0.04]">
+          <div className="flex items-center gap-3.5">
+            <div className="relative">
+              <div className="p-2.5 rounded-xl border border-[var(--accent)]/15" style={{ background: "linear-gradient(135deg, rgba(96,165,250,0.08), rgba(96,165,250,0.02))" }}>
+                <Wrench size={17} className="text-[var(--accent)]" style={{ filter: "drop-shadow(0 0 6px rgba(96,165,250,0.4))" }} />
+              </div>
             </div>
             <div>
-              <h1 className="text-[15px] font-semibold text-white/85">Kasset Forge</h1>
-              <p className="text-[10px] text-white/18 mt-px">Design agents & tools</p>
+              <h1 className="text-base font-semibold text-white/90 tracking-tight">Kasset Forge</h1>
+              <p className="text-[10px] text-white/25 mt-0.5 font-medium">Design agents & tools</p>
             </div>
           </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg text-white/20 hover:text-white/50 hover:bg-white/5 transition-all">
+          <button onClick={onClose} className="p-2 rounded-xl text-white/25 hover:text-white/60 hover:bg-white/[0.06] transition-all duration-200">
             <X size={16} />
           </button>
         </div>
 
         {/* Onboarding banner */}
         {userCartridges.length === 0 && userTools.length === 0 && !editingCartridge && !editingTool && (
-          <div className="mx-4 sm:mx-7 mb-1 p-4 rounded-xl border border-[var(--accent)]/10 bg-gradient-to-br from-[var(--accent)]/[0.04] to-transparent shrink-0">
-            <div className="flex gap-3 items-start">
-              <Info size={16} className="text-[var(--accent)]/70 shrink-0 mt-0.5" />
-              <div className="text-xs text-white/45 leading-relaxed">
-                <strong className="text-[var(--accent)]/80">Get started</strong> — Build custom AI agents by combining a system prompt, tools, and a visual theme.
-              </div>
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-2 pl-7">
-              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/[0.02] border border-white/5">
-                <Cpu size={13} className="text-[var(--accent)]/50 shrink-0" />
-                <span className="text-[11px] text-white/35">Kasset = persona + tools + theme</span>
-              </div>
-              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/[0.02] border border-white/5">
-                <Code size={13} className="text-[var(--accent)]/50 shrink-0" />
-                <span className="text-[11px] text-white/35">Tool = Python function the AI calls</span>
+          <div className="mx-5 sm:mx-6 mt-4 mb-1 shrink-0">
+            <div className="relative overflow-hidden rounded-xl border border-[var(--accent)]/12 p-4"
+              style={{ background: "linear-gradient(135deg, rgba(96,165,250,0.04) 0%, rgba(96,165,250,0.01) 50%, transparent 100%)" }}>
+              <div className="flex gap-3.5 items-start">
+                <div className="p-1.5 rounded-lg bg-[var(--accent)]/8 shrink-0 mt-0.5">
+                  <Info size={14} className="text-[var(--accent)]/80" />
+                </div>
+                <div>
+                  <p className="text-[12px] text-white/55 leading-relaxed">
+                    <strong className="text-[var(--accent)]/90 font-semibold">Get started</strong> — Build custom AI agents by combining a system prompt, tools, and a visual theme.
+                  </p>
+                  <div className="mt-3 flex gap-2">
+                    <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/[0.03] border border-white/[0.05]">
+                      <Cpu size={12} className="text-[var(--accent)]/60 shrink-0" />
+                      <span className="text-[10px] text-white/40 font-medium">Kasset = persona + tools + theme</span>
+                    </div>
+                    <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/[0.03] border border-white/[0.05]">
+                      <Code size={12} className="text-[var(--accent)]/60 shrink-0" />
+                      <span className="text-[10px] text-white/40 font-medium">Tool = Python function the AI calls</span>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
         )}
 
         {/* Tabs */}
-        <div className="flex mx-5 sm:mx-6 mb-1.5 bg-white/[0.025] rounded-md p-[3px] shrink-0">
+        <div className="flex mx-5 sm:mx-6 mt-3 mb-2 bg-white/[0.03] rounded-xl p-1 shrink-0 border border-white/[0.04]">
           {(["cartridges", "tools"] as const).map(t => (
             <button key={t} onClick={() => { setTab(t); setEditingCartridge(null); setEditingTool(null); }}
-              className={`flex-1 flex items-center justify-center gap-1.5 py-[7px] text-[11px] font-medium transition-all rounded ${tab === t ? "text-[var(--accent)] bg-[var(--accent)]/10 shadow-sm" : "text-white/25 hover:text-white/40"}`}>
-              {t === "cartridges" ? <><Cpu size={12} /> Kassets</> : <><Code size={12} /> Tools</>}
+              className={`flex-1 flex items-center justify-center gap-2 py-2 text-[12px] font-medium transition-all duration-200 rounded-lg ${
+                tab === t
+                  ? "text-[var(--accent)] bg-[var(--accent)]/[0.08] shadow-[0_1px_3px_rgba(0,0,0,0.2),inset_0_1px_0_rgba(255,255,255,0.04)] border border-[var(--accent)]/10"
+                  : "text-white/30 hover:text-white/50 border border-transparent"
+              }`}>
+              {t === "cartridges" ? <><Cpu size={13} /> Kassets</> : <><Code size={13} /> Tools</>}
             </button>
           ))}
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto subtle-scroll px-5 sm:px-6 py-3 sm:py-4">
+        <div className="flex-1 overflow-y-auto subtle-scroll px-5 sm:px-6 py-4">
           {/* ─── Cartridges Tab ─── */}
           {tab === "cartridges" && !editingCartridge && (
-            <div className="space-y-3">
+            <div className="space-y-4">
+              {/* Section header */}
               <div className="flex items-center justify-between">
-                <h2 className="text-[13px] text-white/45 font-medium">Your Kassets</h2>
-                <div className="flex items-center gap-1.5">
-                  <label className="flex items-center gap-1 px-2.5 py-[5px] text-white/25 hover:text-white/50 hover:bg-white/[0.04] rounded-md text-[11px] font-medium transition-all cursor-pointer">
-                    <Upload size={11} /> Import
-                    <input type="file" accept=".json" className="sr-only" onChange={async (e) => {
+                <h2 className="text-[13px] text-white/50 font-semibold tracking-tight">Your Kassets</h2>
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-1.5 px-3 py-1.5 text-white/30 hover:text-white/55 hover:bg-white/[0.05] rounded-lg text-[11px] font-medium transition-all duration-200 cursor-pointer border border-transparent hover:border-white/[0.06]">
+                    <Upload size={12} /> Import
+                    <input type="file" accept=".json,.zip" className="sr-only" onChange={async (e) => {
                       const file = e.target.files?.[0]; if (!file) return;
                       try {
-                        const text = await file.text();
-                        const data = JSON.parse(text);
-                        await handleSaveCartridge(data);
-                      } catch { soundError(); alert("Invalid kasset JSON"); }
+                        if (file.name.endsWith(".zip") || file.type === "application/zip") {
+                          const form = new FormData();
+                          form.append("file", file);
+                          const res = await fetch(`${API}/api/forge/import`, { method: "POST", body: form });
+                          const data = await res.json();
+                          if (data.imported) {
+                            soundNewChat();
+                            loadAvailableCartridges();
+                            fetchToolIds();
+                          } else { soundError(); alert(data.error || "Import failed"); }
+                        } else {
+                          const text = await file.text();
+                          const data = JSON.parse(text);
+                          await handleSaveCartridge(data);
+                        }
+                      } catch { soundError(); alert("Invalid kasset file"); }
                       e.target.value = "";
                     }} />
                   </label>
                   <button onClick={handleNewCartridge}
-                    className="flex items-center gap-1 px-2.5 py-[5px] bg-[var(--accent)]/10 hover:bg-[var(--accent)]/18 text-[var(--accent)] rounded-md text-[11px] font-medium transition-all">
-                    <Plus size={12} /> New
+                    className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-[11px] font-semibold transition-all duration-200 border border-[var(--accent)]/20 hover:border-[var(--accent)]/35"
+                    style={{ background: "linear-gradient(135deg, rgba(96,165,250,0.12), rgba(96,165,250,0.06))", color: "var(--accent)" }}>
+                    <Plus size={13} /> New
                   </button>
                 </div>
               </div>
 
+              {/* Empty state */}
               {userCartridges.length === 0 && (
-                <div className="text-center py-12 text-white/15">
-                  <div className="w-11 h-11 mx-auto mb-3 rounded-xl bg-white/[0.03] border border-white/[0.05] flex items-center justify-center">
-                    <Package size={20} className="opacity-30" />
+                <div className="text-center py-14">
+                  <div className="w-14 h-14 mx-auto mb-4 rounded-2xl flex items-center justify-center border border-white/[0.06]"
+                    style={{ background: "linear-gradient(135deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01))" }}>
+                    <Package size={24} className="text-white/15" />
                   </div>
-                  <p className="text-[13px] text-white/25">No custom kassets yet</p>
-                  <p className="text-[11px] mt-1 text-white/15">Click <strong className="text-white/25">New</strong> to create one</p>
+                  <p className="text-[14px] text-white/30 font-medium">No custom kassets yet</p>
+                  <p className="text-[11px] mt-1.5 text-white/18">Click <strong className="text-[var(--accent)]/60">+ New</strong> to create your first agent</p>
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-2">
-                {userCartridges.map((c: any) => (
-                  <button key={c.id} onClick={() => handleEditCartridge(c.id)}
-                    className="flex items-center gap-2.5 p-3 bg-white/[0.02] hover:bg-white/[0.04] border border-white/[0.05] hover:border-[var(--accent)]/15 rounded-lg transition-all text-left group">
-                    <span className="text-xl group-hover:scale-110 transition-transform">{c.icon}</span>
-                    <div className="min-w-0">
-                      <div className="text-[13px] text-white/65 font-medium truncate group-hover:text-white/85 transition-colors">{c.name}</div>
-                      <div className="text-[10px] text-white/18 truncate mt-px">{c.description}</div>
-                    </div>
-                  </button>
-                ))}
-              </div>
+              {/* User kassets grid */}
+              {userCartridges.length > 0 && (
+                <div className="grid grid-cols-2 gap-2.5">
+                  {userCartridges.map((c: any) => (
+                    <button key={c.id} onClick={() => handleEditCartridge(c.id)}
+                      className="relative flex items-center gap-3 p-3.5 rounded-xl border border-white/[0.06] hover:border-[var(--accent)]/20 transition-all duration-200 text-left group overflow-hidden"
+                      style={{ background: "linear-gradient(135deg, rgba(255,255,255,0.025), rgba(255,255,255,0.01))" }}>
+                      <div className="absolute inset-0 bg-[var(--accent)]/[0.02] opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+                      <span className="text-2xl group-hover:scale-110 transition-transform duration-200 relative z-10">{c.icon}</span>
+                      <div className="min-w-0 relative z-10">
+                        <div className="text-[13px] text-white/70 font-semibold truncate group-hover:text-white/90 transition-colors duration-200">{c.name}</div>
+                        <div className="text-[10px] text-white/20 truncate mt-0.5 group-hover:text-white/30 transition-colors">{c.description}</div>
+                      </div>
+                      <ChevronRight size={14} className="ml-auto text-white/0 group-hover:text-white/20 transition-all duration-200 shrink-0 relative z-10" />
+                    </button>
+                  ))}
+                </div>
+              )}
 
+              {/* Built-in kassets */}
               {builtinCartridges.length > 0 && (
-                <>
-                  <div className="flex items-center gap-2 pt-1">
-                    <span className="text-[10px] text-white/15 font-medium">Built-in</span>
-                    <div className="flex-1 h-px bg-white/[0.04]" />
+                <div className="pt-2">
+                  <div className="flex items-center gap-3 mb-3">
+                    <span className="text-[10px] text-white/20 font-semibold uppercase tracking-wider">Built-in</span>
+                    <div className="flex-1 h-px bg-gradient-to-r from-white/[0.05] to-transparent" />
                   </div>
                   <div className="grid grid-cols-2 gap-1.5">
                     {builtinCartridges.map((c: any) => (
                       <button key={c.id} onClick={() => handleEditCartridge(c.id)}
-                        className="flex items-center gap-2 p-2.5 bg-white/[0.01] hover:bg-white/[0.03] border border-white/[0.03] hover:border-white/[0.06] rounded-lg transition-all text-left group">
-                        <span className="text-base opacity-40 group-hover:opacity-65 transition-opacity">{c.icon}</span>
-                        <div className="min-w-0">
-                          <div className="text-[11px] text-white/30 group-hover:text-white/50 font-medium truncate transition-colors">{c.name}</div>
-                          <span className="text-[8px] text-white/10 font-mono">read-only</span>
+                        className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg border border-white/[0.03] hover:border-white/[0.08] hover:bg-white/[0.02] transition-all duration-200 text-left group">
+                        <span className="text-base opacity-50 group-hover:opacity-80 transition-all duration-200 group-hover:scale-105">{c.icon}</span>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[11px] text-white/35 group-hover:text-white/55 font-medium truncate transition-colors duration-200">{c.name}</div>
                         </div>
+                        <Eye size={10} className="text-white/0 group-hover:text-white/20 transition-all shrink-0" />
                       </button>
                     ))}
                   </div>
-                </>
+                </div>
               )}
             </div>
           )}
@@ -767,58 +881,67 @@ export default function ForgeStudio({ onClose }: { onClose: () => void }) {
 
           {/* ─── Tools Tab ─── */}
           {tab === "tools" && !editingTool && (
-            <div className="space-y-3">
+            <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <h2 className="text-[13px] text-white/45 font-medium">Your Tools</h2>
+                <h2 className="text-[13px] text-white/50 font-semibold tracking-tight">Your Tools</h2>
                 <button onClick={handleNewTool}
-                  className="flex items-center gap-1 px-2.5 py-[5px] bg-[var(--accent)]/10 hover:bg-[var(--accent)]/18 text-[var(--accent)] rounded-md text-[11px] font-medium transition-all">
-                  <Plus size={12} /> New Tool
+                  className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-[11px] font-semibold transition-all duration-200 border border-[var(--accent)]/20 hover:border-[var(--accent)]/35"
+                  style={{ background: "linear-gradient(135deg, rgba(96,165,250,0.12), rgba(96,165,250,0.06))", color: "var(--accent)" }}>
+                  <Plus size={13} /> New Tool
                 </button>
               </div>
 
+              {/* Empty state */}
               {userTools.length === 0 && (
-                <div className="text-center py-12 text-white/15">
-                  <div className="w-11 h-11 mx-auto mb-3 rounded-xl bg-white/[0.03] border border-white/[0.05] flex items-center justify-center">
-                    <Wrench size={20} className="opacity-30" />
+                <div className="text-center py-14">
+                  <div className="w-14 h-14 mx-auto mb-4 rounded-2xl flex items-center justify-center border border-white/[0.06]"
+                    style={{ background: "linear-gradient(135deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01))" }}>
+                    <Code size={24} className="text-white/15" />
                   </div>
-                  <p className="text-[13px] text-white/25">No custom tools yet</p>
-                  <p className="text-[11px] mt-1 text-white/15 max-w-xs mx-auto">
-                    Tools are Python functions the AI can call.
-                  </p>
+                  <p className="text-[14px] text-white/30 font-medium">No custom tools yet</p>
+                  <p className="text-[11px] mt-1.5 text-white/18 max-w-xs mx-auto">Tools are Python functions your AI agents can call</p>
                 </div>
               )}
 
-              <div className="space-y-1.5">
-                {userTools.map(t => (
-                  <button key={t.id} onClick={() => handleEditTool(t.id)}
-                    className="w-full flex items-center gap-2.5 p-3 bg-white/[0.02] hover:bg-white/[0.04] border border-white/[0.05] hover:border-[var(--accent)]/15 rounded-lg transition-all text-left group">
-                    <div className="w-8 h-8 rounded-md flex items-center justify-center text-sm shrink-0" style={{ background: `${t.color || "#60a5fa"}10`, color: t.color || "#60a5fa" }}>
-                      <Wrench size={14} />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-[13px] text-white/65 font-medium group-hover:text-white/85 transition-colors">{t.name}</div>
-                      <div className="text-[10px] text-white/18 truncate mt-px">{t.description || t.id}</div>
-                    </div>
-                    <span className="text-[9px] text-white/12 font-mono px-1.5 py-0.5 bg-white/[0.025] rounded">{t.output_type || "text"}</span>
-                  </button>
-                ))}
-              </div>
+              {/* User tools list */}
+              {userTools.length > 0 && (
+                <div className="space-y-2">
+                  {userTools.map(t => (
+                    <button key={t.id} onClick={() => handleEditTool(t.id)}
+                      className="w-full relative flex items-center gap-3 p-3.5 rounded-xl border border-white/[0.06] hover:border-[var(--accent)]/20 transition-all duration-200 text-left group overflow-hidden"
+                      style={{ background: "linear-gradient(135deg, rgba(255,255,255,0.025), rgba(255,255,255,0.01))" }}>
+                      <div className="absolute inset-0 bg-[var(--accent)]/[0.02] opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+                      <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 relative z-10 border border-white/[0.06]"
+                        style={{ background: `linear-gradient(135deg, ${t.color || "#60a5fa"}15, ${t.color || "#60a5fa"}05)` }}>
+                        <Wrench size={15} style={{ color: t.color || "#60a5fa" }} />
+                      </div>
+                      <div className="flex-1 min-w-0 relative z-10">
+                        <div className="text-[13px] text-white/70 font-semibold group-hover:text-white/90 transition-colors duration-200">{t.name}</div>
+                        <div className="text-[10px] text-white/20 truncate mt-0.5 group-hover:text-white/30 transition-colors">{t.description || t.id}</div>
+                      </div>
+                      <span className="text-[9px] text-white/15 font-mono px-2 py-1 bg-white/[0.03] rounded-md border border-white/[0.04] relative z-10">{t.output_type || "text"}</span>
+                      <ChevronRight size={14} className="text-white/0 group-hover:text-white/20 transition-all duration-200 shrink-0 relative z-10" />
+                    </button>
+                  ))}
+                </div>
+              )}
 
+              {/* Built-in tools */}
               {builtinTools.length > 0 && (
-                <>
-                  <div className="flex items-center gap-2 pt-1">
-                    <span className="text-[10px] text-white/15 font-medium">Built-in</span>
-                    <div className="flex-1 h-px bg-white/[0.04]" />
+                <div className="pt-2">
+                  <div className="flex items-center gap-3 mb-3">
+                    <span className="text-[10px] text-white/20 font-semibold uppercase tracking-wider">Built-in</span>
+                    <div className="flex-1 h-px bg-gradient-to-r from-white/[0.05] to-transparent" />
                   </div>
-                  <div className="grid grid-cols-3 gap-1">
+                  <div className="grid grid-cols-3 gap-1.5">
                     {builtinTools.map(t => (
-                      <div key={t.id} className="flex items-center gap-1.5 px-2 py-1.5 bg-white/[0.01] border border-white/[0.03] rounded text-left">
-                        <Wrench size={9} className="text-white/12 shrink-0" />
-                        <span className="text-[9px] text-white/20 font-mono truncate">{t.id}</span>
+                      <div key={t.id} className="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-white/[0.015] border border-white/[0.03] hover:border-white/[0.06] hover:bg-white/[0.03] transition-all duration-200">
+                        <Wrench size={10} className="text-white/15 shrink-0" />
+                        <span className="text-[9px] text-white/25 font-mono truncate">{t.id}</span>
                       </div>
                     ))}
                   </div>
-                </>
+                </div>
               )}
             </div>
           )}
@@ -834,6 +957,9 @@ export default function ForgeStudio({ onClose }: { onClose: () => void }) {
             />
           )}
         </div>
+
+        {/* Bottom fade */}
+        <div className="h-px w-full shrink-0 bg-gradient-to-r from-transparent via-white/[0.04] to-transparent" />
       </div>
     </div>
   );

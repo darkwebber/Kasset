@@ -79,7 +79,7 @@ export default function CommandPalette({
   }, [filtered, selectedIdx, onClose]);
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-start justify-center pt-[10vh] sm:pt-[15vh]" onClick={onClose}>
+    <div className="absolute inset-0 z-[60] flex items-start justify-center pt-[10vh] sm:pt-[15vh]" onClick={onClose}>
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
       <div
         className="relative w-full max-w-md mx-2 sm:mx-4 bg-[#0c0c10] border border-white/10 rounded-xl shadow-2xl overflow-hidden"
