@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useMemo } from "react";
-import { Search, Plus, History, Download, Wrench, HelpCircle, Volume2, VolumeX, LogOut, Copy, Command } from "lucide-react";
+import { Search, Plus, History, Download, Upload, Wrench, HelpCircle, Volume2, VolumeX, LogOut, Copy, Command, Brain, Cpu, Rss, Settings } from "lucide-react";
 import { soundTick } from "@/lib/sounds";
 
 interface Action {
@@ -19,20 +19,27 @@ interface CommandPaletteProps {
   onNewChat: () => void;
   onOpenHistory: () => void;
   onExportChat: () => void;
+  onImportChat: () => void;
   onCopyChat: () => void;
   onOpenForge?: () => void;
   onOpenHelp: () => void;
   onToggleMute: () => void;
   onEjectCartridge: () => void;
+  onSearchChats: () => void;
+  onOpenMemory: () => void;
+  onOpenContext: () => void;
   isMuted: boolean;
   cartridgeName: string;
   hasMessages: boolean;
+  memoryCount?: number;
+  modelName?: string;
 }
 
 export default function CommandPalette({
-  onClose, onNewChat, onOpenHistory, onExportChat, onCopyChat,
+  onClose, onNewChat, onOpenHistory, onExportChat, onImportChat, onCopyChat,
   onOpenForge, onOpenHelp, onToggleMute, onEjectCartridge,
-  isMuted, cartridgeName, hasMessages,
+  onSearchChats, onOpenMemory, onOpenContext,
+  isMuted, cartridgeName, hasMessages, memoryCount, modelName,
 }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [selectedIdx, setSelectedIdx] = useState(0);
@@ -40,14 +47,18 @@ export default function CommandPalette({
 
   const actions: Action[] = useMemo(() => [
     { id: "new", label: "New Chat", description: "Start a fresh conversation", icon: <Plus size={16} />, shortcut: "⌘N", keywords: ["new", "chat", "fresh", "clear", "reset"], action: onNewChat },
-    { id: "history", label: "Chat History", description: "Browse previous conversations", icon: <History size={16} />, shortcut: "", keywords: ["history", "previous", "past", "browse", "memory"], action: onOpenHistory },
-    { id: "export", label: "Export Chat", description: "Download as Markdown file", icon: <Download size={16} />, shortcut: "⌘E", keywords: ["export", "download", "save", "markdown"], action: onExportChat },
+    { id: "search", label: "Search Chats", description: "Find across all conversations", icon: <Search size={16} />, shortcut: "", keywords: ["search", "find", "query", "lookup", "conversations"], action: onSearchChats },
+    { id: "history", label: "Chat History", description: "Browse previous conversations", icon: <History size={16} />, shortcut: "", keywords: ["history", "previous", "past", "browse"], action: onOpenHistory },
+    { id: "memory", label: "Memories", description: memoryCount ? `${memoryCount} learned memories about you` : "View what the AI knows about you", icon: <Brain size={16} />, shortcut: "", keywords: ["memory", "memories", "remember", "preferences", "facts", "learned", "profile"], action: onOpenMemory },
+    { id: "context", label: "Model & Context", description: modelName ? `${modelName} · context layers & settings` : "Switch model, toggle context layers", icon: <Cpu size={16} />, shortcut: "", keywords: ["model", "switch", "context", "settings", "layers", "summary", "profile", "preview", "rss", "feeds"], action: onOpenContext },
+    { id: "export", label: "Export Chat", description: "Download as .kchat (lossless JSON)", icon: <Download size={16} />, shortcut: "⌘E", keywords: ["export", "download", "save", "json", "share", "kchat"], action: onExportChat },
+    { id: "import", label: "Import Chat", description: "Load a .kchat file", icon: <Upload size={16} />, shortcut: "", keywords: ["import", "load", "open", "kchat", "upload"], action: onImportChat },
     { id: "copy", label: "Copy Conversation", description: "Copy full chat to clipboard", icon: <Copy size={16} />, shortcut: "⌘⇧C", keywords: ["copy", "clipboard", "share", "text"], action: onCopyChat },
     ...(onOpenForge ? [{ id: "forge", label: "Kasset Forge", description: "Create & edit kassets and tools", icon: <Wrench size={16} />, shortcut: "⌘⇧F", keywords: ["forge", "create", "edit", "kasset", "cartridge", "tool", "plugin", "studio"], action: onOpenForge }] : []),
     { id: "help", label: "Quick Guide", description: "Tips, shortcuts, and how-to", icon: <HelpCircle size={16} />, shortcut: "⌘/", keywords: ["help", "guide", "tutorial", "tips", "shortcuts", "how"], action: onOpenHelp },
     { id: "mute", label: isMuted ? "Unmute Sounds" : "Mute Sounds", description: isMuted ? "Turn sound effects back on" : "Silence all sound effects", icon: isMuted ? <VolumeX size={16} /> : <Volume2 size={16} />, shortcut: "", keywords: ["mute", "sound", "audio", "volume", "unmute"], action: onToggleMute },
     { id: "eject", label: "Switch Kasset", description: `Eject ${cartridgeName} and pick another`, icon: <LogOut size={16} />, shortcut: "", keywords: ["eject", "switch", "kasset", "cartridge", "change", "swap"], action: onEjectCartridge },
-  ], [onNewChat, onOpenHistory, onExportChat, onCopyChat, onOpenForge, onOpenHelp, onToggleMute, onEjectCartridge, isMuted, cartridgeName]);
+  ], [onNewChat, onSearchChats, onOpenHistory, onOpenMemory, onOpenContext, onExportChat, onImportChat, onCopyChat, onOpenForge, onOpenHelp, onToggleMute, onEjectCartridge, isMuted, cartridgeName, memoryCount, modelName]);
 
   const filtered = useMemo(() => {
     if (!query.trim()) return actions;

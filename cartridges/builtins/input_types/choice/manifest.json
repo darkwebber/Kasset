@@ -1,0 +1,26 @@
+{
+  "id": "choice",
+  "name": "Choice Selector",
+  "version": "1.0.0",
+  "description": "Present the user with a set of options to choose from. Supports single and multiple selection. Ideal for preferences, decisions, quizzes, and branching workflows.",
+  "author": "system",
+  "widget_type": "choice",
+  "icon": "list-checks",
+  "tags": ["choice", "select", "options", "decision"],
+  "config_template": {
+    "prompt": "Choose an option:",
+    "options": [
+      {
+        "label": "Option A",
+        "value": "a",
+        "description": "Description of option A"
+      },
+      {
+        "label": "Option B",
+        "value": "b",
+        "description": "Description of option B"
+      }
+    ],
+    "multiple": false
+  }
+}

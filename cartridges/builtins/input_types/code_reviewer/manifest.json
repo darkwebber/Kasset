@@ -1,0 +1,16 @@
+{
+  "id": "code_reviewer",
+  "name": "Code / Text Editor",
+  "version": "1.0.0",
+  "description": "Present the user with an editable text or code block for review, modification, or collaborative drafting. Supports syntax highlighting.",
+  "author": "system",
+  "widget_type": "editor",
+  "icon": "code",
+  "tags": ["code", "editor", "review", "text"],
+  "config_template": {
+    "prompt": "Review and edit the content below:",
+    "language": "text",
+    "content": "",
+    "editable": true
+  }
+}

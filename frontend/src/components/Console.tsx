@@ -14,15 +14,18 @@ import ChatDrawer from "./ChatDrawer";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { showToast } from "./Toast";
 import CommandPalette from "./CommandPalette";
-import type { ToolCallSegment, ThinkingSegment, TextSegment, Segment, Message } from "./chat/types";
+import QuickSettings from "./QuickSettings";
+import type { ToolCallSegment, ThinkingSegment, TextSegment, InteractiveSegment, Segment, Message } from "./chat/types";
 import { TOOL_META, getToolMeta, TOOL_DISPLAY, TOOL_EXAMPLES } from "./chat/toolMeta";
 import ThinkingBlock from "./chat/ThinkingBlock";
 import ToolCallCard from "./chat/ToolCallCard";
+import InteractiveWidget from "./chat/InteractiveWidget";
 import WelcomeScreen from "./chat/WelcomeScreen";
 import Tutorial from "./Tutorial";
 import { useCartridgeStore } from "@/stores/cartridgeStore";
 import { useChatStore } from "@/stores/chatStore";
-import { FolderOpen, X, Copy, Check, History, Plus, ChevronDown, ChevronRight, Wrench, Terminal, FileText, Clock, Play, Search, Calculator, Volume2, VolumeX, Square, RefreshCw, Pencil, Scissors, Trash2, CornerDownLeft, Paperclip, HelpCircle, Download, Command } from "lucide-react";
+import { useSettingsStore } from "@/stores/settingsStore";
+import { FolderOpen, X, Copy, Check, History, Plus, ChevronDown, ChevronRight, Wrench, Terminal, FileText, Clock, Play, Search, Calculator, Volume2, VolumeX, Square, RefreshCw, Pencil, Scissors, Trash2, CornerDownLeft, Paperclip, HelpCircle, Download, Command, ThumbsUp, ThumbsDown } from "lucide-react";
 import { soundSend, soundThinkStart, soundThinkEnd, soundToolStart, soundToolDone, soundDone, soundError, soundNewChat, soundTick, soundCartridgeEject, isMuted, setMuted } from "@/lib/sounds";
 import { getApiBase, isLocalClient } from "@/lib/api";
 import SnakeGame from "./SnakeGame";
@@ -42,6 +45,52 @@ function CopyButton({ text }: { text: string }) {
     >
       {copied ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
     </button>
+  );
+}
+
+function HtmlPreviewBlock({ code }: { code: string }) {
+  const [showPreview, setShowPreview] = useState(false);
+  return (
+    <div className="relative group/code my-3">
+      <div className="flex items-center justify-between px-4 py-1.5 bg-white/5 border-b border-white/5 rounded-t-md">
+        <span className="text-[10px] uppercase tracking-widest text-white/30 font-mono">html</span>
+        <button
+          onClick={() => setShowPreview(p => !p)}
+          className="text-[10px] font-mono px-2 py-0.5 rounded bg-[var(--accent)]/10 text-[var(--accent)]/70 hover:bg-[var(--accent)]/20 hover:text-[var(--accent)] transition-all"
+        >
+          {showPreview ? "⟨/⟩ Code" : "▶ Preview"}
+        </button>
+      </div>
+      <CopyButton text={code} />
+      {showPreview ? (
+        <div className="rounded-b-md overflow-hidden border border-white/6 border-t-0">
+          <iframe
+            srcDoc={code}
+            sandbox="allow-scripts"
+            className="w-full bg-white rounded-b-md"
+            style={{ minHeight: 200, maxHeight: 500, border: "none" }}
+            title="HTML Preview"
+          />
+        </div>
+      ) : (
+        <SyntaxHighlighter
+          style={vscDarkPlus}
+          language="html"
+          PreTag="div"
+          customStyle={{
+            margin: 0,
+            borderRadius: "0 0 6px 6px",
+            background: "rgba(0,0,0,0.6)",
+            fontSize: "13px",
+            border: "1px solid rgba(255,255,255,0.06)",
+            borderTop: "none",
+          }}
+          codeTagProps={{ style: { fontFamily: "var(--font-mono), monospace" } }}
+        >
+          {code}
+        </SyntaxHighlighter>
+      )}
+    </div>
   );
 }
 
@@ -90,18 +139,89 @@ function extractStreamText(accumulated: string): string {
     return ""; // Still inside thinking block
   }
   let text = accumulated.substring(start);
+  // Strip </tool_call> tags and anything after them
+  text = text.replace(/<\/tool_call>[\s\S]*/gi, '');
+  // Strip </think> tags that leak into visible text
+  text = text.replace(/<\/think>/gi, '');
   // Trim anything from <tool_call> onward (both formats)
   const toolIdx = text.indexOf("<tool_call>");
   if (toolIdx >= 0) text = text.substring(0, toolIdx);
   const toolIdx2 = text.indexOf("<|tool_call|>");
   if (toolIdx2 >= 0) text = text.substring(0, toolIdx2);
+  // Strip trailing JSON closers leaked from tool calls (e.g. '"}}' or '"}}  ')
+  text = text.replace(/"\s*\}\s*\}\s*$/gm, '');
   // Trim leaked JSON fragments like '"}> properly.'
   const jsonLeakIdx = text.search(/"\s*\}\s*>\s*[^<\n]{0,30}\.?\s*$/m);
   if (jsonLeakIdx >= 0) text = text.substring(0, jsonLeakIdx);
   // Trim raw JSON tool call objects
   const rawJsonIdx = text.indexOf('{"name"');
   if (rawJsonIdx >= 0) text = text.substring(0, rawJsonIdx);
+  // Strip backend placeholder text that can leak through
+  text = text.replace(/\[Calling tool\.\.\.\]/gi, '');
+  text = text.replace(/\(used tool\)/gi, '');
   return text.trim();
+}
+
+function collapseExactDouble(text: string): string {
+  const t = text.trim();
+  if (t.length < 300) return t;
+  const minChunk = Math.floor(t.length * 0.3);
+  const maxChunk = Math.floor(t.length * 0.7);
+  for (let cut = minChunk; cut <= maxChunk; cut++) {
+    const a = t.slice(0, cut).trim();
+    const b = t.slice(cut).trim();
+    if (a.length > 100 && a === b) return a;
+  }
+  return t;
+}
+
+function mergeAssistantTextSegments(segs: Segment[]): string {
+  const blocks = segs
+    .filter((s) => s.kind === "text")
+    .map((s) => {
+      const raw = typeof (s as TextSegment).content === "string"
+        ? (s as TextSegment).content
+        : JSON.stringify((s as TextSegment).content ?? "");
+      return cleanContent(raw);
+    })
+    .filter((t) => t && !t.startsWith("⏳"));
+
+  let merged = "";
+  for (const next of blocks) {
+    if (!merged) {
+      merged = next;
+      continue;
+    }
+
+    const current = merged.trim();
+    const candidate = next.trim();
+    if (!candidate) continue;
+
+    // If candidate is already contained, skip duplicate snapshot.
+    if (current.includes(candidate)) continue;
+
+    // If model re-emits the full answer as a longer snapshot, replace.
+    if (candidate.includes(current) && current.length > 120) {
+      merged = candidate;
+      continue;
+    }
+
+    // Overlap-aware append (handles continuation across tool rounds).
+    const maxOverlap = Math.min(current.length, candidate.length, 1200);
+    let overlap = 0;
+    for (let size = maxOverlap; size >= 40; size--) {
+      if (current.slice(-size) === candidate.slice(0, size)) {
+        overlap = size;
+        break;
+      }
+    }
+
+    merged = overlap > 0
+      ? `${current}${candidate.slice(overlap)}`
+      : `${current}\n\n${candidate}`;
+  }
+
+  return collapseExactDouble(merged);
 }
 
 // ═══════════════════════════════════════════
@@ -109,12 +229,15 @@ function extractStreamText(accumulated: string): string {
 // ═══════════════════════════════════════════
 
 export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCartridge: () => void; onOpenForge?: () => void }) {
-  const { activeConfig, ejectCartridge, availableCartridges } = useCartridgeStore();
+  const { activeConfig, ejectCartridge, availableCartridges, loadActiveStack, loadAvailableCartridges } = useCartridgeStore();
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [showExplorer, setShowExplorer] = useState(false);
   const [showDrawer, setShowDrawer] = useState(false);
+  const [drawerTab, setDrawerTab] = useState<"history" | "memory" | "context">("history");
+  const [drawerFocusSearch, setDrawerFocusSearch] = useState(false);
+  const [modelName, setModelName] = useState("");
   const [attachments, setAttachments] = useState<{path: string, name: string}[]>([]);
   const [contextInfo, setContextInfo] = useState<{message_count: number, estimated_tokens: number, max_tokens: number} | null>(null);
   const [chatId, setChatId] = useState<string | null>(null);
@@ -122,14 +245,18 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
   // Streaming state — not part of messages until finalized
   const [streamSegments, setStreamSegments] = useState<Segment[]>([]);
   const [muted, setMutedState] = useState(false);
-  const { setActiveChatId, loadChatList } = useChatStore();
+  const { setActiveChatId, loadChatList, memories, loadMemories } = useChatStore();
+  const { context: ctxSettings, loadSettings: loadCtxSettings } = useSettingsStore();
   
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
   const [editingText, setEditingText] = useState("");
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+  const [messageFeedback, setMessageFeedback] = useState<Record<number, 'up' | 'down'>>({});
   const [showPalette, setShowPalette] = useState(false);
   const [showTutorial, setShowTutorial] = useState(false);
   const [showSnake, setShowSnake] = useState(false);
+  const [showQuickSettings, setShowQuickSettings] = useState(false);
+  const [drawerAutoPreview, setDrawerAutoPreview] = useState(false);
   const redDotClicks = useRef(0);
   const redDotTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -139,6 +266,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
   const pinnedToBottom = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileUploadRef = useRef<HTMLInputElement>(null);
+  const chatImportRef = useRef<HTMLInputElement>(null);
   const mirrorRef = useRef<HTMLDivElement>(null);
   const isLocal = typeof window !== "undefined" ? isLocalClient() : true;
 
@@ -151,6 +279,15 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
     setMutedState(isMuted());
   }, []);
 
+  // Load system info on mount (memories, settings, model name)
+  useEffect(() => {
+    loadMemories();
+    loadCtxSettings();
+    fetch(`${getApiBase()}/api/models`).then(r => r.json()).then(d => {
+      if (d.current) setModelName(d.current.split("/").pop() || "");
+    }).catch(() => {});
+  }, [loadMemories, loadCtxSettings]);
+
   const toggleMute = () => {
     const next = !muted;
     setMutedState(next);
@@ -159,10 +296,14 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
   };
 
   const handleLoadChat = (loadedMessages: any[], _cartridgeIds: string[], loadedChatId?: string) => {
-    // Hydrate legacy messages: ensure assistant messages have segments for proper rendering
+    // Hydrate + normalize assistant messages for stable rendering/persistence
     const hydrated = loadedMessages.map((m: any) => {
+      if (m.role === "assistant" && Array.isArray(m.segments) && m.segments.length > 0) {
+        return { ...m, content: mergeAssistantTextSegments(m.segments) || m.content || "" };
+      }
       if (m.role === "assistant" && (!m.segments || m.segments.length === 0) && m.content) {
-        return { ...m, segments: [{ kind: "text" as const, content: m.content }] };
+        const normalized = collapseExactDouble(cleanContent(String(m.content)));
+        return { ...m, content: normalized, segments: [{ kind: "text" as const, content: normalized }] };
       }
       return m;
     });
@@ -175,6 +316,12 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
     setContextInfo(null);
     setStreamSegments([]);
     setEditingIdx(null);
+
+    // Auto-switch cartridge if the loaded chat belongs to a different one
+    const currentIds = activeConfig?.active_cartridge_ids;
+    if (_cartridgeIds?.length && (!currentIds || _cartridgeIds[0] !== currentIds[0])) {
+      loadActiveStack(_cartridgeIds);
+    }
   };
 
   const handleNewChat = () => {
@@ -236,6 +383,54 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
     soundTick();
   };
 
+  // ─── Export chat as structured JSON (lossless) ───
+  const handleExportChatJSON = () => {
+    if (messages.length === 0) return;
+    const cartName = currentCartridge?.name || activeConfig?.active_cartridge_ids[0] || "chat";
+    const exportData = {
+      format: "kchat",
+      version: 1,
+      exported_at: new Date().toISOString(),
+      cartridge_name: cartName,
+      cartridge_ids: activeConfig?.active_cartridge_ids || [],
+      chat_id: chatId,
+      message_count: messages.length,
+      messages: messages.map(m => ({
+        role: m.role,
+        content: m.content,
+        ...(m.segments && m.segments.length > 0 ? { segments: m.segments } : {}),
+      })),
+    };
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${cartName.toLowerCase().replace(/\s+/g, "-")}-${new Date().toISOString().slice(0, 10)}.kchat`;
+    a.click();
+    URL.revokeObjectURL(url);
+    soundTick();
+  };
+
+  // ─── Import chat from .kchat JSON ───
+  const handleImportChat = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = JSON.parse(e.target?.result as string);
+        // Accept both new "kchat" and legacy "kasset-chat" format identifiers
+        if ((data.format !== "kchat" && data.format !== "kasset-chat") || !Array.isArray(data.messages)) {
+          console.error("Invalid .kchat format");
+          return;
+        }
+        handleLoadChat(data.messages, data.cartridge_ids || [], data.chat_id);
+        soundTick();
+      } catch (err) {
+        console.error("Failed to import chat:", err);
+      }
+    };
+    reader.readAsText(file);
+  };
+
   // ─── Copy full conversation to clipboard ───
   const handleCopyChat = () => {
     if (messages.length === 0) return;
@@ -252,8 +447,8 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
       if (meta && e.key === "k") { e.preventDefault(); setShowPalette(p => !p); return; }
       // ⌘N — new chat
       if (meta && e.key === "n") { e.preventDefault(); handleNewChat(); return; }
-      // ⌘E — export chat
-      if (meta && e.key === "e") { e.preventDefault(); handleExportChat(); return; }
+      // ⌘E — export chat (lossless JSON)
+      if (meta && e.key === "e") { e.preventDefault(); handleExportChatJSON(); return; }
       // ⌘⇧C — copy full conversation
       if (meta && e.shiftKey && e.key === "C") { e.preventDefault(); handleCopyChat(); return; }
       // ⌘⇧F — open forge
@@ -264,6 +459,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
       if (meta && e.key === ".") { e.preventDefault(); inputRef.current?.focus(); return; }
       // Escape — close overlays or stop generation
       if (e.key === "Escape") {
+        if (showQuickSettings) { setShowQuickSettings(false); return; }
         if (showPalette) { setShowPalette(false); return; }
         if (showTutorial) { setShowTutorial(false); return; }
         if (showExplorer) { setShowExplorer(false); return; }
@@ -273,7 +469,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [showPalette, showTutorial, showExplorer, showDrawer, isGenerating, messages]);
+  }, [showPalette, showTutorial, showExplorer, showDrawer, showQuickSettings, isGenerating, messages]);
 
   // ─── Stop generation ───
   const handleStop = () => {
@@ -356,14 +552,44 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
     setTimeout(() => setCopiedIdx(null), 2000);
   };
 
+  // ─── Feedback (thumbs up/down) on assistant messages ───
+  const handleFeedback = async (idx: number, rating: 'up' | 'down') => {
+    if (!chatId) return;
+    const current = messageFeedback[idx];
+    const newRating = current === rating ? undefined : rating;
+    setMessageFeedback(prev => {
+      const next = { ...prev };
+      if (newRating) next[idx] = newRating; else delete next[idx];
+      return next;
+    });
+    if (!newRating) return;
+    try {
+      await fetch(`${getApiBase()}/api/chats/${chatId}/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message_index: idx, rating: newRating }),
+      });
+    } catch (e) {
+      console.error("Feedback save failed:", e);
+    }
+  };
+
   const mdComponents = useMemo<Components>(() => ({
     code({ className, children, ...props }) {
       const match = /language-(\w+)/.exec(className || "");
-      const codeStr = String(children).replace(/\n$/, "");
+      const codeStr = String(children ?? "").replace(/\n$/, "");
+      // Skip empty or "undefined" code blocks (caused by broken model output)
+      if (!codeStr || codeStr === "undefined" || codeStr === "null") {
+        return null;
+      }
       if (match) {
         // Render mermaid diagrams as actual diagrams
         if (match[1] === "mermaid") {
           return <MermaidDiagram code={codeStr} />;
+        }
+        // Render HTML code blocks with live preview toggle
+        if (match[1] === "html" && codeStr.includes("<") && codeStr.length > 40) {
+          return <HtmlPreviewBlock code={codeStr} />;
         }
         return (
           <div className="relative group my-3">
@@ -400,6 +626,41 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
         <blockquote className="border-l-2 border-[var(--accent)]/40 pl-4 my-3 text-white/60 italic">
           {children}
         </blockquote>
+      );
+    },
+    p({ children, ...props }) {
+      // Auto-embed YouTube links that appear as the sole content of a paragraph
+      const childArr = React.Children.toArray(children);
+      if (childArr.length === 1 && typeof childArr[0] === "object" && (childArr[0] as any)?.type === "a") {
+        const link = childArr[0] as React.ReactElement<{ href?: string }>;
+        const href = link.props?.href || "";
+        const ytMatch = href.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]+)/);
+        if (ytMatch) {
+          return (
+            <div className="my-3 rounded-lg overflow-hidden border border-white/8" style={{ background: "#0d1117" }}>
+              <iframe
+                src={`https://www.youtube.com/embed/${ytMatch[1]}`}
+                className="w-full rounded-lg"
+                style={{ height: 315, border: "none" }}
+                title="YouTube video"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                allowFullScreen
+                sandbox="allow-scripts allow-same-origin allow-popups"
+              />
+            </div>
+          );
+        }
+      }
+      return <p {...props}>{children}</p>;
+    },
+    a({ href, children, ...props }) {
+      return (
+        <a href={href} target="_blank" rel="noopener noreferrer"
+          className="text-[var(--accent)]/80 hover:text-[var(--accent)] underline underline-offset-2 decoration-[var(--accent)]/30 transition-colors"
+          {...props}
+        >
+          {children}
+        </a>
       );
     },
   }), []);
@@ -608,12 +869,23 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
         const duration = Date.now() - thinkStartRef.current;
         segments = [...segments.slice(0, -1), { ...segments[lastIdx], durationMs: duration, collapsed: true }];
       }
-      const finalText = segments
-        .filter((s) => s.kind === "text" && !(s as TextSegment).content.startsWith("⏳"))
-        .map((s) => (s as TextSegment).content)
-        .join("\n\n");
+      // Clean up stuck "preparing" tool segments (never resolved to running/done)
+      segments = segments.filter(s => !(s.kind === "tool" && (s as ToolCallSegment).status === "preparing"));
+      // Remove trailing ⏳ status placeholders
+      while (segments.length > 0 && segments[segments.length - 1].kind === "text" && (segments[segments.length - 1] as TextSegment).content.startsWith("⏳")) {
+        segments = segments.slice(0, -1);
+      }
+      const finalText = mergeAssistantTextSegments(segments);
       setMessages((prev) => {
-        const updated = [...prev, { role: "assistant" as const, content: finalText, segments: [...segments] }];
+        const assistantMessage: Message = { role: "assistant", content: finalText, segments: [...segments] };
+        const last = prev[prev.length - 1];
+        const updated = (
+          last &&
+          last.role === "assistant" &&
+          cleanContent(last.content || "") === cleanContent(assistantMessage.content || "")
+        )
+          ? [...prev.slice(0, -1), assistantMessage]
+          : [...prev, assistantMessage];
         // Auto-save chat after response completes — with retry + localStorage fallback
         const cid = chatIdRef.current;
         if (cid && activeConfig) {
@@ -843,6 +1115,14 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
                 }, true);
               }
               soundToolStart();
+            } else if (data.type === "interactive") {
+              pushSegment({
+                kind: "interactive",
+                widgetId: data.data.widget_id,
+                widgetType: data.data.widget_type,
+                config: data.data,
+                status: "pending",
+              } as any, true);
             } else if (data.type === "consent_required") {
               updateLastSegment((s) => ({
                 ...s,
@@ -853,13 +1133,45 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
             } else if (data.type === "tool_result") {
               const imgs = data.data.images || [];
               const htmlArtifact = data.data.html || "";
-              updateLastSegment((s) => ({
-                ...s,
-                result: data.data.result,
-                images: imgs.length > 0 ? [...((s as ToolCallSegment).images || []), ...imgs] : (s as ToolCallSegment).images,
-                html: htmlArtifact || (s as ToolCallSegment).html,
-                status: "done",
-              } as ToolCallSegment), true);
+              // Find the last tool segment (may not be the absolute last segment
+              // if an interactive widget was pushed after it)
+              let toolIdx = -1;
+              for (let si = segments.length - 1; si >= 0; si--) {
+                if (segments[si].kind === "tool" && ((segments[si] as ToolCallSegment).status === "running" || (segments[si] as ToolCallSegment).status === "preparing")) {
+                  toolIdx = si;
+                  break;
+                }
+              }
+              if (toolIdx >= 0) {
+                const s = segments[toolIdx] as ToolCallSegment;
+                segments = segments.map((seg, si) => {
+                  if (si === toolIdx) {
+                    return {
+                      ...s,
+                      result: data.data.result,
+                      images: imgs.length > 0 ? [...(s.images || []), ...imgs] : s.images,
+                      html: htmlArtifact || s.html,
+                      status: "done" as const,
+                    } as ToolCallSegment;
+                  }
+                  // Also mark any pending interactive segments as submitted
+                  // (the local closure doesn't see handleInteractiveRespond's state update)
+                  if (seg.kind === "interactive" && (seg as InteractiveSegment).status === "pending") {
+                    return { ...seg, status: "submitted" as const } as InteractiveSegment;
+                  }
+                  return seg;
+                });
+                flushSegments();
+              } else {
+                // Fallback: update last segment (original behavior)
+                updateLastSegment((s) => ({
+                  ...s,
+                  result: data.data.result,
+                  images: imgs.length > 0 ? [...((s as ToolCallSegment).images || []), ...imgs] : (s as ToolCallSegment).images,
+                  html: htmlArtifact || (s as ToolCallSegment).html,
+                  status: "done",
+                } as ToolCallSegment), true);
+              }
               soundToolDone();
               rawAccumulated = "";
             } else if (data.type === "done") {
@@ -1029,6 +1341,32 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
     }
   }, []);
 
+  // ─── Interactive widget handler ───
+  const handleInteractiveRespond = useCallback(async (widgetId: string, response: any, dismissed: boolean) => {
+    try {
+      const endpoint = dismissed ? "/api/interactive/dismiss" : "/api/interactive/respond";
+      const body = dismissed ? { widget_id: widgetId } : { widget_id: widgetId, response };
+      await fetch(`${getApiBase()}${endpoint}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      // Update segment status
+      const updater = (segs: Segment[]) =>
+        segs.map((s) =>
+          s.kind === "interactive" && (s as InteractiveSegment).widgetId === widgetId
+            ? { ...s, status: dismissed ? "dismissed" : "submitted", response } as InteractiveSegment
+            : s
+        );
+      setStreamSegments(updater);
+      setMessages((prev) =>
+        prev.map((msg) => msg.segments ? { ...msg, segments: updater(msg.segments) } : msg)
+      );
+    } catch (e) {
+      console.error("Interactive respond failed:", e);
+    }
+  }, []);
+
   // ─── Render helper for segments ───
   const renderSegments = (segs: Segment[], isLive: boolean) => (
     <div className="space-y-1">
@@ -1061,6 +1399,9 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
         if (seg.kind === "tool") {
           return <ToolCallCard key={`tool-${i}`} segment={seg} onConsent={handleConsent} />;
         }
+        if (seg.kind === "interactive") {
+          return <InteractiveWidget key={`widget-${i}`} segment={seg as InteractiveSegment} onRespond={handleInteractiveRespond} />;
+        }
         if (seg.kind === "text" && (seg as TextSegment).content.startsWith("⏳")) {
           const statusText = (seg as TextSegment).content.replace(/^⏳\s*/, '');
           return (
@@ -1074,7 +1415,12 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
             </div>
           );
         }
-        if (seg.kind === "text" && seg.content.trim()) {
+        if (seg.kind === "text") {
+          const raw = typeof seg.content === "string"
+            ? seg.content
+            : (seg.content == null ? "" : JSON.stringify(seg.content));
+          const cleaned = cleanContent(raw);
+          if (!cleaned) return null;
           return (
             <ReactMarkdown
               key={`text-${i}`}
@@ -1082,7 +1428,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
               rehypePlugins={[rehypeKatex]}
               components={mdComponents}
             >
-              {seg.content}
+              {cleaned}
             </ReactMarkdown>
           );
         }
@@ -1090,6 +1436,18 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
       })}
     </div>
   );
+
+  // Drawer tab helpers — open drawer to a specific tab
+  const openDrawerTo = (tab: "history" | "memory" | "context", search = false, autoPreview = false) => {
+    setDrawerTab(tab);
+    setDrawerFocusSearch(search);
+    setDrawerAutoPreview(autoPreview);
+    setShowDrawer(true);
+    setShowQuickSettings(false);
+    soundTick();
+  };
+
+  const ctxActiveCount = [ctxSettings.use_session_summary, ctxSettings.use_cartridge_context, ctxSettings.use_global_profile].filter(Boolean).length;
 
   const themeStyle = activeConfig ? {
     "--accent": activeConfig.theme.accent_color,
@@ -1121,7 +1479,11 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
           <div aria-label={isGenerating ? "Generating response" : "Idle"} className={`w-2.5 h-2.5 sm:w-3 sm:h-3 rounded-full ${isGenerating ? "bg-[var(--accent)] animate-pulse crt-glow" : "bg-white/20"}`} />
         </div>
         {contextInfo && (
-          <div className="hidden sm:flex items-center gap-2 ml-2" title={`${contextInfo.estimated_tokens} / ${contextInfo.max_tokens} tokens`}>
+          <button
+            onClick={() => openDrawerTo("context")}
+            className="hidden sm:flex items-center gap-2 ml-2 hover:opacity-80 transition-opacity cursor-pointer"
+            title={`${contextInfo.estimated_tokens} / ${contextInfo.max_tokens} tokens · Click for context settings`}
+          >
             <div className="w-24 h-1.5 bg-black/40 rounded-full overflow-hidden border border-white/5">
               <div 
                 className="h-full rounded-full transition-all duration-500"
@@ -1133,7 +1495,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
               />
             </div>
             <span className="text-[9px] text-white/30 font-mono">{messages.length} msg</span>
-          </div>
+          </button>
         )}
       </div>
       
@@ -1142,7 +1504,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
         <button onClick={handleNewChat} aria-label="New Chat" className="p-2 sm:p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all" title="New Chat (⌘N)">
           <Plus size={15} />
         </button>
-        <button onClick={() => { setShowDrawer(true); soundTick(); }} aria-label="Chat History" className="p-2 sm:p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all" title="Chat History">
+        <button onClick={() => openDrawerTo("history")} aria-label="Chat History" className="p-2 sm:p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all" title="Chat History">
           <History size={15} />
         </button>
         <button onClick={() => { setShowPalette(true); soundTick(); }} aria-label="Command Palette" className="p-2 sm:p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all" title="Command Palette (⌘K)">
@@ -1203,7 +1565,10 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
           <ChatDrawer
             onLoadChat={handleLoadChat}
             onNewChat={handleNewChat}
-            onClose={() => { setShowDrawer(false); loadChatList(); }}
+            onClose={() => { setShowDrawer(false); setDrawerFocusSearch(false); setDrawerAutoPreview(false); loadChatList(); loadMemories(); }}
+            defaultTab={drawerTab}
+            focusSearch={drawerFocusSearch}
+            autoFetchPreview={drawerAutoPreview}
           />
         )}
 
@@ -1211,8 +1576,12 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
           <CommandPalette
             onClose={() => setShowPalette(false)}
             onNewChat={handleNewChat}
-            onOpenHistory={() => { setShowDrawer(true); soundTick(); }}
-            onExportChat={handleExportChat}
+            onOpenHistory={() => openDrawerTo("history")}
+            onSearchChats={() => openDrawerTo("history", true)}
+            onOpenMemory={() => openDrawerTo("memory")}
+            onOpenContext={() => openDrawerTo("context")}
+            onExportChat={handleExportChatJSON}
+            onImportChat={() => chatImportRef.current?.click()}
             onCopyChat={handleCopyChat}
             onOpenForge={onOpenForge}
             onOpenHelp={() => setShowTutorial(true)}
@@ -1232,6 +1601,8 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
             isMuted={muted}
             cartridgeName={currentCartridge?.name || "Kasset"}
             hasMessages={messages.length > 0}
+            memoryCount={memories.length}
+            modelName={modelName}
           />
         )}
 
@@ -1241,9 +1612,15 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
 
         {showSnake && (
           <SnakeGame
-            onClose={() => setShowSnake(false)}
-            onUnlock={() => {
+            onClose={() => { setShowSnake(false); loadAvailableCartridges(); }}
+            onUnlock={async () => {
               if (typeof window !== "undefined") localStorage.setItem("kasset-nsfw-unlocked", "true");
+              try {
+                await fetch(`${getApiBase()}/api/forge/unlock-secret`, { method: "POST" });
+                await loadAvailableCartridges();
+              } catch (e) {
+                console.error("Failed to unlock secret cartridge:", e);
+              }
             }}
           />
         )}
@@ -1256,6 +1633,12 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
             tools={activeConfig!.tools}
             suggestedPrompts={activeConfig!.suggested_prompts || []}
             onSendPrompt={handleWelcomePrompt}
+            memoryCount={memories.length}
+            modelName={modelName}
+            ctxActiveCount={ctxActiveCount}
+            onOpenMemory={() => openDrawerTo("memory")}
+            onOpenContext={() => openDrawerTo("context")}
+            onOpenSearch={() => openDrawerTo("history", true)}
           />
         ) : (
         <div ref={scrollRef} role="log" aria-live="polite" aria-label="Chat messages" className="flex-1 min-h-0 overflow-y-auto crt-scroll pr-2 sm:pr-4 space-y-3 sm:space-y-4">
@@ -1347,57 +1730,69 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
                     )}
                   </div>
 
-                  {/* Hover action buttons */}
+                  {/* Inline action bar — always visible */}
                   {!isGenerating && !isEditing && !isBoot && (
-                    <div className={`absolute ${isUser ? "left-0 -translate-x-full pr-1.5" : "right-0 translate-x-full pl-1.5"} top-0 opacity-30 sm:opacity-0 sm:group-hover/msg:opacity-100 transition-opacity flex flex-col gap-0.5`}>
-                      {/* Copy — assistant only */}
+                    <div className={`flex items-center gap-0.5 mt-1 ${isUser ? "justify-end" : "justify-start"}`}>
                       {isBot && (
                         <button
                           onClick={() => handleCopy(idx)}
-                          className="p-2 sm:p-1 rounded text-white/20 hover:text-white/60 hover:bg-white/5 transition-all"
+                          className="p-1.5 sm:p-1 rounded text-white/25 hover:text-white/70 hover:bg-white/5 transition-all"
                           title="Copy response"
                         >
                           {copiedIdx === idx ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
                         </button>
                       )}
-                      {/* Retry — last assistant only */}
+                      {isBot && !isBoot && chatId && (
+                        <>
+                          <button
+                            onClick={() => handleFeedback(idx, 'up')}
+                            className={`p-1.5 sm:p-1 rounded transition-all ${
+                              messageFeedback[idx] === 'up'
+                                ? 'text-green-400 bg-green-400/10'
+                                : 'text-white/25 hover:text-green-400 hover:bg-white/5'
+                            }`}
+                            title="Good response"
+                          >
+                            <ThumbsUp size={11} />
+                          </button>
+                          <button
+                            onClick={() => handleFeedback(idx, 'down')}
+                            className={`p-1.5 sm:p-1 rounded transition-all ${
+                              messageFeedback[idx] === 'down'
+                                ? 'text-red-400 bg-red-400/10'
+                                : 'text-white/25 hover:text-red-400 hover:bg-white/5'
+                            }`}
+                            title="Poor response"
+                          >
+                            <ThumbsDown size={11} />
+                          </button>
+                        </>
+                      )}
                       {isBot && isLast && (
                         <button
                           onClick={() => handleRetry(idx)}
-                          className="p-2 sm:p-1 rounded text-white/20 hover:text-white/60 hover:bg-white/5 transition-all"
+                          className="p-1.5 sm:p-1 rounded text-white/25 hover:text-white/70 hover:bg-white/5 transition-all"
                           title="Regenerate response"
                         >
                           <RefreshCw size={12} />
                         </button>
                       )}
-                      {/* Edit — user only */}
                       {isUser && (
                         <button
                           onClick={() => handleStartEdit(idx)}
-                          className="p-2 sm:p-1 rounded text-white/20 hover:text-white/60 hover:bg-white/5 transition-all"
-                          title="Edit message"
+                          className="p-1.5 sm:p-1 rounded text-white/25 hover:text-white/70 hover:bg-white/5 transition-all"
+                          title="Edit & resend"
                         >
                           <Pencil size={12} />
                         </button>
                       )}
-                      {/* Revert — truncate to here */}
                       {!isLast && (
                         <button
                           onClick={() => handleRevert(idx)}
-                          className="p-2 sm:p-1 rounded text-white/20 hover:text-white/60 hover:bg-white/5 transition-all"
-                          title="Revert to here (delete everything after)"
+                          className="p-1.5 sm:p-1 rounded text-white/25 hover:text-white/70 hover:bg-white/5 transition-all"
+                          title="Revert to here"
                         >
                           <Scissors size={12} />
-                        </button>
-                      )}
-                      {/* Delete single message */}
-                      {isUser && (
-                        <button
-                          onClick={() => handleDeleteMessage(idx)}
-                          className="p-2 sm:p-1 rounded text-white/20 hover:text-red-400/60 hover:bg-white/5 transition-all"
-                          title="Delete message"
-                        >
-                          <Trash2 size={12} />
                         </button>
                       )}
                     </div>
@@ -1431,6 +1826,18 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
             multiple
             className="hidden"
             onChange={handleFileUpload}
+          />
+          {/* Hidden file input for .kchat import */}
+          <input
+            ref={chatImportRef}
+            type="file"
+            accept=".kchat,.json"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleImportChat(file);
+              if (chatImportRef.current) chatImportRef.current.value = '';
+            }}
           />
           {/* Input row */}
           <div className="flex items-end gap-1.5 sm:gap-2">
@@ -1505,15 +1912,52 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
             )}
           </div>
         </form>
-        {/* Subtle action hints — desktop only */}
-        <div className="hidden sm:flex items-center justify-center gap-4 mt-1.5 text-[10px] text-white/25 font-mono select-none">
-          <span>⌘K commands</span>
-          <span className="text-white/10">·</span>
-          <span>⇧↵ newline</span>
-          <span className="text-white/10">·</span>
-          <span>⌘/ tutorial</span>
-          <span className="text-white/10">·</span>
-          <span>📎 attach files</span>
+        {/* Info strip — keyboard hints + interactive system indicators */}
+        <div className="hidden sm:flex items-center justify-between mt-1.5 text-[10px] text-white/25 font-mono select-none px-1">
+          <div className="flex items-center gap-3">
+            <span>⌘K commands</span>
+            <span className="text-white/10">·</span>
+            <span>⇧↵ newline</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => openDrawerTo("memory")}
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-white/5 hover:text-[var(--accent)]/60 transition-all cursor-pointer"
+              title="View learned memories"
+            >
+              <span className="text-[9px]">🧠</span>
+              <span>{memories.length} memories</span>
+            </button>
+            <span className="text-white/10">·</span>
+            {/* Model & context — opens QuickSettings popover */}
+            <div className="relative">
+              <button
+                onClick={() => { setShowQuickSettings(q => !q); soundTick(); }}
+                className={`flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-white/5 transition-all cursor-pointer ${showQuickSettings ? "text-[var(--accent)]/60 bg-white/5" : "hover:text-[var(--accent)]/60"}`}
+                title="Model, context layers & RSS settings"
+              >
+                <span>{modelName || "model"}</span>
+                <span className="text-white/15">({ctxActiveCount}/3 ctx)</span>
+              </button>
+              {showQuickSettings && (
+                <QuickSettings
+                  onClose={() => setShowQuickSettings(false)}
+                  hasRssTool={activeConfig?.tools?.includes("read_rss") || false}
+                  onOpenFullPreview={() => openDrawerTo("context", false, true)}
+                  onModelChange={(name) => setModelName(name)}
+                />
+              )}
+            </div>
+            <span className="text-white/10">·</span>
+            <button
+              onClick={() => openDrawerTo("history", true)}
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-white/5 hover:text-[var(--accent)]/60 transition-all cursor-pointer"
+              title="Search across all conversations"
+            >
+              <Search size={9} />
+              <span>all chats</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>

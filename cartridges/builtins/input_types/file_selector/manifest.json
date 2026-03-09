@@ -1,0 +1,21 @@
+{
+  "id": "file_selector",
+  "name": "File Selector",
+  "version": "1.0.0",
+  "description": "Present the user with a list of files or options to choose from. Ideal for selecting targets, picking between drafts, or choosing data sources.",
+  "author": "system",
+  "widget_type": "choice",
+  "icon": "file",
+  "tags": ["file", "selection", "choice"],
+  "config_template": {
+    "prompt": "Select a file:",
+    "options": [
+      {
+        "label": "example.txt",
+        "value": "/path/to/example.txt",
+        "description": "A sample file"
+      }
+    ],
+    "multiple": false
+  }
+}

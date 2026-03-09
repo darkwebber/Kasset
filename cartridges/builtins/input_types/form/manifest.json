@@ -1,0 +1,40 @@
+{
+  "id": "form",
+  "name": "Structured Form",
+  "version": "1.0.0",
+  "description": "Collect structured input from the user via labeled fields. Supports text, number, select (dropdown), and toggle field types. Ideal for gathering multiple pieces of information at once.",
+  "author": "system",
+  "widget_type": "form",
+  "icon": "form-input",
+  "tags": ["form", "structured", "fields", "input"],
+  "config_template": {
+    "prompt": "Please fill in the details:",
+    "fields": [
+      {
+        "name": "title",
+        "label": "Title",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "name": "category",
+        "label": "Category",
+        "type": "select",
+        "options": ["Option A", "Option B", "Option C"],
+        "default": "Option A"
+      },
+      {
+        "name": "count",
+        "label": "Count",
+        "type": "number",
+        "default": 1
+      },
+      {
+        "name": "enabled",
+        "label": "Enabled",
+        "type": "toggle",
+        "default": false
+      }
+    ]
+  }
+}

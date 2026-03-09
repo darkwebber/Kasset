@@ -1,0 +1,24 @@
+{
+  "id": "range_slider",
+  "name": "Range Slider",
+  "version": "1.0.0",
+  "description": "Let the user adjust numeric values with sliders. Call request_user_input with widget_type 'slider'. The config must contain a 'sliders' array. After the user submits, you receive their chosen values and should re-run code with them.",
+  "author": "system",
+  "widget_type": "slider",
+  "icon": "sliders",
+  "tags": ["numeric", "adjustment", "slider"],
+  "config_template": {
+    "prompt": "Adjust the values:",
+    "sliders": [
+      {
+        "name": "value",
+        "label": "Value",
+        "min": 0,
+        "max": 100,
+        "step": 1,
+        "default": 50,
+        "unit": ""
+      }
+    ]
+  }
+}

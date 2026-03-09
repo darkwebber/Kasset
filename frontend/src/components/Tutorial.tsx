@@ -40,7 +40,8 @@ const STEPS = [
       "Edit any message — click the pencil icon",
       "Regenerate responses — click the retry icon",
       "Revert conversation — cut to any point",
-      "Export chats as Markdown files",
+      "Export chats as .kchat (⌘E) — lossless JSON preserving all segments, tools, widgets",
+      "Import .kchat files via Command Palette (⌘K → Import Chat)",
     ],
   },
   {
@@ -74,8 +75,21 @@ const STEPS = [
       "Click 🔧 in the top bar to open the Forge",
       "Create kassets — custom personality, tools, theme",
       "Create tools — Python handlers the AI can call",
-      "Import & export kassets as JSON files",
-      "Share your creations with others",
+      "Define Input Methods — reusable user-input widgets per kasset",
+      "Export/import .kasset bundles (kasset + tools + widgets + README)",
+      "Export/import standalone .ktool (tools) and .kwid (widgets)",
+    ],
+  },
+  {
+    icon: <MessageSquare size={28} />,
+    title: "Interactive Widgets",
+    description: "The AI can ask for structured input with beautiful widgets instead of plain text questions.",
+    details: [
+      "Choice — pick one or more options",
+      "Form — provide multiple structured fields",
+      "Slider — fine-tune numeric values",
+      "Editor — edit draft text/code, then copy/download",
+      "Custom methods from kassets appear automatically",
     ],
   },
   {
