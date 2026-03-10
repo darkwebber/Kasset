@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import { Search } from "lucide-react";
 import { getToolMeta, TOOL_DISPLAY, TOOL_EXAMPLES } from "./toolMeta";
 
 interface WelcomeScreenProps {
@@ -10,9 +11,15 @@ interface WelcomeScreenProps {
   tools: string[];
   suggestedPrompts: string[];
   onSendPrompt: (prompt: string) => void;
+  memoryCount?: number;
+  modelName?: string;
+  ctxActiveCount?: number;
+  onOpenMemory?: () => void;
+  onOpenContext?: () => void;
+  onOpenSearch?: () => void;
 }
 
-export default function WelcomeScreen({ cartridgeName, cartridgeIcon, bootMessage, tools, suggestedPrompts, onSendPrompt }: WelcomeScreenProps) {
+export default function WelcomeScreen({ cartridgeName, cartridgeIcon, bootMessage, tools, suggestedPrompts, onSendPrompt, memoryCount, modelName, ctxActiveCount, onOpenMemory, onOpenContext, onOpenSearch }: WelcomeScreenProps) {
   const examples = useMemo(() => {
     // Prefer cartridge-defined prompts
     if (suggestedPrompts.length > 0) return suggestedPrompts.slice(0, 4);
@@ -70,13 +77,37 @@ export default function WelcomeScreen({ cartridgeName, cartridgeIcon, bootMessag
         </div>
       )}
 
-      {/* Keyboard hints */}
-      <div className="hidden sm:flex items-center gap-4 text-[10px] text-white/25 font-mono">
+      {/* System info + keyboard hints */}
+      <div className="hidden sm:flex items-center gap-2 text-[10px] text-white/25 font-mono">
         <span>⌘K commands</span>
         <span className="text-white/10">·</span>
         <span>⌘N new chat</span>
-        <span className="text-white/10">·</span>
-        <span>⌘/ tutorial</span>
+        {(memoryCount !== undefined || modelName) && (
+          <>
+            <span className="text-white/[0.06] mx-1">│</span>
+            {onOpenMemory && memoryCount !== undefined && (
+              <button onClick={onOpenMemory} className="px-1.5 py-0.5 rounded hover:bg-white/5 hover:text-[var(--accent)]/60 transition-all cursor-pointer">
+                🧠 {memoryCount} memories
+              </button>
+            )}
+            {onOpenContext && modelName && (
+              <>
+                <span className="text-white/10">·</span>
+                <button onClick={onOpenContext} className="px-1.5 py-0.5 rounded hover:bg-white/5 hover:text-[var(--accent)]/60 transition-all cursor-pointer">
+                  {modelName} <span className="text-white/15">({ctxActiveCount ?? 0}/3 ctx)</span>
+                </button>
+              </>
+            )}
+            {onOpenSearch && (
+              <>
+                <span className="text-white/10">·</span>
+                <button onClick={onOpenSearch} className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-white/5 hover:text-[var(--accent)]/60 transition-all cursor-pointer">
+                  <Search size={9} /> all chats
+                </button>
+              </>
+            )}
+          </>
+        )}
       </div>
     </div>
   );

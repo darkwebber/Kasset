@@ -91,6 +91,9 @@ try:
     import plotly
     import plotly.graph_objects as go
     import plotly.express as px
+    # Monkey-patch fig.show() to be a no-op — sandbox auto-captures figures
+    _orig_fig_show = go.Figure.show
+    go.Figure.show = lambda self, *args, **kwargs: None
     _SHARED_GLOBALS['plotly'] = plotly
     _SHARED_GLOBALS['go'] = go
     _SHARED_GLOBALS['px'] = px
@@ -193,9 +196,21 @@ _SHARED_GLOBALS['qchart_heatmap'] = _qchart_heatmap
 # IMAGE EDITING HELPERS
 # ──────────────────────────────────────────
 
-def _img_load(path: str):
-    """Load an image from path. Returns PIL Image. Usage: img = img_load('photo.jpg')"""
+def _img_load(path: str = None):
+    """Load an image from path. Returns PIL Image.
+    Usage: img = img_load('/full/path/photo.jpg')  — first load
+           img = img_load()  — reload current working image for follow-up edits"""
     from PIL import Image as _Img
+    if path is None:
+        # No-arg: return current working image for follow-up edits
+        current = _SHARED_GLOBALS.get('_current_image')
+        if current is not None:
+            return current.copy()
+        current_path = _SHARED_GLOBALS.get('_current_image_path')
+        if current_path and os.path.exists(current_path):
+            path = current_path
+        else:
+            raise FileNotFoundError("No image loaded yet. Call img_load('/full/path/to/image.jpg') first.")
     p = os.path.expanduser(path)
     img = _Img.open(p)
     if img.mode == 'RGBA':
@@ -244,9 +259,17 @@ def _img_show(img):
         img.save(save_path)
         _SHARED_GLOBALS['_current_image_path'] = save_path
         _SHARED_GLOBALS['_current_image'] = img
-    fig, ax = plt.subplots(figsize=(8, 8))
+    w, h = img.size if hasattr(img, 'size') else (800, 800)
+    max_dim = 8
+    aspect = w / max(h, 1)
+    if aspect >= 1:
+        fw, fh = max_dim, max_dim / aspect
+    else:
+        fw, fh = max_dim * aspect, max_dim
+    fig, ax = plt.subplots(figsize=(fw, fh))
     ax.imshow(img)
     ax.axis('off')
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
     plt.tight_layout(pad=0)
 
 def _img_adjust(img, brightness=1.0, contrast=1.0, saturation=1.0, sharpness=1.0):
@@ -557,6 +580,66 @@ def _img_overlay_color(img, color, mode: str = 'multiply', opacity: float = 0.5)
     result = arr * (1.0 - opacity) + blended * opacity
     return _Img.fromarray((_np.clip(result, 0, 1) * 255).astype(_np.uint8))
 
+def _img_tint_highlights(img, color, strength: float = 0.4, threshold: float = 0.6):
+    """Apply a color tint ONLY to the bright areas (highlights) of the image.
+    color: color name (str) or (R,G,B) tuple. strength: 0.0-1.0. threshold: luminance cutoff (0.0-1.0).
+    Usage: img = img_tint_highlights(img, 'blue', 0.5)"""
+    import numpy as _np
+    from PIL import Image as _Img
+    if isinstance(color, str):
+        tc = _resolve_color_name(color)
+        if tc is None:
+            raise ValueError(f"Unknown color name: '{color}'.")
+    else:
+        tc = tuple(color)
+    strength = max(0.0, min(1.0, strength))
+    arr = _np.array(img.convert('RGB')).astype(_np.float32)
+    gray = _np.mean(arr, axis=2) / 255.0
+    mask = _np.clip((gray - threshold) / (1.0 - threshold + 1e-6), 0, 1)
+    mask3 = _np.stack([mask]*3, axis=2)
+    tint = _np.array(tc, dtype=_np.float32)
+    tinted = arr * (1.0 - strength) + tint * strength
+    result = arr * (1.0 - mask3) + tinted * mask3
+    return _Img.fromarray(_np.clip(result, 0, 255).astype(_np.uint8))
+
+def _img_tint_shadows(img, color, strength: float = 0.4, threshold: float = 0.4):
+    """Apply a color tint ONLY to the dark areas (shadows) of the image.
+    color: color name (str) or (R,G,B) tuple. strength: 0.0-1.0. threshold: luminance cutoff (0.0-1.0).
+    Usage: img = img_tint_shadows(img, 'purple', 0.3)"""
+    import numpy as _np
+    from PIL import Image as _Img
+    if isinstance(color, str):
+        tc = _resolve_color_name(color)
+        if tc is None:
+            raise ValueError(f"Unknown color name: '{color}'.")
+    else:
+        tc = tuple(color)
+    strength = max(0.0, min(1.0, strength))
+    arr = _np.array(img.convert('RGB')).astype(_np.float32)
+    gray = _np.mean(arr, axis=2) / 255.0
+    mask = _np.clip((threshold - gray) / (threshold + 1e-6), 0, 1)
+    mask3 = _np.stack([mask]*3, axis=2)
+    tint = _np.array(tc, dtype=_np.float32)
+    tinted = arr * (1.0 - strength) + tint * strength
+    result = arr * (1.0 - mask3) + tinted * mask3
+    return _Img.fromarray(_np.clip(result, 0, 255).astype(_np.uint8))
+
+def _img_vignette(img, strength: float = 0.5, radius: float = 0.8):
+    """Add a vignette (darkened edges) effect.
+    strength: 0.0-1.0 (how dark the edges get). radius: 0.0-1.0 (how far from center the effect starts).
+    Usage: img = img_vignette(img, strength=0.6)"""
+    import numpy as _np
+    from PIL import Image as _Img
+    arr = _np.array(img.convert('RGB')).astype(_np.float32)
+    h, w = arr.shape[:2]
+    Y, X = _np.ogrid[:h, :w]
+    cy, cx = h / 2, w / 2
+    dist = _np.sqrt(((X - cx) / cx) ** 2 + ((Y - cy) / cy) ** 2)
+    vignette = _np.clip((dist - radius) / (1.0 - radius + 1e-6), 0, 1) * strength
+    vignette3 = _np.stack([vignette]*3, axis=2)
+    result = arr * (1.0 - vignette3)
+    return _Img.fromarray(_np.clip(result, 0, 255).astype(_np.uint8))
+
 def _img_get_original():
     """Get the original (unedited) image from the current session.
     Usage: original = img_get_original()"""
@@ -567,6 +650,157 @@ def _img_get_original():
 def _img_info(img):
     """Get image metadata. Usage: img_info(img)"""
     return f"Size: {img.size[0]}x{img.size[1]}, Mode: {img.mode}, Format: {getattr(img, 'format', 'N/A')}"
+
+def _img_sepia(img, strength: float = 1.0):
+    """Apply sepia tone effect. strength: 0.0-1.0 (default 1.0).
+    Usage: img = img_sepia(img, 0.8)"""
+    import numpy as _np
+    from PIL import Image as _Img
+    arr = _np.array(img.convert('RGB')).astype(_np.float32)
+    sepia_matrix = _np.array([
+        [0.393, 0.769, 0.189],
+        [0.349, 0.686, 0.168],
+        [0.272, 0.534, 0.131],
+    ])
+    sepia_arr = arr @ sepia_matrix.T
+    strength = max(0.0, min(1.0, strength))
+    result = arr * (1.0 - strength) + sepia_arr * strength
+    return _Img.fromarray(_np.clip(result, 0, 255).astype(_np.uint8))
+
+def _img_invert(img):
+    """Invert image colors. Usage: img = img_invert(img)"""
+    from PIL import ImageOps as _Ops
+    if img.mode == 'RGBA':
+        r, g, b, a = img.split()
+        from PIL import Image as _Img
+        rgb = _Img.merge('RGB', (r, g, b))
+        inv = _Ops.invert(rgb)
+        ri, gi, bi = inv.split()
+        return _Img.merge('RGBA', (ri, gi, bi, a))
+    return _Ops.invert(img.convert('RGB'))
+
+def _img_opacity(img, opacity: float = 0.5):
+    """Set image opacity (transparency). opacity: 0.0 (transparent) to 1.0 (opaque).
+    Usage: img = img_opacity(img, 0.7)"""
+    from PIL import Image as _Img
+    opacity = max(0.0, min(1.0, opacity))
+    rgba = img.convert('RGBA')
+    r, g, b, a = rgba.split()
+    import numpy as _np
+    a_arr = _np.array(a).astype(_np.float32) * opacity
+    a = _Img.fromarray(a_arr.astype(_np.uint8))
+    return _Img.merge('RGBA', (r, g, b, a))
+
+def _img_posterize(img, bits: int = 4):
+    """Reduce color depth for a poster-like effect. bits: 1-8 (fewer = more dramatic).
+    Usage: img = img_posterize(img, 3)"""
+    from PIL import ImageOps as _Ops
+    return _Ops.posterize(img.convert('RGB'), max(1, min(8, bits)))
+
+def _img_solarize(img, threshold: int = 128):
+    """Solarize effect — invert tones above threshold. threshold: 0-255.
+    Usage: img = img_solarize(img, 128)"""
+    from PIL import ImageOps as _Ops
+    return _Ops.solarize(img.convert('RGB'), threshold)
+
+def _img_emboss(img):
+    """Apply emboss filter for a raised surface effect.
+    Usage: img = img_emboss(img)"""
+    from PIL import ImageFilter as _Filt
+    return img.filter(_Filt.EMBOSS)
+
+def _img_sharpen(img, amount: float = 2.0, radius: int = 2, threshold: int = 3):
+    """Unsharp mask sharpening. amount: strength (1.0-5.0). radius: blur radius. threshold: edge threshold.
+    Usage: img = img_sharpen(img, amount=2.5)"""
+    from PIL import ImageFilter as _Filt
+    return img.filter(_Filt.UnsharpMask(radius=radius, percent=int(amount * 100), threshold=threshold))
+
+def _img_auto_contrast(img, cutoff: float = 0.5):
+    """Auto-adjust contrast by stretching histogram. cutoff: % of lightest/darkest pixels to clip.
+    Usage: img = img_auto_contrast(img)"""
+    from PIL import ImageOps as _Ops
+    return _Ops.autocontrast(img.convert('RGB'), cutoff=cutoff)
+
+def _img_equalize(img):
+    """Equalize histogram for automatic tonal correction.
+    Usage: img = img_equalize(img)"""
+    from PIL import ImageOps as _Ops
+    return _Ops.equalize(img.convert('RGB'))
+
+def _img_channel_mix(img, r_mult: float = 1.0, g_mult: float = 1.0, b_mult: float = 1.0):
+    """Adjust individual RGB channel intensities. Values: 0.0-3.0 (1.0 = no change).
+    Usage: img = img_channel_mix(img, r_mult=1.5, g_mult=0.8, b_mult=0.5)"""
+    import numpy as _np
+    from PIL import Image as _Img
+    arr = _np.array(img.convert('RGB')).astype(_np.float32)
+    arr[:, :, 0] *= max(0.0, min(3.0, r_mult))
+    arr[:, :, 1] *= max(0.0, min(3.0, g_mult))
+    arr[:, :, 2] *= max(0.0, min(3.0, b_mult))
+    return _Img.fromarray(_np.clip(arr, 0, 255).astype(_np.uint8))
+
+def _img_gradient_map(img, color_start, color_end):
+    """Map image luminance to a two-color gradient. Colors: names (str) or (R,G,B) tuples.
+    Usage: img = img_gradient_map(img, 'navy', 'gold')"""
+    import numpy as _np
+    from PIL import Image as _Img
+    cs = _resolve_color_name(color_start) if isinstance(color_start, str) else tuple(color_start)
+    ce = _resolve_color_name(color_end) if isinstance(color_end, str) else tuple(color_end)
+    if cs is None:
+        raise ValueError(f"Unknown color: '{color_start}'")
+    if ce is None:
+        raise ValueError(f"Unknown color: '{color_end}'")
+    gray = _np.array(img.convert('L')).astype(_np.float32) / 255.0
+    cs_arr = _np.array(cs, dtype=_np.float32)
+    ce_arr = _np.array(ce, dtype=_np.float32)
+    result = _np.zeros((*gray.shape, 3), dtype=_np.float32)
+    for c in range(3):
+        result[:, :, c] = cs_arr[c] * (1.0 - gray) + ce_arr[c] * gray
+    return _Img.fromarray(_np.clip(result, 0, 255).astype(_np.uint8))
+
+def _img_noise(img, amount: float = 25.0):
+    """Add random noise to image. amount: noise strength in pixel units (0-100).
+    Usage: img = img_noise(img, 30)"""
+    import numpy as _np
+    from PIL import Image as _Img
+    arr = _np.array(img.convert('RGB')).astype(_np.float32)
+    noise = _np.random.normal(0, amount, arr.shape)
+    return _Img.fromarray(_np.clip(arr + noise, 0, 255).astype(_np.uint8))
+
+def _img_pixelate(img, block_size: int = 10):
+    """Pixelate (mosaic) effect. block_size: pixel block size.
+    Usage: img = img_pixelate(img, 15)"""
+    from PIL import Image as _Img
+    w, h = img.size
+    small = img.resize((max(1, w // block_size), max(1, h // block_size)), _Img.NEAREST)
+    return small.resize((w, h), _Img.NEAREST)
+
+def _img_border(img, width: int = 10, color="white"):
+    """Add a border around the image.
+    Usage: img = img_border(img, 20, 'black')"""
+    from PIL import ImageOps as _Ops
+    if isinstance(color, str):
+        c = _resolve_color_name(color)
+        if c is None:
+            c = color  # let PIL try to parse it
+        color = c
+    return _Ops.expand(img.convert('RGB'), border=width, fill=color)
+
+def _img_preview(img):
+    """Display an image inline WITHOUT saving to working state. Use for previews.
+    Usage: img_preview(img)"""
+    w, h = img.size if hasattr(img, 'size') else (800, 800)
+    max_dim = 6
+    aspect = w / max(h, 1)
+    if aspect >= 1:
+        fw, fh = max_dim, max_dim / aspect
+    else:
+        fw, fh = max_dim * aspect, max_dim
+    fig, ax = plt.subplots(figsize=(fw, fh))
+    ax.imshow(img)
+    ax.axis('off')
+    ax.set_title('Preview (not saved)', fontsize=10, color='#8b949e')
+    fig.subplots_adjust(left=0, right=1, top=0.93, bottom=0)
+    plt.tight_layout(pad=0)
 
 # Register image editing helpers
 _SHARED_GLOBALS['img_load'] = _img_load
@@ -591,8 +825,46 @@ _SHARED_GLOBALS['img_tint'] = _img_tint
 _SHARED_GLOBALS['img_adjust_highlights'] = _img_adjust_highlights
 _SHARED_GLOBALS['img_adjust_shadows'] = _img_adjust_shadows
 _SHARED_GLOBALS['img_overlay_color'] = _img_overlay_color
+_SHARED_GLOBALS['img_tint_highlights'] = _img_tint_highlights
+_SHARED_GLOBALS['img_tint_shadows'] = _img_tint_shadows
+_SHARED_GLOBALS['img_vignette'] = _img_vignette
 _SHARED_GLOBALS['img_get_original'] = _img_get_original
 _SHARED_GLOBALS['img_info'] = _img_info
+_SHARED_GLOBALS['img_sepia'] = _img_sepia
+_SHARED_GLOBALS['img_invert'] = _img_invert
+_SHARED_GLOBALS['img_opacity'] = _img_opacity
+_SHARED_GLOBALS['img_posterize'] = _img_posterize
+_SHARED_GLOBALS['img_solarize'] = _img_solarize
+_SHARED_GLOBALS['img_emboss'] = _img_emboss
+_SHARED_GLOBALS['img_sharpen'] = _img_sharpen
+_SHARED_GLOBALS['img_auto_contrast'] = _img_auto_contrast
+_SHARED_GLOBALS['img_equalize'] = _img_equalize
+_SHARED_GLOBALS['img_channel_mix'] = _img_channel_mix
+_SHARED_GLOBALS['img_gradient_map'] = _img_gradient_map
+_SHARED_GLOBALS['img_noise'] = _img_noise
+_SHARED_GLOBALS['img_pixelate'] = _img_pixelate
+_SHARED_GLOBALS['img_border'] = _img_border
+_SHARED_GLOBALS['img_preview'] = _img_preview
+
+
+# ──────────────────────────────────────────
+# HTML ARTIFACT HELPER
+# ──────────────────────────────────────────
+# Thread-local storage for HTML artifacts produced during execution
+_pending_html_artifact = {"html": ""}
+
+def _html_preview(html_string: str):
+    """Embed an interactive HTML artifact directly in the chat.
+    Usage: html_preview('<html>...</html>')
+    The HTML will be rendered as an interactive iframe in the conversation.
+    Use this for buttons, interactive demos, mini-apps, etc."""
+    if not isinstance(html_string, str) or not html_string.strip():
+        print("html_preview: empty HTML string, nothing to display.")
+        return
+    _pending_html_artifact["html"] = html_string
+    print(f"[HTML artifact queued — {len(html_string)} chars]")
+
+_SHARED_GLOBALS['html_preview'] = _html_preview
 
 
 def apply_custom_matplotlib_style():
@@ -714,6 +986,9 @@ def execute_python_sandbox(code: str) -> dict:
     images = []
     html_artifact = ""
 
+    # Clear pending html_preview artifact from previous execution
+    _pending_html_artifact["html"] = ""
+
     # Run in workspace dir so saved files don't clutter the repo
     workspace = _get_workspace_dir()
     prev_cwd = os.getcwd()
@@ -777,6 +1052,11 @@ def execute_python_sandbox(code: str) -> dict:
                     )
             except (ImportError, Exception):
                 pass
+
+        # Also capture html_preview() artifacts (takes priority over Plotly if both present)
+        if _pending_html_artifact["html"]:
+            html_artifact = _pending_html_artifact["html"]
+            _pending_html_artifact["html"] = ""
 
         output = output_capture.getvalue()
         if not output and not images:

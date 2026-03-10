@@ -53,7 +53,7 @@ frontend/*.tsbuildinfo
 frontend/next-env.d.ts
 
 # ─── User-Generated Data ─────────────────
-# All user data lives in ~/.qwen-studio/ (outside repo).
+# All user data lives in ~/.kasset/ (outside repo).
 # These patterns catch anything accidentally created in-repo:
 *.sqlite
 *.db
@@ -67,6 +67,15 @@ frontend/next-env.d.ts
 *.csv
 *.xlsx
 
-# ─── Chat Exports ───────────────────────
+# ─── Chat Exports & Custom Formats ──────
 *Chat Export*
 *chat-export*
+*.kchat
+*.kasset
+*.ktool
+*.kwid
+
+# ─── Stale debug/progress artifacts ─────
+3D Visualizer*.md
+FIXES_SUMMARY.md
+progress.txt

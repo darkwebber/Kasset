@@ -13,16 +13,19 @@ interface ChatDrawerProps {
   onLoadChat: (messages: any[], cartridgeIds: string[], chatId?: string) => void;
   onNewChat: () => void;
   onClose: () => void;
+  defaultTab?: "history" | "memory" | "context";
+  focusSearch?: boolean;
+  autoFetchPreview?: boolean;
 }
 
-export default function ChatDrawer({ onLoadChat, onNewChat, onClose }: ChatDrawerProps) {
+export default function ChatDrawer({ onLoadChat, onNewChat, onClose, defaultTab, focusSearch, autoFetchPreview }: ChatDrawerProps) {
   const { activeConfig } = useCartridgeStore();
   const {
     chatList, loadChatList, loadChat, deleteChat,
     memories, loadMemories, deleteMemory, addMemory,
   } = useChatStore();
 
-  const [tab, setTab] = useState<"history" | "memory" | "context">("history");
+  const [tab, setTab] = useState<"history" | "memory" | "context">(defaultTab || "history");
   const { context: ctxSettings, loadSettings, updateContext } = useSettingsStore();
   const [showAll, setShowAll] = useState(false);
   const [newMemContent, setNewMemContent] = useState("");
@@ -46,6 +49,20 @@ export default function ChatDrawer({ onLoadChat, onNewChat, onClose }: ChatDrawe
   const [newRssName, setNewRssName] = useState("");
   const [newRssUrl, setNewRssUrl] = useState("");
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const ctxPreviewRef = useRef<HTMLDivElement>(null);
+
+  // Auto-fetch context preview and scroll to it when deep-linked from QuickSettings
+  useEffect(() => {
+    if (autoFetchPreview && tab === "context") {
+      fetchCtxPreview().then(() => {
+        setTimeout(() => {
+          ctxPreviewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }, 150);
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoFetchPreview]);
 
   const doSearch = useCallback(async (q: string) => {
     if (!q.trim()) { setSearchResults([]); setIsSearching(false); return; }
@@ -145,6 +162,13 @@ export default function ChatDrawer({ onLoadChat, onNewChat, onClose }: ChatDrawe
     fetchModels();
     fetchRssFeeds();
   }, [loadChatList, loadMemories, loadSettings, fetchModels, fetchRssFeeds]);
+
+  // Auto-focus search when opened with focusSearch
+  useEffect(() => {
+    if (focusSearch && tab === "history") {
+      setTimeout(() => searchInputRef.current?.focus(), 100);
+    }
+  }, [focusSearch, tab]);
 
   // Filter chats by current cartridge
   const cartridgeChats = chatList.filter(
@@ -262,6 +286,7 @@ export default function ChatDrawer({ onLoadChat, onNewChat, onClose }: ChatDrawe
               <div className="relative mb-2">
                 <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-white/20" />
                 <input
+                  ref={searchInputRef}
                   type="text"
                   value={searchQuery}
                   onChange={(e) => handleSearchChange(e.target.value)}
@@ -724,7 +749,7 @@ export default function ChatDrawer({ onLoadChat, onNewChat, onClose }: ChatDrawe
               </div>
 
               {/* Context Preview */}
-              <div className="p-3 rounded-lg bg-white/5 border border-white/10 space-y-2">
+              <div ref={ctxPreviewRef} className="p-3 rounded-lg bg-white/5 border border-white/10 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-white/70 font-mono">Injected Context</span>
                   <button

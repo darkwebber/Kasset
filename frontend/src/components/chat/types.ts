@@ -22,7 +22,16 @@ export interface TextSegment {
   content: string;
 }
 
-export type Segment = ToolCallSegment | ThinkingSegment | TextSegment;
+export interface InteractiveSegment {
+  kind: "interactive";
+  widgetId: string;
+  widgetType: "choice" | "slider" | "editor" | "form" | "embed" | string;
+  config: Record<string, any>;
+  status: "pending" | "submitted" | "dismissed";
+  response?: any;
+}
+
+export type Segment = ToolCallSegment | ThinkingSegment | TextSegment | InteractiveSegment;
 
 export interface Message {
   role: "user" | "assistant" | "system";

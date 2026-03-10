@@ -19,15 +19,19 @@
 ## Features
 
 - **Kasset System** — swap between 10 specialized agents with stacking constraint enforcement (conflicts, requirements)
-- **Image Editor** — natural-language image editing with 18 built-in helpers (adjust, crop, hue shift, blur, draw, threshold, etc.) and cross-turn image persistence
+- **Collaborative Editing** — interactive Draft Blocks render inline in chat with edit, copy, download, and "Refine with AI" actions for iterative document refinement without clunky popups
+- **Image Editor** — natural-language image editing with 35+ built-in helpers (adjust, tint, sepia, sharpen, posterize, vignette, gradient map, etc.) with live slider preview and cross-turn persistence
 - **Kasset Forge** — create your own kassets and custom tools through an in-app GUI studio
 - **Tool Plugin System** — extend the agent with custom Python tools (3D charts, audio, web artifacts, anything)
 - **Vision** — paste images, solve problems from screenshots, describe photos
 - **Streaming** — real-time token streaming with thinking/reasoning display and live code preview during tool calls
-- **Tool Calling** — file access, shell commands, Python sandbox, web search, C++ execution, and user plugins
-- **HTML Artifacts** — custom tools can return interactive HTML rendered inline (Plotly, web apps, visualizations)
+- **Tool Calling** — file access, shell commands (smart timeout + background process management), Python sandbox, web search, C++ execution, and user plugins
+- **Interactive Widgets** — choice selectors, sliders with live preview, collaborative text editors, and forms — agents use these for structured user input
+- **HTML Artifacts** — `html_preview` tool embeds interactive HTML directly in chat as sandboxed iframes (Plotly, web apps, visualizations)
+- **Knowledge Graph** — per-conversation structured graph tracks intents, files, tool results, errors, and state — persisted across requests and injected as a compact map every 3 tool rounds
+- **Session Notes** — agents can save progressive findings with `save_notes`; tool activity is also auto-saved so nothing is lost
 - **Network Access** — access Kasset from your phone/tablet on the same Wi-Fi, with password-protected authentication
-- **Smart Continuation** — auto-detects when model output is truncated and seamlessly continues the response
+- **Smart Continuation** — auto-detects "continue" messages, injects knowledge map + tool history summary + session notes so the agent picks up exactly where it left off
 - **Context Management** — session summaries with trim notifications, per-kasset memory, global user profile, async post-conversation processing
 - **Inline Attachments** — attach files/directories as inline chips in your messages
 - **Visualization** — matplotlib plots auto-captured, built-in `qchart_*` helpers, Plotly 3D support
@@ -63,11 +67,11 @@ Open **http://localhost:3000** and press **Ctrl+C** to stop both servers.
 | Kasset | Icon | Tools | Purpose |
 |--------|------|-------|---------|
 | General Assistant | 🤖 | All | Default all-purpose helper |
-| Code Pilot | 🚀 | Python, C++, file, shell | Pair programming, debugging, code review |
+| Code Pilot | 🚀 | Python, C++, file, shell, html_preview, save_notes, edit_file, grep_code | Pair programming, debugging, code review (v2.1 — 16 rounds, progressive grep-first exploration, surgical edits) |
 | Tutor | 🎓 | Python, search, file | Teaching with examples and analogies |
 | Data Analyst | 📊 | Python, file, search | Data analysis, statistics, visualization |
 | Terminal | 💻 | Shell, file, system | Natural language shell interface |
-| Writer | ✍️ | File, search, web | Creative and technical writing |
+| Writer | ✍️ | File, search, web | Creative and technical writing with iterative Draft Block refinement |
 | DevOps | 🔧 | Shell, file, search | Git, Docker, CI/CD, infrastructure |
 | Web Pilot | 🌐 | Search, web, file | Web research and information synthesis |
 | 3D Visualizer | 🧊 | Python | Interactive 3D visualizations with Plotly |
@@ -82,7 +86,8 @@ Open **http://localhost:3000** and press **Ctrl+C** to stop both servers.
 | `get_system_info` | OS, hardware, disk, uptime |
 | `search_files` | Glob-based recursive file search |
 | `read_file` | Read text files — under 50 KB shown fully, over 50 KB returns structural overview (imports, signatures, exports). Max 500 KB |
-| `run_command` | Shell commands with consent flow for write operations and process management |
+| `write_file` | Write text content to a file (overwrite or append). Creates parent dirs automatically |
+| `run_command` | Shell commands with smart timeout (30s/120s/background), consent flow, and background process management (`bg_status`, `bg_stop`, `bg_list`) |
 | `calculate` | Safe math evaluator (sqrt, trig, factorial, etc.) |
 | `execute_python` | Stateful Python sandbox with pandas, numpy, matplotlib, scipy, seaborn, scikit-learn, Plotly, PIL |
 | `execute_cpp` | Compile and run C++ code (C++17) |
@@ -90,33 +95,48 @@ Open **http://localhost:3000** and press **Ctrl+C** to stop both servers.
 | `read_url` | Fetch and extract text from web pages — ads, navs, and boilerplate auto-stripped |
 | `read_rss` | Read RSS/Atom feeds — returns structured entries with title, date, link, summary |
 | `get_location` | IP-based geolocation — city, region, country, timezone, coordinates |
+| `edit_file` | Surgical find-and-replace in files — better than `write_file` for targeted code edits |
+| `grep_code` | Search file contents by regex across a directory tree — uses ripgrep if available |
+| `html_preview` | Embed interactive HTML directly in chat as a sandboxed iframe — buttons, demos, mini-apps, visualizations |
+| `save_notes` | Persistent scratchpad for multi-step tasks — notes survive across tool rounds and "continue" messages |
 
 ## Image Editing
 
-The **Image Editor** kasset provides 18 Python helpers available inside `execute_python`:
+The **Image Editor** kasset provides 35+ Python helpers available inside `execute_python`:
 
-| Helper | Description |
-|--------|-------------|
-| `img_load(path)` | Load image → PIL Image |
-| `img_save(img, path)` | Save to file (auto-names if no path) |
-| `img_show(img)` | Display inline + auto-save for cross-turn persistence |
-| `img_info(img)` | Size, mode, format metadata |
-| `img_adjust(img, brightness, contrast, saturation, sharpness)` | Level adjustments (1.0 = unchanged) |
-| `img_hue_shift(img, degrees)` | Shift hue (0–360) |
-| `img_grayscale(img)` | Convert to grayscale |
-| `img_color_replace(img, from_rgb, to_rgb, tolerance)` | Replace one color with another |
-| `img_crop(img, l, t, r, b)` | Crop to rectangle |
-| `img_resize(img, w, h?)` | Resize (aspect-preserving if no height) |
-| `img_rotate(img, degrees)` | Rotate counter-clockwise |
-| `img_flip(img, direction)` | Flip horizontal or vertical |
-| `img_blur(img, radius)` | Gaussian blur |
-| `img_edge_detect(img)` | Edge detection filter |
-| `img_threshold(img, value)` | Binary threshold segmentation |
-| `img_draw_rect(img, l, t, r, b, color, width)` | Draw rectangle overlay |
-| `img_draw_text(img, x, y, text, color, size)` | Draw text overlay |
-| `img_convert(img, mode)` | Convert color mode (RGB, RGBA, L, etc.) |
+**Loading & Display**: `img_load`, `img_show`, `img_preview` (no-save display), `img_save`, `img_info`, `img_get_original`
+
+**Adjustments**: `img_adjust` (brightness/contrast/saturation/sharpness), `img_auto_contrast`, `img_equalize`, `img_sharpen` (unsharp mask), `img_channel_mix`
+
+**Color**: `img_hue_shift`, `img_tint`, `img_tint_highlights`, `img_tint_shadows`, `img_adjust_highlights`, `img_adjust_shadows`, `img_color_replace`, `img_color_range_replace`, `img_overlay_color`, `img_gradient_map`
+
+**Effects**: `img_blur`, `img_edge_detect`, `img_emboss`, `img_sepia`, `img_invert`, `img_posterize`, `img_solarize`, `img_vignette`, `img_noise`, `img_pixelate`, `img_grayscale`, `img_threshold`
+
+**Transform & Drawing**: `img_crop`, `img_resize`, `img_rotate`, `img_flip`, `img_draw_rect`, `img_draw_text`, `img_border`, `img_opacity`, `img_convert`
 
 Images persist across conversation turns — say "add green tint" then "now make it warmer" and the agent continues editing the same image.
+
+## Collaborative Editing (Draft Blocks)
+
+When an agent outputs text in a `` ```text `` code block, it renders as an interactive **Draft Block** — a living document embedded in the chat:
+
+- **View mode** — formatted text with word/character count. Click anywhere to enter edit mode.
+- **Edit mode** — inline textarea for direct editing. No popup, no modal, no friction.
+- **Copy** — one-click clipboard copy
+- **Download** — save as `.txt` file
+- **Refine with AI** — send the (possibly edited) text back to the agent for suggestions
+
+### Iterative Refinement Flow
+
+1. Agent generates a draft → rendered as a Draft Block
+2. User edits inline (optional) → clicks "Refine with AI"
+3. Agent analyzes the draft → suggests specific improvements → outputs improved version as a new Draft Block
+4. User edits again → refines again → repeat until satisfied
+5. User copies or downloads the final version
+
+This replaces the old editor-widget popup pattern. No clunky modals, no "no edits were made" messages — just a natural conversation around a living document.
+
+Draft Blocks trigger on these code fence languages: `text`, `draft`, `email`, `markdown`, `md`.
 
 ## Vision & Image Processing
 
@@ -144,11 +164,23 @@ Authentication uses scrypt password hashing with session tokens and a 3-strike l
 
 ## Context Management
 
-Three layers of context, each toggleable in the **Context** tab:
+Four layers of context work together to maintain awareness across sessions:
 
+- **Knowledge Graph** — per-conversation structured graph (intents, files, tool results, errors, states with typed edges). Persisted to `~/.kasset/chats/<id>.graph.json` and reloaded on resume. Serialized into a compact "Session Knowledge Map" injected into the system prompt and refreshed every 3 tool rounds.
 - **Session Summary** — when conversations get long, older messages are intelligently summarized to free context space
 - **Kasset Context** — remembers topics and patterns from previous chats with the same kasset
 - **Global Profile** — app-wide understanding of you across all kassets (usage patterns, languages, preferences)
+
+### Smart Continuation
+
+When you say "continue", "go on", or "keep going", the system injects:
+
+1. **Knowledge Map** — structured summary of intents, files touched, discoveries, errors, and state from the knowledge graph
+2. **Tool History** — list of tools already called with their key arguments (extracted from conversation history)
+3. **Session Notes** — manually saved findings + auto-saved tool activity log
+4. **Directive** — explicit instruction to NOT restart, NOT re-read files, and pick up where it left off
+
+Tool activity is also auto-saved to session notes when the tool loop ends, so even if the agent never calls `save_notes` itself, continuation context is preserved.
 
 ## Kasset Forge
 
@@ -237,15 +269,20 @@ Kasset/
 │   ├── api.py                     # REST + SSE + Forge endpoints
 │   ├── model_server.py            # MLX-VLM model wrapper
 │   ├── utils.py                   # Image validation
-│   └── core/
-│       ├── agent.py               # Agent orchestration & tool loop
-│       ├── cartridge_loader.py    # Kasset loading, stacking & CRUD
-│       ├── context_manager.py     # Multi-layer context management
-│       ├── persistence.py         # Chat storage & user memory
-│       ├── network_auth.py        # Network auth (scrypt + sessions)
-│       ├── plugin_loader.py       # Custom tool plugin discovery
-│       ├── sandbox.py             # Python sandbox + image helpers
-│       └── tool_registry.py       # Built-in tools + plugin dispatch
+│   ├── core/
+│   │   ├── agent.py               # Agent orchestration & tool loop
+│   │   ├── cartridge_loader.py    # Kasset loading, stacking & CRUD
+│   │   ├── context_manager.py     # Multi-layer context management
+│   │   ├── persistence.py         # Chat storage, user memory & feedback
+│   │   ├── shared.py              # Shared utilities (atomic writes, path checks)
+│   │   ├── tool_parser.py         # Tool call parsing & error diagnosis
+│   │   ├── network_auth.py        # Network auth (scrypt + sessions)
+│   │   ├── input_type_loader.py   # Input type manifest loading
+│   │   ├── knowledge_graph.py     # Per-conversation knowledge graph (persisted, injected every 3 rounds)
+│   │   ├── plugin_loader.py       # Custom tool plugin discovery
+│   │   ├── sandbox.py             # Python sandbox + image helpers
+│   │   ├── tool_registry.py       # Built-in tools + plugin dispatch (html_preview, save_notes, etc.)
+│   │   └── signal_engine/         # Signal processing subsystem
 ├── frontend/                      # Next.js React frontend
 │   └── src/
 │       ├── components/
@@ -254,14 +291,17 @@ Kasset/
 │       │   ├── ChatDrawer.tsx         # Chat history sidebar
 │       │   ├── NetworkAuthModal.tsx    # Network login UI
 │       │   ├── Tutorial.tsx           # Onboarding guide
-│       │   └── studio/
-│       │       └── ForgeStudio.tsx     # Kasset & tool creator
+│       │   ├── chat/                  # Chat sub-components (DraftBlock, ToolCallCard, etc.)
+│       │   ├── studio/                # Kasset Forge editor
+│       │   └── explorer/              # File browser
 │       ├── stores/                # Zustand state management
 │       └── lib/
 │           └── api.ts             # Dynamic API base (local/network)
 ├── cartridges/
 │   ├── builtins/                  # 10 built-in kasset definitions
+│   │   └── input_types/           # Built-in input type manifests
 │   └── schema.json                # Kasset JSON schema
+├── docs/                          # Architecture & design docs
 ├── branding/                      # Logo and favicon
 ├── start.sh                       # One-command launcher
 └── README.md
@@ -298,10 +338,10 @@ All user data is stored at `~/.kasset/` (never in the repo):
 │                             │◀──SSE───│                             │
 │  CartridgeCarousel          │          │  Agent (tool loop)          │
 │  Console (chat + segments)  │          │  MLX-VLM (Qwen 3.5)        │
-│  ForgeStudio (CRUD)         │          │  Tool Registry + Plugins    │
-│  NetworkAuthModal           │          │  Python Sandbox + img_*     │
-│  ChatDrawer (history)       │          │  Context Manager            │
-│  Zustand stores             │          │  Network Auth (scrypt)      │
+│  DraftBlock (collab edit)   │          │  Tool Registry + Plugins    │
+│  ForgeStudio (CRUD)         │          │  Knowledge Graph            │
+│  ChatDrawer (history)       │          │  Python Sandbox + img_*     │
+│  Zustand stores             │          │  Context Manager + Notes    │
 └─────────────────────────────┘          └──────────────┬──────────────┘
                                                         │
       📱 Phone/Tablet ──────── Wi-Fi ──────────────────┘
@@ -323,7 +363,7 @@ All user data is stored at `~/.kasset/` (never in the repo):
 - **Shell chaining** — `&&`, `;`, `||` supported; each sub-command validated individually
 - **Pipes** — `cmd1 | cmd2 | cmd3` supported; each stage validated
 - **Path sandboxing** — file access restricted to home directory and temp folders
-- **Timeouts** — all commands have a 30-second timeout
+- **Smart timeouts** — fast commands (30s), medium commands like system-wide search/builds (120s), long-running commands auto-backgrounded with process management
 - **Output limits** — command output capped at 8000 characters
 - **Plugin isolation** — custom tool handlers run in isolated subprocesses with stdout capture; errors caught and reported
 - **Network safety** — remote clients cannot execute code, shell commands, or browse the filesystem
@@ -348,6 +388,8 @@ All user data is stored at `~/.kasset/` (never in the repo):
 | `/api/chats/{id}` | GET | Load a conversation |
 | `/api/chats/{id}/save` | POST | Save/update a conversation |
 | `/api/chats/{id}` | DELETE | Delete a conversation |
+| `/api/chats/{id}/feedback` | POST | Save thumbs up/down on a message |
+| `/api/feedback/stats` | GET | Aggregated feedback statistics |
 
 ### User Memory & Context
 

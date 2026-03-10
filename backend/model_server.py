@@ -57,13 +57,25 @@ class ModelClient:
         """Load the MLX model into memory."""
         self._loading = True
         self._load_error = None
+        target_path = self.model_path  # Capture target at start for race detection
         try:
-            logger.info(f"Loading model: {self.model_path}")
+            logger.info(f"Loading model: {target_path}")
             logger.info("This may take 15-30s. If downloading for the first time, it may take longer.")
             t0 = time.time()
             
-            self.model, self.processor = load(self.model_path)
-            self.config = load_config(self.model_path)
+            model, processor = load(target_path)
+            config = load_config(target_path)
+
+            # Race condition: if model_path changed during loading, discard result
+            if self.model_path != target_path:
+                logger.info(f"Model path changed during loading ({target_path} → {self.model_path}), discarding")
+                del model, processor, config
+                gc.collect()
+                return
+
+            self.model = model
+            self.processor = processor
+            self.config = config
 
             # Inject the simple template to avoid Qwen3.5 tool-calling errors
             _SIMPLE_TEMPLATE = (
@@ -89,15 +101,21 @@ class ModelClient:
                 self.processor.tokenizer.chat_template = _SIMPLE_TEMPLATE
             
             self._load_time = time.time() - t0
-            logger.info(f"✅ Model loaded successfully in {self._load_time:.1f}s")
+            logger.info(f"\u2705 Model loaded successfully in {self._load_time:.1f}s")
             
         except Exception as e:
-            logger.error(f"Failed to load model {self.model_path}: {e}")
+            # If path changed during load, this error is from the old load — ignore
+            if self.model_path != target_path:
+                logger.info(f"Load of {target_path} interrupted (switched to {self.model_path})")
+                return
+            logger.error(f"Failed to load model {target_path}: {e}")
             self._load_error = str(e)
             self.model = None
             self.processor = None
         finally:
-            self._loading = False
+            # Only clear loading flag if we're still the target
+            if self.model_path == target_path:
+                self._loading = False
 
     def load_model_async(self):
         """Start model loading in a background thread. Server can accept requests immediately."""
@@ -304,6 +322,8 @@ class ModelClient:
         image_filepath: str = None,
         max_tokens: int = DEFAULT_TOKENS,
         thinking: bool = True,
+        temperature: float = None,
+        top_p: float = None,
     ) -> str:
         """Non-streaming generation."""
         if not self.is_healthy():
@@ -314,8 +334,9 @@ class ModelClient:
         has_image = bool(image_filepath and str(image_filepath).strip())
         prompt = self._build_prompt(messages, thinking, has_image)
         
-        temp = 1.0 if thinking else 0.7
-        top_p = 0.95 if thinking else 0.8
+        # Use provided values or fall back to defaults
+        temp = temperature if temperature is not None else (1.0 if thinking else 0.7)
+        tp = top_p if top_p is not None else (0.95 if thinking else 0.8)
         
         inference_image = None
         if has_image:
@@ -335,7 +356,7 @@ class ModelClient:
                 image=inference_image,
                 max_tokens=max_tokens,
                 temperature=temp,
-                top_p=top_p,
+                top_p=tp,
                 top_k=20,
                 repetition_penalty=1.05,
                 verbose=False,
@@ -350,7 +371,7 @@ class ModelClient:
                     image=None,
                     max_tokens=max_tokens,
                     temperature=temp,
-                    top_p=top_p,
+                    top_p=tp,
                     top_k=20,
                     repetition_penalty=1.05,
                     verbose=False,
@@ -368,6 +389,8 @@ class ModelClient:
         image: str = None,
         max_tokens: int = DEFAULT_TOKENS,
         thinking: bool = True,
+        temperature: float = None,
+        top_p: float = None,
     ) -> Generator[str, None, None]:
         """Yields text chunks as they are generated."""
         if not self.is_healthy():
@@ -378,8 +401,9 @@ class ModelClient:
         has_image = bool(image and str(image).strip())
         prompt = self._build_prompt(messages, thinking, has_image)
         
-        temp = 1.0 if thinking else 0.7
-        top_p = 0.95 if thinking else 0.8
+        # Use provided values or fall back to defaults
+        temp = temperature if temperature is not None else (1.0 if thinking else 0.7)
+        tp = top_p if top_p is not None else (0.95 if thinking else 0.8)
         
         inference_image = None
         if has_image:
@@ -398,7 +422,7 @@ class ModelClient:
                 image=inference_image,
                 max_tokens=max_tokens,
                 temperature=temp,
-                top_p=top_p,
+                top_p=tp,
                 top_k=20,
                 repetition_penalty=1.05,
             ):
@@ -413,7 +437,7 @@ class ModelClient:
                     image=None,
                     max_tokens=max_tokens,
                     temperature=temp,
-                    top_p=top_p,
+                    top_p=tp,
                     top_k=20,
                     repetition_penalty=1.05,
                 ):

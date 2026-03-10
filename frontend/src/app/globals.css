@@ -247,6 +247,42 @@
   .kbd-hint { display: none; }
 }
 
+/* Interactive widget slider styling */
+input[type="range"].accent-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  outline: none;
+}
+input[type="range"].accent-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: 2px solid rgba(0,0,0,0.3);
+  box-shadow: 0 0 6px var(--accent);
+  transition: box-shadow 0.15s;
+}
+input[type="range"].accent-slider::-webkit-slider-thumb:hover {
+  box-shadow: 0 0 10px var(--accent);
+}
+input[type="range"].accent-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: 2px solid rgba(0,0,0,0.3);
+  box-shadow: 0 0 6px var(--accent);
+}
+input[type="range"].accent-slider:disabled::-webkit-slider-thumb {
+  opacity: 0.4;
+  cursor: default;
+  box-shadow: none;
+}
+
 /* Accessibility: reduced motion preference */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

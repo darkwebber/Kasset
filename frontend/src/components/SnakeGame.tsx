@@ -86,6 +86,9 @@ export default function SnakeGame({ onClose, onUnlock }: SnakeGameProps) {
   const [score, setScore] = useState(0);
   const [level, setLevel] = useState(1);
   const [showStats, setShowStats] = useState(false);
+  const [aiMode, setAiMode] = useState(false);
+  const [devBypass, setDevBypass] = useState(false);
+  const wsRef = useRef<WebSocket | null>(null);
   
   // Dynamic color theme state
   const [themeColors, setThemeColors] = useState<{ primary: string; secondary: string; primaryRgb: string; secondaryRgb: string }>(() => 
@@ -249,7 +252,16 @@ export default function SnakeGame({ onClose, onUnlock }: SnakeGameProps) {
     }
 
     snakeRef.current = snake;
-  }, [spawnFood, onUnlock]);
+
+    // Send state to AI if AI mode is active
+    if (aiMode && wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        snake: snakeRef.current,
+        food: foodRef.current,
+        grid_size: GRID
+      }));
+    }
+  }, [spawnFood, onUnlock, aiMode]);
 
   // Render
   const render = useCallback(() => {
@@ -383,9 +395,81 @@ export default function SnakeGame({ onClose, onUnlock }: SnakeGameProps) {
           break;
       }
     };
+
+    const onKeyDev = (e: KeyboardEvent) => {
+      if (e.shiftKey && (e.key === "A" || e.key === "a")) {
+        setDevBypass(true);
+      }
+    };
+    
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKeyDev);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keydown", onKeyDev);
+    };
   }, [gameState, resetGame]);
+
+  // AI WebSocket Connection
+  useEffect(() => {
+    if (aiMode) {
+      const wsHost = window.location.hostname || "localhost";
+      const ws = new WebSocket(`ws://${wsHost}:8765`);
+      ws.onopen = () => {
+        console.log("Connected to AI Server");
+        // Trigger initial state send
+        if (gameState === "playing") {
+          ws.send(JSON.stringify({
+            snake: snakeRef.current,
+            food: foodRef.current,
+            grid_size: GRID
+          }));
+        }
+      };
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.action && ["UP", "DOWN", "LEFT", "RIGHT"].includes(data.action)) {
+            // Only update direction if it's not a 180 degree turn
+            const currentDir = dirRef.current;
+            const newDir = data.action;
+            const snake = snakeRef.current;
+            
+            if (snake.length > 1) {
+              if (newDir === "UP" && currentDir === "DOWN") return;
+              if (newDir === "DOWN" && currentDir === "UP") return;
+              if (newDir === "LEFT" && currentDir === "RIGHT") return;
+              if (newDir === "RIGHT" && currentDir === "LEFT") return;
+            }
+            
+            nextDirRef.current = newDir as Dir;
+          }
+        } catch (e) {
+          console.error("Error parsing AI message", e);
+        }
+      };
+      ws.onerror = (e) => {
+        const stateMap: Record<number, string> = {
+          [WebSocket.CONNECTING]: "CONNECTING",
+          [WebSocket.OPEN]: "OPEN",
+          [WebSocket.CLOSING]: "CLOSING",
+          [WebSocket.CLOSED]: "CLOSED",
+        };
+        const readyState = stateMap[ws.readyState] ?? String(ws.readyState);
+        console.warn("AI WebSocket unavailable", {
+          url: ws.url,
+          readyState,
+          type: e.type,
+        });
+      };
+      wsRef.current = ws;
+
+      return () => {
+        ws.close();
+        wsRef.current = null;
+      };
+    }
+  }, [aiMode, gameState]);
 
   // Touch swipe controls
   useEffect(() => {
@@ -595,7 +679,7 @@ export default function SnakeGame({ onClose, onUnlock }: SnakeGameProps) {
                   resetGame();
                   setGameState("playing");
                 }}
-                className="px-6 py-2 text-black font-bold text-sm uppercase tracking-widest rounded hover:bg-white hover:scale-105 active:scale-95 transition-all duration-150"
+                className="px-6 py-2 mb-3 text-black font-bold text-sm uppercase tracking-widest rounded hover:bg-white hover:scale-105 active:scale-95 transition-all duration-150"
                 style={{ backgroundColor: themeColors.primary, boxShadow: `0 0 20px rgba(${themeColors.primaryRgb}, 0.3)` }}
                 onMouseEnter={(e) => {
                   e.currentTarget.style.boxShadow = `0 0 30px rgba(${themeColors.primaryRgb}, 0.5)`;
@@ -606,6 +690,17 @@ export default function SnakeGame({ onClose, onUnlock }: SnakeGameProps) {
               >
                 Begin Trial
               </button>
+              
+              {(highScore >= 40 || devBypass) && (
+                <button
+                  onClick={() => {
+                    setAiMode(!aiMode);
+                  }}
+                  className={`px-4 py-1.5 text-xs font-mono uppercase tracking-widest rounded border transition-all duration-150 ${aiMode ? 'bg-white text-black' : 'text-white/60 hover:text-white border-white/20 hover:border-white/50'}`}
+                >
+                  {aiMode ? 'AI Auto-Play: ON' : 'AI Auto-Play: OFF'}
+                </button>
+              )}
             </div>
           )}
 

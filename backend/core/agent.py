@@ -6,12 +6,18 @@ import uuid
 import threading
 from pathlib import Path
 from typing import List, Dict, Any, Generator, Tuple, Optional
-from .tool_registry import execute_tool, run_approved_command
+from .tool_registry import execute_tool, run_approved_command, get_session_notes, clear_session_notes, save_notes as _save_session_notes
 from .plugin_loader import plugin_loader
+from .input_type_loader import input_type_loader
 from .sandbox import _SHARED_GLOBALS as _sandbox_globals
 from .persistence import user_memory, prompt_cache, chat_store
 from .context_manager import (
     user_settings, SessionSummarizer, CartridgeContext, GlobalProfile
+)
+from .knowledge_graph import ConversationGraph
+from .tool_parser import (
+    parse_thinking, extract_tool_call, has_tool_call_attempt,
+    diagnose_tool_call_error, enrich_tool_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,309 +56,46 @@ def deny_consent(consent_id: str):
         entry["approved"] = False
         entry["event"].set()
 
-def parse_thinking(raw: str) -> Tuple[str, str]:
-    """Extract thinking content from model output."""
-    tag_pairs = [
-        ("<think>", "</think>"),
-        ("<|thinking|>", "<|/thinking|>"),
-    ]
-    for open_tag, close_tag in tag_pairs:
-        if close_tag in raw:
-            if open_tag in raw:
-                start = raw.index(open_tag) + len(open_tag)
-                end = raw.index(close_tag)
-                thought = raw[start:end].strip()
-                answer = (raw[:raw.index(open_tag)] + raw[end + len(close_tag):]).strip()
-                return thought, answer
-            else:
-                parts = raw.split(close_tag, 1)
-                return parts[0].strip(), parts[1].strip()
+# ─── Interactive widget state for structured user input ───
+# Same pattern as consent: register → wait → respond.
+# Supports: choice, slider, editor, form, embed
+_interactive_registry: Dict[str, dict] = {}
+_interactive_lock = threading.Lock()
 
-    for open_tag, _ in tag_pairs:
-        if open_tag in raw:
-            start = raw.index(open_tag) + len(open_tag)
-            return raw[start:].strip(), ""
-            
-    return "", raw.strip()
+def _register_interactive(widget_id: str) -> threading.Event:
+    """Register an interactive widget request. Returns Event to wait on."""
+    event = threading.Event()
+    with _interactive_lock:
+        _interactive_registry[widget_id] = {"event": event, "response": None, "dismissed": False}
+    return event
 
-def extract_tool_call(text: str) -> Optional[Dict[str, Any]]:
-    """Extract tool call JSON from model output. Handles multiple formats robustly."""
-    # 1. Standard: <tool_call>...</tool_call>
-    match = re.search(r"<tool_call>\s*(.*?)\s*</tool_call>", text, re.DOTALL | re.IGNORECASE)
-    if match:
-        return _try_parse_tool_json(match.group(1))
+def _pop_interactive(widget_id: str) -> dict:
+    """Remove and return an interactive entry."""
+    with _interactive_lock:
+        return _interactive_registry.pop(widget_id, {})
 
-    # 2. Unclosed tag: <tool_call>...{json}... (no closing tag — very common)
-    match = re.search(r"<tool_call>\s*(.*)", text, re.DOTALL | re.IGNORECASE)
-    if match:
-        result = _try_parse_tool_json(match.group(1))
-        if result:
-            return result
+def respond_interactive(widget_id: str, response_data: Any):
+    """Called by api.py when user submits a widget response."""
+    with _interactive_lock:
+        entry = _interactive_registry.get(widget_id)
+    if entry:
+        entry["response"] = response_data
+        entry["event"].set()
 
-    # 3. Alternative tag format: <|tool_call|>...<|/tool_call|>
-    match = re.search(r"<\|tool_call\|>\s*(.*?)(?:<\|/tool_call\|>|$)", text, re.DOTALL)
-    if match:
-        result = _try_parse_tool_json(match.group(1))
-        if result:
-            return result
-
-    # 4. Raw JSON with "name" and "arguments" keys (no tags at all)
-    match = re.search(r'\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"arguments"\s*:', text, re.DOTALL)
-    if match:
-        # Try to extract the full JSON object starting from this match
-        start = match.start()
-        result = _try_parse_tool_json(text[start:])
-        if result:
-            return result
-
-    return None
+def dismiss_interactive(widget_id: str):
+    """Called by api.py when user dismisses/skips a widget."""
+    with _interactive_lock:
+        entry = _interactive_registry.get(widget_id)
+    if entry:
+        entry["dismissed"] = True
+        entry["event"].set()
 
 
-def _fix_json_newlines(s: str) -> str:
-    """Escape raw newlines/tabs inside JSON strings that the model forgot to escape."""
-    return s.replace('\r\n', '\\n').replace('\r', '\\n').replace('\n', '\\n').replace('\t', '\\t')
-
-
-def _try_parse_tool_json(raw: str) -> Optional[Dict[str, Any]]:
-    """Attempt to parse a tool call JSON from potentially messy model output."""
-    raw = raw.strip()
-    if not raw:
-        return None
-
-    # Try direct parse first
-    try:
-        obj = json.loads(raw)
-        if isinstance(obj, dict) and "name" in obj:
-            return obj
-    except json.JSONDecodeError:
-        pass
-
-    # Try with fixed newlines (model often puts raw newlines in code strings)
-    try:
-        obj = json.loads(_fix_json_newlines(raw))
-        if isinstance(obj, dict) and "name" in obj:
-            return obj
-    except json.JSONDecodeError:
-        pass
-
-    # Extract the first complete JSON object using brace-depth counting
-    brace_depth = 0
-    start = None
-    for i, ch in enumerate(raw):
-        if ch == '{':
-            if start is None:
-                start = i
-            brace_depth += 1
-        elif ch == '}':
-            brace_depth -= 1
-            if brace_depth == 0 and start is not None:
-                candidate = raw[start:i + 1]
-                # Try raw first, then with newline fix
-                for attempt in (candidate, _fix_json_newlines(candidate)):
-                    try:
-                        obj = json.loads(attempt)
-                        if isinstance(obj, dict) and "name" in obj:
-                            return obj
-                    except json.JSONDecodeError:
-                        pass
-                start = None
-
-    # Dedicated extraction for execute_python / execute_cpp — the most common failure
-    # The model generates {"name":"execute_python","arguments":{"code":"...raw multi-line code..."}}
-    name_match = re.search(r'"name"\s*:\s*"(\w+)"', raw)
-    if name_match:
-        tool_name = name_match.group(1)
-        # For code tools, extract the code string directly
-        if tool_name in ("execute_python", "execute_cpp"):
-            code_match = re.search(r'"code"\s*:\s*"', raw)
-            if code_match:
-                code_start = code_match.end()
-                # Scan for the closing quote of the code string (not preceded by \)
-                i = code_start
-                code_chars = []
-                while i < len(raw):
-                    if raw[i] == '\\' and i + 1 < len(raw):
-                        code_chars.append(raw[i:i+2])
-                        i += 2
-                    elif raw[i] == '"':
-                        break
-                    else:
-                        code_chars.append(raw[i])
-                        i += 1
-                code_value = ''.join(code_chars)
-                # Unescape what the model did escape, keep raw newlines as-is
-                code_value = code_value.replace('\\n', '\n').replace('\\t', '\t').replace('\\"', '"')
-                logger.info(f"Extracted code for {tool_name} ({len(code_value)} chars) via direct scan")
-                return {"name": tool_name, "arguments": {"code": code_value}}
-
-        # For other tools, try regex extraction of arguments
-        args_match = re.search(r'"arguments"\s*:\s*\{', raw)
-        if args_match:
-            # Extract from the opening brace using depth counting
-            depth = 0
-            astart = args_match.end() - 1
-            for i in range(astart, len(raw)):
-                if raw[i] == '{': depth += 1
-                elif raw[i] == '}': depth -= 1
-                if depth == 0:
-                    args_str = raw[astart:i+1]
-                    for attempt in (args_str, _fix_json_newlines(args_str)):
-                        try:
-                            args = json.loads(attempt)
-                            return {"name": tool_name, "arguments": args}
-                        except json.JSONDecodeError:
-                            pass
-                    break
-
-    if '<tool_call>' in raw.lower() or '"name"' in raw:
-        logger.warning(f"Failed to parse tool call from: {raw[:200]}")
-    return None
-
-
-def _has_tool_call_attempt(text: str) -> bool:
-    """Check if the model attempted a tool call but it failed to parse."""
-    lower = text.lower()
-    return '<tool_call>' in lower or '<|tool_call|>' in lower
-
-
-def _diagnose_tool_call_error(text: str) -> str:
-    """Analyze a failed tool call and produce a clear error message for the model."""
-    # Extract the raw JSON attempt
-    match = re.search(r'<tool_call>\s*(.*?)(?:</tool_call>|$)', text, re.DOTALL | re.IGNORECASE)
-    if not match:
-        match = re.search(r'<\|tool_call\|>\s*(.*?)(?:<\|/tool_call\|>|$)', text, re.DOTALL)
-
-    raw_json = match.group(1).strip() if match else ""
-    snippet = raw_json[:300] if raw_json else text[-300:]
-
-    # Diagnose specific issues
-    issues = []
-    if raw_json:
-        brace_count = raw_json.count('{') - raw_json.count('}')
-        if brace_count > 0:
-            issues.append(f"Unclosed braces: {brace_count} opening '{{' without matching '}}'.")
-        elif brace_count < 0:
-            issues.append(f"Extra closing braces: {abs(brace_count)} unmatched '}}'.")
-
-        # Check for raw newlines inside strings (most common failure)
-        if '"code"' in raw_json:
-            code_start = raw_json.find('"code"')
-            # Check if there are unescaped newlines after the code key
-            code_section = raw_json[code_start:]
-            in_str = False
-            for i, ch in enumerate(code_section):
-                if ch == '"' and (i == 0 or code_section[i-1] != '\\'):
-                    in_str = not in_str
-                if in_str and ch == '\n':
-                    issues.append("Raw newlines inside the 'code' string value. Use \\n instead of actual line breaks.")
-                    break
-
-        if '"name"' not in raw_json:
-            issues.append("Missing 'name' key in the tool call JSON.")
-        if '"arguments"' not in raw_json:
-            issues.append("Missing 'arguments' key in the tool call JSON.")
-
-        try:
-            json.loads(raw_json)
-        except json.JSONDecodeError as e:
-            issues.append(f"JSON parse error: {e.msg} at position {e.pos}.")
-    else:
-        issues.append("The <tool_call> tag was found but no JSON content was extracted.")
-
-    issue_text = "\n".join(f"  - {i}" for i in issues) if issues else "  - Unknown JSON formatting error."
-
-    return (
-        f"[SYSTEM] Your previous tool call failed to parse. Here's what went wrong:\n"
-        f"{issue_text}\n\n"
-        f"Your malformed output was:\n```\n{snippet}\n```\n\n"
-        f"Fix the JSON and try again. Remember:\n"
-        f"- The JSON must be valid. Use \\n for newlines and \\\" for quotes inside string values.\n"
-        f"- Format: <tool_call>{{\"name\": \"tool_name\", \"arguments\": {{...}}}}</tool_call>\n"
-        f"- Do NOT put any text after the </tool_call> tag."
-    )
-
-
-def _enrich_tool_error(tool_name: str, tool_args: dict, error_result: str) -> str:
-    """Produce actionable feedback when a tool execution fails.
-    Pattern-matches common error types and provides specific remediation hints."""
-    hints = []
-    err = error_result.lower()
-    err_raw = error_result
-
-    # ── File system errors ──
-    if "no such file" in err or "does not exist" in err or "filenotfounderror" in err:
-        path_hint = tool_args.get("path", tool_args.get("directory", ""))
-        hints.append(f"The file/path doesn't exist. Use `list_directory` or `search_files` to verify the correct path first.")
-        if path_hint:
-            # Suggest checking parent directory
-            from pathlib import PurePosixPath
-            parent = str(PurePosixPath(path_hint).parent)
-            hints.append(f"Try: list_directory(\"{parent}\") to see what exists.")
-    elif "permission" in err and "denied" in err:
-        hints.append("Permission denied. The sandbox cannot access this path. Try a different location or use ~/.")
-    elif "isadirectoryerror" in err:
-        hints.append("You tried to read a directory as a file. Use `list_directory` instead of `read_file`.")
-    elif "notadirectoryerror" in err:
-        hints.append("You tried to list a file as a directory. Use `read_file` instead of `list_directory`.")
-
-    # ── Python code errors ──
-    elif "syntaxerror" in err or "indentationerror" in err:
-        # Try to extract line number
-        line_match = re.search(r'line (\d+)', err_raw)
-        line_info = f" at line {line_match.group(1)}" if line_match else ""
-        hints.append(f"Syntax/indentation error{line_info}. Fix the specific line — do NOT rewrite the entire script.")
-    elif "nameerror" in err:
-        var_match = re.search(r"name '(\w+)' is not defined", err_raw)
-        if var_match:
-            hints.append(f"Variable `{var_match.group(1)}` is not defined. Check spelling, or define it before use. Remember: variables persist across execute_python calls.")
-        else:
-            hints.append("A variable is not defined. Check your variable names and ensure they're defined before use.")
-    elif "typeerror" in err:
-        hints.append("Type mismatch. Check function argument types and return values. Common causes: passing None where a value is expected, wrong number of arguments.")
-    elif "keyerror" in err:
-        key_match = re.search(r"KeyError:\s*['\"]?(\w+)", err_raw)
-        key_info = f" Key `{key_match.group(1)}` not found." if key_match else ""
-        hints.append(f"Dictionary key not found.{key_info} Use `.get()` for safe access or check available keys with `.keys()`.")
-    elif "indexerror" in err:
-        hints.append("List index out of range. Check the length of your list/array before indexing. Use `len()` to verify.")
-    elif "valueerror" in err:
-        hints.append("Invalid value. Check that input data is in the expected format (e.g., numeric strings for int(), valid dates for datetime).")
-    elif "attributeerror" in err:
-        attr_match = re.search(r"has no attribute '(\w+)'", err_raw)
-        if attr_match:
-            hints.append(f"Object has no attribute `{attr_match.group(1)}`. Check the object type with `type()` and use `dir()` to see available attributes.")
-        else:
-            hints.append("Attribute error. Verify the object type and available methods.")
-    elif "modulenotfounderror" in err or "no module named" in err:
-        mod_match = re.search(r"No module named ['\"](\w+)", err_raw)
-        mod_name = mod_match.group(1) if mod_match else "the module"
-        hints.append(f"Module `{mod_name}` is not installed. Pre-available: pandas, numpy, matplotlib, scipy, seaborn, plotly, Pillow, sympy. For others, ask the user to `pip install {mod_name}`.")
-    elif "zerodivisionerror" in err:
-        hints.append("Division by zero. Add a check before dividing (e.g., `if denominator != 0:`).")
-
-    # ── Shell command errors ──
-    elif "timed out" in err:
-        hints.append("Command timed out (30s limit). Simplify the operation, add filters (e.g., head/tail), or break into smaller steps.")
-    elif "blocked" in err:
-        hints.append("This command is blocked for safety. Use an alternative approach or a different tool.")
-    elif "consent_required" in err:
-        hints.append("This command needs user approval. Wait for the consent prompt.")
-    elif "command not found" in err:
-        cmd_match = re.search(r"(\w+): command not found", err_raw)
-        if cmd_match:
-            hints.append(f"`{cmd_match.group(1)}` is not installed on this system. Try an alternative tool or approach.")
-    elif "exit" in err and re.search(r'exit (\d+)', err):
-        exit_match = re.search(r'exit (\d+)', err)
-        hints.append(f"Command exited with code {exit_match.group(1)}. Check stderr output above for details.")
-
-    # ── Generic fallback ──
-    elif "traceback" in err and not hints:
-        hints.append("An exception occurred. Read the traceback carefully and fix only the failing line(s).")
-
-    base = f"Tool result for {tool_name}: {error_result}"
-    if hints:
-        base += "\n[Diagnosis: " + " ".join(hints) + "]"
-    return base
+# ─── Tool parsing functions are in tool_parser.py ───
+# Backward-compat aliases for any internal references using old private names
+_has_tool_call_attempt = has_tool_call_attempt
+_diagnose_tool_call_error = diagnose_tool_call_error
+_enrich_tool_error = enrich_tool_error
 
 
 def _extract_attachment_context(content: str) -> str:
@@ -388,7 +131,16 @@ def _extract_attachment_context(content: str) -> str:
                             text = "\n".join(lines[:150]) + f"\n... ({len(lines) - 150} more lines)"
                         context = f"\n<attached_context path=\"{file_path}\" type=\"file\" lines=\"{len(lines)}\" size=\"{size}\">\n{text}\n</attached_context>"
                     except UnicodeDecodeError:
-                        context = f"\n<attached_context path=\"{file_path}\">\n[Binary file - cannot display inline]\n</attached_context>"
+                        # Images and binary files: reinforce the full absolute path so models don't use just the filename
+                        abs_path = str(p)
+                        ext = p.suffix.lower()
+                        file_type = "image" if ext in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.heic') else "binary"
+                        context = (
+                            f"\n<attached_context path=\"{abs_path}\" type=\"{file_type}\">"
+                            f"\n[Binary {file_type} file. FULL ABSOLUTE PATH: {abs_path}]"
+                            f"\n[IMPORTANT: You MUST use the full path '{abs_path}' — NOT just the filename '{p.name}'. Relative paths will fail.]"
+                            f"\n</attached_context>"
+                        )
             elif p.is_dir():
                 # List directory contents (shallow)
                 entries = []
@@ -438,6 +190,7 @@ class Agent:
         self.model_client = model_client
         self.config = config
         self.allow_shell = allow_shell
+        self.graph = ConversationGraph()  # Knowledge graph for this conversation
 
     def _estimate_tokens(self, text: str) -> int:
         """Token count using actual tokenizer if available, heuristic fallback."""
@@ -526,16 +279,41 @@ class Agent:
         "get_current_time": {"desc": "Get the current local date and time.", "params": {}},
         "list_directory": {"desc": "List directory contents with file sizes.", "params": {"path": "Directory path (default: '.')"}},
         "get_system_info": {"desc": "Get system overview: OS, hardware, disk, uptime.", "params": {}},
-        "search_files": {"desc": "Search for files matching a glob pattern (max 50 results).", "params": {"pattern": "Glob pattern to match", "directory": "Directory to search (default: '~')"}},
-        "read_file": {"desc": "Read a text file. Files under 50KB are shown in full (up to 200 lines). Files over 50KB automatically return a structural overview: imports, function/class signatures with line numbers, exports, plus the first 20 and last 10 lines. Max 500KB.", "params": {"path": "File path to read", "max_lines": "Max lines to read (default: 100, only for files under 50KB)"}},
-        "run_command": {"desc": "Run shell commands (30s timeout). Supports pipes (|), chaining (&&, ;). Most commands work. Destructive commands (rm, sudo) are blocked. Process management (kill, killall, pkill) and write operations (mkdir, cp, mv, chmod, pip install, git commit, etc.) require user consent — you'll get a CONSENT_REQUIRED response for those.", "params": {"command": "Shell command to run"}},
+        "search_files": {"desc": "Search for files matching a glob pattern (max 50 results). Best first step for repo exploration: find candidate files/modules before reading them.", "params": {"pattern": "Glob pattern to match", "directory": "Directory to search (default: '~')"}},
+        "read_file": {"desc": "Read a text file. Use start_line/end_line (1-indexed) to read specific line ranges — returns numbered lines. Without range: files under 50KB shown in full, files over 50KB return structural overview (signatures + line numbers). Max 500KB.", "params": {"path": "File path to read", "max_lines": "Max lines for full read (default: 100)", "start_line": "Start line number, 1-indexed (optional — for reading specific sections)", "end_line": "End line number, 1-indexed (optional — defaults to start_line+200)"}},
+        "edit_file": {"desc": "Surgical find-and-replace in a file. Replaces the FIRST occurrence of old_text with new_text. Much better than write_file for targeted code edits — no need to rewrite the whole file. Always read_file first to get exact text.", "params": {"path": "File path to edit", "old_text": "Exact text to find (must match perfectly including whitespace)", "new_text": "Replacement text"}},
+        "grep_code": {"desc": "Search file CONTENTS for a regex pattern across a directory tree. Returns matching lines with file paths and line numbers. Uses ripgrep if available. Essential for finding where functions/variables/classes are defined or used in a codebase.", "params": {"pattern": "Regex pattern to search for", "directory": "Directory to search in (default: '.')", "include": "File glob filter, e.g. '*.py' or '*.ts' (optional)", "max_results": "Max result lines (default: 30)"}},
+        "write_file": {"desc": "Write text content to a file. Creates parent directories automatically. Use for saving code, documents, configs, or any text output. Prefer this over run_command for writing files.", "params": {"path": "File path to write (absolute or ~/...)", "content": "Text content to write", "mode": "'overwrite' (default) or 'append'"}},
+        "run_command": {"desc": "Run shell commands with smart timeout. **Three modes**: (1) Fast commands (ls, cat, git status): 30s timeout. (2) Medium commands (find /, grep -r, make, builds): 120s timeout. (3) Long-running commands (servers, dev servers, watchers, tail -f): auto-started in background — returns a bg_id. **Background commands**: `bg_status <id>` to check output, `bg_stop <id>` to terminate, `bg_list` to see all. Supports pipes (|), chaining (&&, ;). Destructive commands (rm, sudo) are blocked. Write operations require user consent (CONSENT_REQUIRED).", "params": {"command": "Shell command to run (or bg_status/bg_stop/bg_list for background process management)", "cwd": "Optional working directory (absolute path). Defaults to home directory if not specified."}},
         "calculate": {"desc": "Evaluate a math expression safely. Supports sqrt, log, trig, factorial, pi, e.", "params": {"expression": "Math expression to evaluate"}},
-        "execute_python": {"desc": "Execute Python code in a stateful sandbox. Captures stdout/stderr. Matplotlib plots are AUTO-CAPTURED as images — do NOT call plt.show(). Variables persist across calls. Pre-imported: pandas (pd), numpy (np), matplotlib.pyplot (plt), scipy (+ scipy.stats), seaborn (sns), math, json, csv, re, PIL/PILImage, sklearn (model_selection, preprocessing, metrics, ensemble, linear_model, cluster, decomposition), torch, torchvision. Quick chart helpers: qchart_bar, qchart_pie, qchart_line, qchart_scatter, qchart_hist, qchart_heatmap. Image editing helpers (for Image Editor cartridge): img_load, img_save, img_show, img_adjust, img_hue_shift, img_color_replace, img_color_range_replace, img_tint, img_adjust_highlights, img_adjust_shadows, img_overlay_color, img_get_original, img_crop, img_resize, img_rotate, img_flip, img_blur, img_grayscale, img_edge_detect, img_threshold, img_draw_rect, img_draw_text, img_convert, img_info. If a package is missing, you'll get MISSING_PACKAGE — ask the user for consent to install it before retrying.", "params": {"code": "Python code to execute"}},
+        "execute_python": {"desc": "Execute Python code in a stateful sandbox. Captures stdout/stderr. Matplotlib plots are AUTO-CAPTURED as images — do NOT call plt.show(). Variables persist across calls. Pre-imported: pandas (pd), numpy (np), matplotlib.pyplot (plt), scipy (+ scipy.stats), seaborn (sns), math, json, csv, re, PIL/PILImage, sklearn, torch, torchvision. Quick chart helpers: qchart_bar/pie/line/scatter/hist/heatmap. Image editing helpers: img_load/save/show/preview/adjust/hue_shift/color_replace/tint/vignette/sepia/invert/crop/resize/rotate/flip/blur/grayscale/etc. If a package is missing, you'll get MISSING_PACKAGE — ask the user for consent to install it before retrying.", "params": {"code": "Python code to execute"}},
         "execute_cpp": {"desc": "Compile and run C++ code (C++17, g++/clang++). Returns compilation errors or program output.", "params": {"code": "C++ source code", "stdin_input": "(optional) stdin input for the program"}},
+        "html_preview": {"desc": "Embed interactive HTML directly in the chat as a sandboxed iframe. Use for buttons, demos, mini-apps, interactive widgets, visualizations. The HTML is rendered live — user can interact with it. MUCH better than execute_python for HTML — avoids string escaping issues.", "params": {"html": "Complete HTML string (can include <style>, <script>, etc.)", "title": "Short title for the artifact (optional)"}},
+        "save_notes": {"desc": "Save working notes/findings to a persistent scratchpad. Notes survive across tool rounds and are automatically available when user says 'continue'. Essential for multi-step analysis tasks — save findings as you go so nothing is lost if rounds run out.", "params": {"notes": "Text to save (findings, analysis, TODO items, progress)", "mode": "'append' (default — add to existing) or 'replace' (overwrite)"}},
         "search_web": {"desc": "Search the web using DuckDuckGo. Returns titles, URLs, and snippets for top results.", "params": {"query": "Search query", "max_results": "Number of results (default: 5)"}},
         "read_url": {"desc": "Fetch and extract readable text content from a webpage URL. Content is preprocessed: ads, navs, sidebars, and boilerplate are stripped. Returns clean markdown.", "params": {"url": "Full URL to fetch (include https://)"}},
         "read_rss": {"desc": "Read and parse an RSS or Atom feed. Returns structured entries with title, date, link, and summary.", "params": {"url": "RSS/Atom feed URL", "max_items": "Max entries to return (default: 10)"}},
         "get_location": {"desc": "Get approximate location from IP geolocation: city, region, country, timezone, coordinates.", "params": {}},
+        "request_user_input": {
+            "desc": (
+                "Request structured input from the user via an interactive widget. "
+                "The stream pauses until the user responds. Widget types:\n"
+                "  - **choice**: Present options for user to pick. Use for quizzes, preferences, decisions. "
+                "Args: prompt (question text), options (array of {label, value, description?}), multiple (bool, default false).\n"
+                "  - **slider**: Numeric adjustment with live preview. Use for fine-tuning values (brightness, opacity, size). "
+                "Args: prompt (label), sliders (array of {name, label, min, max, step, default, unit?}).\n"
+                "  - **editor**: Let user edit text/code you generated, returns their edits. "
+                "Args: prompt (instruction), content (initial text), language (code language or 'text').\n"
+                "  - **form**: Collect multiple structured fields. "
+                "Args: prompt (title), fields (array of {name, label, type: 'text'|'number'|'select'|'toggle', options?, default?}).\n"
+                "  - **embed**: Display embedded content (YouTube, webpage). Display-only, no response. "
+                "Args: url (URL to embed), title (display title), embed_type ('youtube'|'iframe')."
+            ),
+            "params": {
+                "widget_type": "One of: choice, slider, editor, form, embed",
+                "config": "Widget configuration object (varies by type — see description)",
+            },
+        },
     }
 
     def _build_system_message(self) -> Dict[str, str]:
@@ -551,6 +329,46 @@ class Agent:
             tool_lines.append(f"- **{t}**({params_str}): {info['desc']}")
         
         tool_id_list = ", ".join(f"`{t}`" for t in self.config.tools)
+        input_methods_block = ""
+        input_methods_raw = getattr(self.config, "input_methods", []) or []
+        # Resolve string IDs to full dicts via input_type_loader
+        input_methods = []
+        for ref in (input_methods_raw if isinstance(input_methods_raw, list) else []):
+            resolved = input_type_loader.resolve_input_method(ref)
+            if resolved:
+                input_methods.append(resolved)
+        if input_methods:
+            lines = [
+                "\n\n### Custom Input Methods (from this kasset)",
+                "Use these templates when calling `request_user_input` to collect better structured input:",
+            ]
+            for m in input_methods[:12]:
+                if not isinstance(m, dict):
+                    continue
+                mid = str(m.get("id", "")).strip() or "custom-method"
+                name = str(m.get("name", mid)).strip()
+                desc = str(m.get("description", "")).strip()
+                widget_type = str(m.get("widget_type", "custom")).strip() or "custom"
+                lines.append(f"- **{name}** (`{mid}`) — widget_type: `{widget_type}`")
+                if desc:
+                    lines.append(f"  - {desc}")
+                example = m.get("example")
+                if isinstance(example, dict):
+                    try:
+                        lines.append(f"  - Example: `{json.dumps(example, ensure_ascii=False)[:220]}`")
+                    except Exception:
+                        pass
+            input_methods_block = "\n".join(lines) + "\n"
+        code_mode_block = ""
+        if "code-pilot" in (self.config.active_cartridge_ids or []):
+            code_mode_block = (
+                "\n\n### Code Pilot Mode\n"
+                "- Explore progressively: grep → read relevant sections → act.\n"
+                "- Track cross-file relationships. Reuse facts from earlier results.\n"
+                "- Prefer minimal surgical edits over broad rewrites.\n"
+                "- Save findings with `save_notes` every few rounds.\n"
+            )
+
         tools_block = (
             "\n\n## Available Tools\n"
             "Call tools using this EXACT format — one tool call per message:\n\n"
@@ -580,15 +398,52 @@ class Agent:
             "3. **Observe** — analyze the result. Decide if you need another tool call or can answer.\n"
             "4. **Adapt** — if a tool fails, read the error carefully. Try a DIFFERENT approach, not the same one.\n"
             "5. **Synthesize** — once you have enough data, give a clear final answer and STOP.\n\n"
+            "### Task Completion Awareness (CRITICAL)\n"
+            "After EACH tool result, check: **Is the user's task done?**\n"
+            "- If a plot/image was generated and displayed → task is DONE. Summarize in 1-2 sentences and STOP.\n"
+            "- If a file was written successfully → task is DONE. Do NOT re-read or re-write the same file.\n"
+            "- If code ran without errors and produced the expected output → task is DONE.\n"
+            "- **NEVER** call the same tool with identical or near-identical arguments twice.\n"
+            "- **NEVER** re-verify your own work unless the user asks you to. The tool result already confirms success.\n"
+            "- After completing a task, give a SHORT summary (1-3 sentences) and STOP. Do not offer extensive follow-up suggestions.\n\n"
             "**Error recovery**: If a tool is not available, immediately switch to an available alternative. "
             "If code fails twice with the same error, stop and explain the issue to the user instead of retrying.\n\n"
+            "### Multi-Round Response Rules (CRITICAL)\n"
+            "Your response is streamed continuously to the user. When you make a tool call, your text BEFORE the tool call is ALREADY VISIBLE. "
+            "After the tool result comes back, you continue the SAME response. This means:\n"
+            "- **Keep pre-tool-call text SHORT** — 1-2 sentences max before a tool call. Don't write full explanations then call a tool.\n"
+            "- **NEVER repeat yourself** — don't re-introduce topics, re-write headings, or restart explanations you already wrote in a previous round.\n"
+            "- **Continue, don't restart** — after a tool result, pick up naturally from where you left off.\n"
+            "- If the user asked a question, you can often answer it directly WITHOUT any tools. Only call tools when they add genuine value.\n\n"
+            "### Content Rules\n"
+            "- **NEVER generate markdown images** with external URLs like `![alt](https://...)` — they will NOT render. Describe visuals in text instead.\n"
+            "- **NEVER narrate your reasoning outside of `<think>` tags.** If you need to think, wrap it in `<think>...</think>`. All text outside think tags is shown directly to the user.\n"
+            "- **Don't run code unprompted** — if the user asks to learn something, explain it first. Only run code when the user asks to see it executed, or when you need a computation/visualization.\n"
+            "- **Be concise** — prefer shorter, focused responses over walls of text. Let the user ask follow-ups.\n\n"
+            "### Interactive Input (when `request_user_input` is available) — MANDATORY\n"
+            "- **NEVER present numbered options in plain text and wait for the user to type a number or choice.** This is the #1 UX failure. ALWAYS use a widget instead.\n"
+            "- `widget_type: \"choice\"` — **REQUIRED** whenever you would say \"Which of these...?\", \"Do you want A or B?\", \"Choose from:\", \"Pick one:\", or list numbered options. Examples:\n"
+            "  - \"Should I use React or Vue?\" → choice widget with options\n"
+            "  - \"Which file should I edit?\" → choice widget with file options\n"
+            "  - \"Would you like to proceed?\" → choice widget with Yes/No\n"
+            "  - \"What tone — formal, casual, or technical?\" → choice widget\n"
+            "- `widget_type: \"form\"` — when you need multiple pieces of info (audience, goals, constraints). Keep forms SHORT (3-5 fields).\n"
+            "- `widget_type: \"editor\"` — when presenting a draft/code the user might want to edit before finalizing.\n"
+            "- `widget_type: \"slider\"` — when fine-tuning a numeric value (brightness, opacity, length, count).\n"
+            "- **Anti-pattern (FORBIDDEN)**: Writing \"Here are your options: 1. X  2. Y  3. Z  — Which do you prefer?\" as plain text. This MUST be a choice widget.\n"
+            "- **Anti-pattern (FORBIDDEN)**: Asking \"Would you like me to save this?\" as plain text when you could use a choice widget.\n\n"
             "### Tool Selection Guide\n"
             "- **Math**: Use `calculate` for simple arithmetic. Use `execute_python` for anything complex.\n"
-            "- **Files**: Always `read_file` before editing. Use `list_directory` to explore first.\n"
-            "- **Search**: Prefer `search_files` over `run_command find`. Use `search_web` for factual lookups.\n"
+            "- **Files**: Always `read_file` before editing. Use `start_line`/`end_line` to read specific sections. Use `list_directory` to explore first.\n"
+            "- **Code editing**: Use `edit_file` for surgical find-and-replace. Use `write_file` only for new files or full rewrites.\n"
+            "- **Code search**: Use `grep_code` to search file contents by pattern. Use `search_files` for filename matching.\n"
             "- **Shell**: Use `run_command` only when no specialized tool fits.\n"
             "- **Web**: Use `read_url` to fetch content. Use `search_web` first if you don't have a URL.\n"
-            "- **Images**: If the user attaches an image and you can see it, describe what you see directly. Use `execute_python` with PIL for editing.\n\n"
+            "- **HTML/Interactive**: Use `html_preview` to embed interactive HTML in chat (buttons, demos, mini-apps). Do NOT use execute_python for HTML — use the dedicated tool.\n"
+            "- **Images**: If the user attaches an image and you can see it, describe what you see directly. Use `execute_python` with PIL for editing.\n"
+            "- **Progress tracking**: Use `save_notes` during multi-step tasks (audits, research, analysis) to save findings progressively. Notes persist across rounds and 'continue' messages.\n\n"
+            + code_mode_block
+            + input_methods_block
             + "\n".join(tool_lines)
         )
         
@@ -607,14 +462,28 @@ class Agent:
         if user_settings.get("context", "use_global_profile"):
             global_block = GlobalProfile.get_context_block()
 
+        # Deduplicate facts across context layers to prevent repetition
+        context_blocks = memory_block + cartridge_block + global_block
+        if context_blocks.strip():
+            _seen_facts = set()
+            deduped_lines = []
+            for line in context_blocks.split('\n'):
+                stripped = line.strip().lower().rstrip('.')
+                # Keep headers and short formatting lines as-is
+                if len(stripped) <= 5 or stripped.startswith('#') or stripped.startswith('**'):
+                    deduped_lines.append(line)
+                elif stripped not in _seen_facts:
+                    _seen_facts.add(stripped)
+                    deduped_lines.append(line)
+            context_blocks = '\n'.join(deduped_lines)
+
         return {
             "role": "system",
             "content": (
                 self.config.merged_prompt
                 + tools_block
-                + memory_block
-                + cartridge_block
-                + global_block
+                + context_blocks
+                + self.graph.get_compact_map()
             ),
         }
 
@@ -669,6 +538,13 @@ class Agent:
         
         current_history = list(base_history)
         
+        # Build knowledge graph from conversation history
+        if not self.graph.nodes:
+            self.graph = ConversationGraph.from_messages(processed_history)
+        # Capture user intent from the latest message
+        if processed_history and processed_history[-1].get("role") == "user":
+            self.graph.add_user_intent(processed_history[-1]["content"])
+        
         # Inject current working image context for multi-turn image editing
         _cimg = _sandbox_globals.get('_current_image_path')
         if _cimg and Path(_cimg).exists():
@@ -685,6 +561,61 @@ class Agent:
                     }
                     break
         
+        # Clear session notes for brand new chats (only 1 user message = first turn)
+        user_msg_count = sum(1 for m in history if m.get("role") == "user")
+        if user_msg_count <= 1:
+            clear_session_notes()
+        
+        # Detect "continue" messages and inject progress guidance
+        last_user_msg = ""
+        if processed_history and processed_history[-1].get("role") == "user":
+            last_user_msg = processed_history[-1]["content"].strip().lower()
+        _is_continue = last_user_msg in ("continue", "go on", "keep going", "continue please", "go ahead", "carry on")
+        if _is_continue and user_msg_count > 1:
+            # Build a real summary of what was already done from conversation history
+            _done_summary_parts = []
+            for m in history:
+                c = m.get("content", "")
+                if m.get("role") == "user" and c.startswith("Tool result for "):
+                    # Extract tool name and first 150 chars of result
+                    _tname = c.split("Tool result for ")[1].split(":")[0].strip()
+                    _tresult = c.split(":", 1)[1].strip()[:150] if ":" in c.split("Tool result for ")[1] else ""
+                    _done_summary_parts.append(f"  - {_tname}: {_tresult}")
+            # Also include session notes and knowledge map
+            _notes = get_session_notes()
+            _kmap = self.graph.get_compact_map(max_tokens=400) if self.graph.nodes else ""
+            _continuation_ctx = "\n\n[SYSTEM — CONTINUATION: The user asked you to continue your previous work.\n"
+            if _kmap:
+                _continuation_ctx += _kmap.strip() + "\n"
+            if _done_summary_parts:
+                _continuation_ctx += "Tools already called in previous rounds:\n" + "\n".join(_done_summary_parts[-15:]) + "\n"
+            if _notes:
+                _continuation_ctx += f"Your saved working notes:\n{_notes}\n"
+            _continuation_ctx += "CRITICAL: Do NOT restart. Do NOT re-read files you already read. Pick up where you left off.]"
+            for i in range(len(current_history) - 1, -1, -1):
+                if current_history[i].get('role') == 'user':
+                    current_history[i] = {
+                        **current_history[i],
+                        'content': current_history[i]['content'] + _continuation_ctx
+                    }
+                    break
+        else:
+            # Non-continue: inject session notes if available
+            _notes = get_session_notes()
+            if _notes:
+                for i in range(len(current_history) - 1, -1, -1):
+                    if current_history[i].get('role') == 'user':
+                        current_history[i] = {
+                            **current_history[i],
+                            'content': current_history[i]['content'] + (
+                                f"\n\n[SYSTEM — Your working notes from previous rounds:]\n{_notes}\n[END NOTES]"
+                            )
+                        }
+                        break
+        
+        accumulated_response_text = ""  # Track ALL text generated across rounds for anti-repeat
+        _tool_activity_log: List[str] = []  # Auto-track tool calls for continuation context
+        
         for tool_round in range(MAX_TOOL_ROUNDS):
             # ── 1. Stream Model Generation ──
             accumulated = ""
@@ -699,7 +630,9 @@ class Agent:
                         messages=current_history,
                         image=image_path if tool_round == 0 else None,
                         max_tokens=self.config.suggested_tokens,
-                        thinking=self.config.suggested_thinking
+                        thinking=self.config.suggested_thinking,
+                        temperature=getattr(self.config, 'suggested_temperature', None),
+                        top_p=getattr(self.config, 'suggested_top_p', None)
                     )
                 except Exception as inf_err:
                     logger.warning(f"Inference failed (attempt 1): {inf_err}, retrying...")
@@ -708,9 +641,12 @@ class Agent:
                         messages=current_history,
                         image=image_path if tool_round == 0 else None,
                         max_tokens=self.config.suggested_tokens,
-                        thinking=self.config.suggested_thinking
+                        thinking=self.config.suggested_thinking,
+                        temperature=getattr(self.config, 'suggested_temperature', None),
+                        top_p=getattr(self.config, 'suggested_top_p', None)
                     )
 
+            _tool_tag_seen = False
             for chunk in _stream_with_retry():
                 accumulated += chunk
                 
@@ -721,7 +657,13 @@ class Agent:
                         yield json.dumps({"type": "think_end"})
                     
                     _, answer = parse_thinking(accumulated)
-                    if answer.strip():
+                    # Once <tool_call> appears in the answer, stop streaming
+                    # visible tokens — the backend will handle tool execution
+                    if '<tool_call>' in answer or '<|tool_call|>' in answer:
+                        if not _tool_tag_seen:
+                            _tool_tag_seen = True
+                            yield json.dumps({"type": "status", "data": "Writing code…"})
+                    elif answer.strip():
                         yield json.dumps({"type": "token", "data": chunk})
                 elif self.config.suggested_thinking:
                     content = accumulated
@@ -730,10 +672,22 @@ class Agent:
                     if content.strip():
                         yield json.dumps({"type": "think_token", "data": chunk})
                 else:
-                    yield json.dumps({"type": "token", "data": chunk})
+                    # Non-thinking mode: also suppress tool_call XML
+                    if '<tool_call>' in accumulated or '<|tool_call|>' in accumulated:
+                        if not _tool_tag_seen:
+                            _tool_tag_seen = True
+                            yield json.dumps({"type": "status", "data": "Writing code…"})
+                    else:
+                        yield json.dumps({"type": "token", "data": chunk})
 
             # ── 2. Process complete generation ──
             thought, text = parse_thinking(accumulated)
+            
+            # Track accumulated response text across rounds (for anti-repeat)
+            clean_for_tracking = re.sub(r'<tool_call>[\s\S]*?</tool_call>', '', text, flags=re.IGNORECASE)
+            clean_for_tracking = re.sub(r'<tool_call>[\s\S]*$', '', clean_for_tracking, flags=re.IGNORECASE).strip()
+            if clean_for_tracking:
+                accumulated_response_text += ("\n\n" if accumulated_response_text else "") + clean_for_tracking
             
             # If model placed a tool call INSIDE the think block, extract it
             if thought and not extract_tool_call(text):
@@ -808,7 +762,9 @@ class Agent:
                     for chunk in self.model_client.stream_generate(
                         messages=current_history,
                         max_tokens=self.config.suggested_tokens,
-                        thinking=self.config.suggested_thinking
+                        thinking=self.config.suggested_thinking,
+                        temperature=getattr(self.config, 'suggested_temperature', None),
+                        top_p=getattr(self.config, 'suggested_top_p', None)
                     ):
                         accumulated += chunk
                         if "</think>" in accumulated:
@@ -840,9 +796,19 @@ class Agent:
                 clean_text = re.sub(r'<tool_call>[\s\S]*?</tool_call>', '', text, flags=re.IGNORECASE)
                 clean_text = re.sub(r'<tool_call>[\s\S]*$', '', clean_text, flags=re.IGNORECASE)
                 clean_text = re.sub(r'<\|tool_call\|>[\s\S]*$', '', clean_text)
+                # Strip leaked </tool_call> tags with trailing text
+                clean_text = re.sub(r'</tool_call>[\s\S]*', '', clean_text, flags=re.IGNORECASE)
+                # Strip leaked </think> tags
+                clean_text = re.sub(r'</think>', '', clean_text, flags=re.IGNORECASE)
+                # Strip trailing JSON closers leaked from tool calls (e.g. '"}}')
+                clean_text = re.sub(r'"\s*\}\s*\}\s*$', '', clean_text, flags=re.MULTILINE)
                 clean_text = clean_text.strip()
                 if not clean_text and text.strip():
                     clean_text = text.strip()
+                # Auto-save tool activity to session notes for continuation
+                if _tool_activity_log:
+                    _auto_notes = "Tools used this session: " + ", ".join(_tool_activity_log)
+                    _save_session_notes(notes=_auto_notes, mode="append")
                 yield json.dumps({"type": "done", "data": clean_text})
                 break
                 
@@ -850,11 +816,15 @@ class Agent:
             tool_name = tool_req.get("name", "")
             tool_args = tool_req.get("arguments", {})
             
-            # Detect identical code re-submissions (loop detection)
+            # Detect identical/near-identical code re-submissions (loop detection)
             if tool_name in ("execute_python", "execute_cpp") and "code" in tool_args:
-                code_hash = hashlib.md5(tool_args["code"].encode()).hexdigest()
+                raw_code = tool_args["code"]
+                # Normalize: strip whitespace, comments, blank lines for fuzzy matching
+                normalized = re.sub(r'#[^\n]*', '', raw_code)  # strip comments
+                normalized = re.sub(r'\s+', ' ', normalized).strip()  # collapse whitespace
+                code_hash = hashlib.md5(normalized.encode()).hexdigest()
                 if code_hash in _prev_code_hashes:
-                    logger.warning(f"Identical code re-submission detected (hash={code_hash[:8]}), forcing stop")
+                    logger.warning(f"Identical/near-identical code re-submission detected (hash={code_hash[:8]}), forcing stop")
                     yield json.dumps({"type": "status", "data": "Detected repeated code — stopping loop."})
                     current_history.append({"role": "assistant", "content": "(repeated identical code)"})
                     current_history.append({"role": "user", "content": (
@@ -871,9 +841,61 @@ class Agent:
                 start_data["code"] = tool_args["code"]
             
             yield json.dumps({"type": "tool_start", "data": start_data})
+
+            # ── Interactive widget flow: request_user_input ──
+            if tool_name == "request_user_input":
+                widget_type = tool_args.get("widget_type", "choice")
+                config = tool_args.get("config", {})
+                # Models often put widget params at the top level instead of
+                # nesting inside "config".  Merge any top-level keys that
+                # aren't meta-keys so the frontend always gets the full payload.
+                _META_KEYS = {"widget_type", "config"}
+                for k, v in tool_args.items():
+                    if k not in _META_KEYS and k not in config:
+                        config[k] = v
+                widget_id = str(uuid.uuid4())
+                
+                # Embed is display-only — no response needed
+                if widget_type == "embed":
+                    yield json.dumps({"type": "interactive", "data": {
+                        "widget_id": widget_id, "widget_type": "embed", **config
+                    }})
+                    tool_result = "Embed displayed to user."
+                    sandbox_images = []
+                    html_artifact = ""
+                else:
+                    event = _register_interactive(widget_id)
+                    yield json.dumps({"type": "interactive", "data": {
+                        "widget_id": widget_id, "widget_type": widget_type, **config
+                    }})
+                    # Poll with keepalive pings so the SSE stream doesn't stall
+                    KEEPALIVE_INTERVAL = 15  # seconds between pings
+                    MAX_WAIT = 300  # 5 min total timeout
+                    elapsed = 0
+                    while elapsed < MAX_WAIT:
+                        if event.wait(timeout=KEEPALIVE_INTERVAL):
+                            break  # User responded
+                        elapsed += KEEPALIVE_INTERVAL
+                        yield json.dumps({"type": "keepalive", "data": {"waiting_for": widget_id}})
+                    state = _pop_interactive(widget_id)
+                    if state.get("dismissed"):
+                        tool_result = "User dismissed/skipped the input widget. Continue without this input."
+                    elif state.get("response") is not None:
+                        resp = state["response"]
+                        tool_result = f"User response: {json.dumps(resp) if isinstance(resp, (dict, list)) else str(resp)}"
+                    else:
+                        tool_result = "User input timed out. Continue without this input."
+                    sandbox_images = []
+                    html_artifact = ""
+                
+                result_data = {"name": tool_name, "result": tool_result, "images": []}
+                yield json.dumps({"type": "tool_result", "data": result_data})
+                current_history.append({"role": "assistant", "content": text.strip() or "[Requesting input...]"})
+                current_history.append({"role": "user", "content": f"Tool result for {tool_name}: {tool_result}"})
+                continue
             
             # Block dangerous tools for network (non-local) clients
-            SHELL_TOOLS = {"run_command", "execute_python", "execute_cpp"}
+            SHELL_TOOLS = {"run_command", "execute_python", "execute_cpp", "write_file"}
             if not self.allow_shell and tool_name in SHELL_TOOLS:
                 tool_result = "Error: Shell/code execution is disabled for network clients. Only the local machine can run commands."
                 sandbox_images = []
@@ -928,6 +950,17 @@ class Agent:
                 result_data["html"] = html_artifact
             yield json.dumps({"type": "tool_result", "data": result_data})
             
+            # Update knowledge graph with tool result
+            try:
+                self.graph.set_round(tool_round)
+                self.graph.add_tool_result(
+                    tool_name, tool_args, str(tool_result),
+                    has_images=bool(sandbox_images)
+                )
+                self.graph._prune_old_results()
+            except Exception as kg_err:
+                logger.debug(f"Knowledge graph update failed: {kg_err}")
+            
             # ── 4. Build enriched context for next round ──
             is_failure = tool_result in ("(no output)", "") or str(tool_result).startswith("Error:") or "Traceback" in str(tool_result)
             consecutive_failures = consecutive_failures + 1 if is_failure else 0
@@ -936,6 +969,19 @@ class Agent:
             call_sig = f"{tool_name}:{json.dumps(tool_args, sort_keys=True)[:200]}"
             if is_failure and call_sig in session_errors:
                 consecutive_failures = max(consecutive_failures, 3)  # Immediate escalation for repeated identical failures
+
+            # Error-pattern loop detection: same error type from same tool = stuck
+            if is_failure and tool_name in ("execute_python", "execute_cpp"):
+                # Extract the core error line (e.g. "ValueError: Invalid property...")
+                err_lines = str(tool_result).strip().splitlines()
+                core_err = err_lines[-1] if err_lines else ""
+                err_pattern = f"{tool_name}::{core_err[:100]}"
+                _error_patterns = getattr(self, '_error_patterns', [])
+                if err_pattern in _error_patterns:
+                    logger.warning(f"Same error pattern repeated: {core_err[:80]}")
+                    consecutive_failures = max(consecutive_failures, 3)
+                _error_patterns.append(err_pattern)
+                self._error_patterns = _error_patterns
 
             if consecutive_failures >= 3:
                 yield json.dumps({"type": "status", "data": "Multiple tools failed. Generating final response…"})
@@ -953,13 +999,25 @@ class Agent:
                 result_context += f"\n[{len(sandbox_images)} image(s) were generated and displayed to the user. Do NOT recreate or describe them — the user can already see them."
                 if _saved:
                     result_context += f" The edited image is auto-saved at: {_saved}. For further edits, use `img = img_load('{_saved}')` or the persisted variable `_current_image`."
-                result_context += " Your task is likely complete. Provide a brief summary and STOP calling tools.]"
+                result_context += "]"
+                # Only force stop for image tasks if we're past early exploration
+                if tool_round >= 2:
+                    result_context += "\n[SYSTEM] ✅ Output is visible. Give a 1-2 sentence summary and STOP unless the user's request requires more steps."
             if html_artifact:
-                result_context += "\n[An interactive visualization was generated and displayed. Your task is likely complete. Summarize and STOP calling tools.]"
+                result_context += "\n[SYSTEM] HTML artifact displayed to user. If this completes the request, give a brief summary. If more work is needed (e.g., user asked for multiple things), continue with the next step."
+            if tool_name == "write_file" and not is_failure:
+                result_context += "\n[SYSTEM] File written successfully. Do NOT re-read or re-write the same file. If the task is complete, summarize and STOP."
+            if tool_name == "execute_python" and not is_failure and not sandbox_images and not html_artifact:
+                result_context += "\n[SYSTEM] Code executed successfully. If the user's request is fulfilled, summarize and STOP. Do NOT re-run the same code."
             if tool_name == "execute_python" and "Traceback" in str(tool_result):
                 result_context += "\n[IMPORTANT: Fix ONLY the specific error in your code — do NOT rewrite from scratch. Make a minimal targeted edit to the failing line(s).]"
             # Inject round counter so model knows budget
             result_context += f"\n[Tool round {tool_round + 1}/{MAX_TOOL_ROUNDS}]"
+            # Inject knowledge map every 3 rounds so model sees cumulative structured progress
+            if (tool_round + 1) % 3 == 0 and self.graph.nodes:
+                _kmap = self.graph.get_compact_map(max_tokens=300)
+                if _kmap:
+                    result_context += _kmap
             # Inject error history to prevent repeats
             if is_failure:
                 err_summary = f"{tool_name}({json.dumps(tool_args)[:80]}): {str(tool_result)[:120]}"
@@ -974,22 +1032,70 @@ class Agent:
             history_text = re.sub(r'<tool_call>[\s\S]*$', '', history_text, flags=re.IGNORECASE)
             history_text = re.sub(r'<\|tool_call\|>[\s\S]*$', '', history_text)
             history_text = history_text.strip()
-            current_history.append({"role": "assistant", "content": history_text or "[Calling tool...]"})
+            # Use minimal placeholder for tool-only rounds to prevent model echoing
+            # The frontend strips "(used tool)" via cleanContent regex
+            if not history_text:
+                history_text = "(used tool)"
+            current_history.append({"role": "assistant", "content": history_text})
+            
+            # Auto-track tool activity for continuation context (independent of model calling save_notes)
+            _tool_log_entry = f"{tool_name}"
+            if tool_name in ("read_file", "write_file", "edit_file"):
+                _tool_log_entry += f"({tool_args.get('path', '')})"
+            elif tool_name in ("list_directory",):
+                _tool_log_entry += f"({tool_args.get('path', '')})"
+            elif tool_name in ("grep_code",):
+                _tool_log_entry += f"(pattern={tool_args.get('pattern', '')})"
+            elif tool_name in ("search_files",):
+                _tool_log_entry += f"({tool_args.get('pattern', '')})"
+            elif tool_name in ("run_command",):
+                _tool_log_entry += f"({tool_args.get('command', '')[:50]})"
+            _tool_activity_log.append(_tool_log_entry)
+            
+            # Anti-repeat: if model has generated substantial text across rounds, remind it
+            if len(accumulated_response_text) > 200 and tool_round > 0:
+                result_context += (
+                    "\n[IMPORTANT: Your previous text is ALREADY visible to the user. "
+                    "Do NOT repeat introductions, headings, or content you already wrote. "
+                    "Continue naturally from where you left off — keep your next response SHORT and focused.]"
+                )
+            
             current_history.append({"role": "user", "content": result_context})
             
             if consecutive_failures >= 3:
-                final_res = self.model_client.generate(current_history, max_tokens=self.config.suggested_tokens, thinking=False)
-                _, final_text = parse_thinking(final_res)
-                yield json.dumps({"type": "token", "data": final_text})
-                yield json.dumps({"type": "done", "data": final_text})
+                # Stream the final response instead of blocking generate
+                final_text = ""
+                for chunk in self.model_client.stream_generate(
+                    messages=current_history,
+                    max_tokens=self.config.suggested_tokens,
+                    thinking=False,
+                    temperature=getattr(self.config, 'suggested_temperature', None),
+                    top_p=getattr(self.config, 'suggested_top_p', None)
+                ):
+                    final_text += chunk
+                    yield json.dumps({"type": "token", "data": chunk})
+                _, clean_final = parse_thinking(final_text)
+                yield json.dumps({"type": "done", "data": clean_final})
                 break
         else:
-            # Hit max rounds — produce a final summary
-            current_history.append({"role": "user", "content": "You have reached the maximum number of tool rounds. Summarize your findings and give your best final answer with the information gathered so far."})
-            final_res = self.model_client.generate(current_history, max_tokens=self.config.suggested_tokens, thinking=False)
-            _, final_text = parse_thinking(final_res)
-            yield json.dumps({"type": "token", "data": final_text})
-            yield json.dumps({"type": "done", "data": final_text})
+            # Auto-save tool activity before max-round summary
+            if _tool_activity_log:
+                _auto_notes = "Tools used this session: " + ", ".join(_tool_activity_log)
+                _save_session_notes(notes=_auto_notes, mode="append")
+            # Hit max rounds — produce a final summary (streaming)
+            current_history.append({"role": "user", "content": "You have reached the maximum number of tool rounds. Summarize your findings and give your best final answer with the information gathered so far. Tell the user they can say 'continue' to keep going."})
+            final_text = ""
+            for chunk in self.model_client.stream_generate(
+                messages=current_history,
+                max_tokens=self.config.suggested_tokens,
+                thinking=False,
+                temperature=getattr(self.config, 'suggested_temperature', None),
+                top_p=getattr(self.config, 'suggested_top_p', None)
+            ):
+                final_text += chunk
+                yield json.dumps({"type": "token", "data": chunk})
+            _, clean_final = parse_thinking(final_text)
+            yield json.dumps({"type": "done", "data": clean_final})
         
         # Post-conversation: extract memories & update context in background thread
         def _post_conversation_tasks():

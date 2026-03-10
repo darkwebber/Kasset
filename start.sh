@@ -2,8 +2,11 @@
 set -e
 
 # ─── Kasset — One-Command Launcher ─────────────────────────────
-# Usage: ./start.sh [--update]
-# Flags: --update  Force reinstall of all dependencies
+# Usage: ./start.sh [--update] [--no-browser] [--help]
+# Flags:
+#   --update      Force reinstall of all dependencies
+#   --no-browser  Don't auto-open the browser on startup
+#   --help        Show usage and exit
 # Handles: venv creation, dependency install, port checks,
 #          backend + frontend startup, and clean shutdown.
 # ────────────────────────────────────────────────────────────────
@@ -30,9 +33,25 @@ dim()  { echo -e "  ${D}$1${N}"; }
 
 # ── Flags ──
 FORCE_UPDATE=false
+AUTO_BROWSER=true
 for arg in "$@"; do
     case "$arg" in
         --update) FORCE_UPDATE=true ;;
+        --no-browser) AUTO_BROWSER=false ;;
+        --help|-h)
+            echo "Usage: ./start.sh [--update] [--no-browser] [--help]"
+            echo ""
+            echo "Flags:"
+            echo "  --update       Force reinstall of all dependencies"
+            echo "  --no-browser   Don't auto-open browser on startup"
+            echo "  --help, -h     Show this help message"
+            echo ""
+            echo "Requirements: Python 3.10+, Node.js 18+, ~8GB RAM"
+            echo "Recommended:  macOS with Apple Silicon (M1/M2/M3/M4)"
+            echo ""
+            echo "Data stored in: ~/.kasset/"
+            exit 0
+            ;;
     esac
 done
 
@@ -186,12 +205,14 @@ mkdir -p "$HOME/.kasset"/{chats,context/cartridges,cache,uploads,workspace,tools
 
 BACKEND_PID=""
 FRONTEND_PID=""
+SIGNAL_PID=""
 
 cleanup() {
     echo ""
     echo -e "  ${D}Shutting down Kasset...${N}"
     # Kill process groups to catch child processes
     [ -n "$FRONTEND_PID" ] && kill -- -"$FRONTEND_PID" 2>/dev/null || kill "$FRONTEND_PID" 2>/dev/null || true
+    [ -n "$SIGNAL_PID" ] && kill -- -"$SIGNAL_PID" 2>/dev/null || kill "$SIGNAL_PID" 2>/dev/null || true
     [ -n "$BACKEND_PID" ] && kill -- -"$BACKEND_PID" 2>/dev/null || kill "$BACKEND_PID" 2>/dev/null || true
     wait 2>/dev/null
     echo -e "  ${G}Done.${N} See you next time."
@@ -247,6 +268,14 @@ done
 # START FRONTEND
 # ═══════════════════════════════════════════
 
+# Start signal processing subsystem (background, logs to stderr)
+if [ -f "backend/core/signal_engine/logic_bridge.py" ]; then
+    SIGNAL_LOG="$HOME/.kasset/cache/signal_engine.log"
+    python -m backend.core.signal_engine.logic_bridge 2>"$SIGNAL_LOG" &
+    SIGNAL_PID=$!
+    ok "Signal engine ${D}(port 8765, log: ~/.kasset/cache/signal_engine.log)${N}"
+fi
+
 info "Starting frontend ${D}(port 3000)${N}..."
 (cd frontend && npx next dev --hostname 0.0.0.0 --port 3000 2>&1) &
 FRONTEND_PID=$!
@@ -278,6 +307,16 @@ fi
 echo -e "  ${G}║${N}  Press ${W}Ctrl+C${N} to stop                 ${G}║${N}"
 echo -e "  ${G}╚═══════════════════════════════════════╝${N}"
 echo ""
+
+# Auto-open browser
+if [ "$AUTO_BROWSER" = true ]; then
+    sleep 2
+    if command -v open &>/dev/null; then
+        open "http://localhost:3000" 2>/dev/null &
+    elif command -v xdg-open &>/dev/null; then
+        xdg-open "http://localhost:3000" 2>/dev/null &
+    fi
+fi
 
 # Keep running until a process exits or user hits Ctrl+C
 wait

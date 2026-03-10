@@ -37,6 +37,9 @@ export interface LoadedConfig {
   suggested_thinking: boolean;
   suggested_max_rounds: number;
   suggested_model: string | null;
+  suggested_temperature: number | null;
+  suggested_top_p: number | null;
+  input_methods: Array<string | Record<string, any>>;
 }
 
 interface CartridgeState {

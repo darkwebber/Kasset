@@ -9,55 +9,21 @@ Three layers of context:
 Each layer can be toggled on/off by the user via UserSettings.
 """
 
-import os
 import json
 import re
 import logging
-import fcntl
-import tempfile
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
+from backend.core.shared import (
+    atomic_write_json as _atomic_write_json,
+    CONTEXT_DIR, GLOBAL_PROFILE_FILE, SETTINGS_FILE,
+)
+
 logger = logging.getLogger(__name__)
 
-# Storage directories
-DATA_DIR = Path.home() / ".kasset"
-CONTEXT_DIR = DATA_DIR / "context"
 CARTRIDGE_CONTEXT_DIR = CONTEXT_DIR / "cartridges"
-GLOBAL_PROFILE_FILE = CONTEXT_DIR / "global_profile.json"
-SETTINGS_FILE = DATA_DIR / "settings.json"
-
-
-def _ensure_dirs():
-    CONTEXT_DIR.mkdir(parents=True, exist_ok=True)
-    CARTRIDGE_CONTEXT_DIR.mkdir(parents=True, exist_ok=True)
-
-
-_ensure_dirs()
-
-
-def _atomic_write_json(path: Path, data, indent: int = 2):
-    """Write JSON atomically with file locking."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = path.with_suffix(path.suffix + ".lock")
-    try:
-        with open(lock_path, "w") as lf:
-            fcntl.flock(lf, fcntl.LOCK_EX)
-            try:
-                fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-                try:
-                    with os.fdopen(fd, "w") as f:
-                        json.dump(data, f, ensure_ascii=False, indent=indent)
-                    os.replace(tmp, str(path))
-                except Exception:
-                    try: os.unlink(tmp)
-                    except OSError: pass
-                    raise
-            finally:
-                fcntl.flock(lf, fcntl.LOCK_UN)
-    except Exception:
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=indent))
 
 
 # ═══════════════════════════════════════════
@@ -351,7 +317,67 @@ class CartridgeContext:
             for l in ctx["learnings"][-5:]:
                 parts.append(f"- {l}")
 
+        # Inject feedback patterns from saved chats for this cartridge
+        try:
+            feedback_block = CartridgeContext._get_feedback_patterns(cartridge_id)
+            if feedback_block:
+                parts.append(feedback_block)
+        except Exception:
+            pass
+
         return "\n".join(parts)
+
+    @staticmethod
+    def _get_feedback_patterns(cartridge_id: str) -> str:
+        """Extract recent negative feedback patterns for this cartridge from saved chats."""
+        from backend.core.shared import CHATS_DIR
+        down_snippets = []
+        up_count = 0
+        down_count = 0
+
+        for f in sorted(CHATS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:50]:
+            try:
+                import json as _json
+                data = _json.loads(f.read_text())
+                # Only process chats that used this cartridge
+                if cartridge_id not in data.get("cartridge_ids", []):
+                    continue
+                feedback = data.get("feedback", {})
+                messages = data.get("messages", [])
+                for idx_str, fb in feedback.items():
+                    if fb.get("rating") == "up":
+                        up_count += 1
+                    elif fb.get("rating") == "down":
+                        down_count += 1
+                        idx = int(idx_str)
+                        # Get the user message BEFORE the downvoted assistant message
+                        if idx > 0 and idx < len(messages):
+                            user_msg = ""
+                            for i in range(idx - 1, -1, -1):
+                                if messages[i].get("role") == "user":
+                                    user_msg = messages[i].get("content", "")[:100]
+                                    break
+                            assistant_msg = messages[idx].get("content", "")[:100]
+                            if user_msg and not user_msg.startswith("Tool result"):
+                                down_snippets.append(f"Q: {user_msg} → Response disliked")
+            except Exception:
+                continue
+
+        if not down_snippets and up_count == 0:
+            return ""
+
+        parts = []
+        total = up_count + down_count
+        if total >= 3:
+            rate = round(up_count / total * 100)
+            parts.append(f"**Feedback:** {rate}% satisfaction ({up_count}↑ {down_count}↓)")
+
+        if down_snippets:
+            parts.append("**Avoid repeating these patterns (user disliked):**")
+            for s in down_snippets[-5:]:
+                parts.append(f"- {s}")
+
+        return "\n".join(parts) if parts else ""
 
     @staticmethod
     def clear(cartridge_id: str):

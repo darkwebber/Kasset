@@ -20,6 +20,7 @@ import { TOOL_META, getToolMeta, TOOL_DISPLAY, TOOL_EXAMPLES } from "./chat/tool
 import ThinkingBlock from "./chat/ThinkingBlock";
 import ToolCallCard from "./chat/ToolCallCard";
 import InteractiveWidget from "./chat/InteractiveWidget";
+import DraftBlock, { DraftContext } from "./chat/DraftBlock";
 import WelcomeScreen from "./chat/WelcomeScreen";
 import Tutorial from "./Tutorial";
 import { useCartridgeStore } from "@/stores/cartridgeStore";
@@ -165,12 +166,28 @@ function extractStreamText(accumulated: string): string {
 function collapseExactDouble(text: string): string {
   const t = text.trim();
   if (t.length < 300) return t;
+  // 1. Exact-half dedup (original logic)
   const minChunk = Math.floor(t.length * 0.3);
   const maxChunk = Math.floor(t.length * 0.7);
   for (let cut = minChunk; cut <= maxChunk; cut++) {
     const a = t.slice(0, cut).trim();
     const b = t.slice(cut).trim();
     if (a.length > 100 && a === b) return a;
+  }
+  // 2. Paragraph-level dedup: remove duplicate paragraph blocks (≥3 lines)
+  const paragraphs = t.split(/\n{2,}/);
+  if (paragraphs.length >= 4) {
+    const seen = new Set<string>();
+    const unique: string[] = [];
+    for (const p of paragraphs) {
+      const key = p.trim().toLowerCase().replace(/\s+/g, " ");
+      if (key.length > 80 && seen.has(key)) continue;
+      if (key.length > 80) seen.add(key);
+      unique.push(p);
+    }
+    if (unique.length < paragraphs.length) {
+      return unique.join("\n\n");
+    }
   }
   return t;
 }
@@ -587,6 +604,11 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
         if (match[1] === "mermaid") {
           return <MermaidDiagram code={codeStr} />;
         }
+        // Render text/draft/email/markdown as interactive DraftBlock
+        const DRAFT_LANGS = new Set(["text", "draft", "email", "markdown", "md"]);
+        if (DRAFT_LANGS.has(match[1]) && codeStr.length > 20) {
+          return <DraftBlock content={codeStr} language={match[1]} />;
+        }
         // Render HTML code blocks with live preview toggle
         if (match[1] === "html" && codeStr.includes("<") && codeStr.length > 40) {
           return <HtmlPreviewBlock code={codeStr} />;
@@ -664,6 +686,22 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
       );
     },
   }), []);
+
+  // DraftBlock "Refine" callback — sends the draft text back to the agent for improvement
+  const handleDraftRefine = useCallback((draftText: string) => {
+    if (isGenerating || !activeConfig) return;
+    const userContent = `Please refine and improve this draft. Suggest specific changes and provide the improved version in a \`\`\`text code block:\n\n\`\`\`text\n${draftText}\n\`\`\``;
+    let history = [...messages];
+    if (history.length === 0 && activeConfig.boot_messages.length > 0) {
+      history.push({ role: "assistant", content: activeConfig.boot_messages[0] });
+    }
+    const userMsg: Message = { role: "user", content: userContent };
+    const newMessages = [...history, userMsg];
+    setMessages(newMessages);
+    submitFromMessages(newMessages, userContent);
+  }, [isGenerating, activeConfig, messages]);
+
+  const draftCtx = useMemo(() => ({ onRefine: handleDraftRefine }), [handleDraftRefine]);
 
   // Handle clicking an example prompt from the welcome screen
   const handleWelcomePrompt = (prompt: string) => {
@@ -1641,6 +1679,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
             onOpenSearch={() => openDrawerTo("history", true)}
           />
         ) : (
+        <DraftContext.Provider value={draftCtx}>
         <div ref={scrollRef} role="log" aria-live="polite" aria-label="Chat messages" className="flex-1 min-h-0 overflow-y-auto crt-scroll pr-2 sm:pr-4 space-y-3 sm:space-y-4">
           {/* Compact tool info strip — always visible at top of chat */}
           {activeConfig && activeConfig.tools.length > 0 && (
@@ -1813,6 +1852,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
             </div>
           )}
         </div>
+        </DraftContext.Provider>
         )}
       </div>
 

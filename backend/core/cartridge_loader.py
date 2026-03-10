@@ -44,8 +44,20 @@ class Cartridge(BaseModel):
     suggested_tokens: int = 4096
     suggested_thinking: bool = True
     suggested_max_rounds: int = 6
+    suggested_temperature: Optional[float] = None
+    suggested_top_p: Optional[float] = None
     memory_enabled: bool = False
     suggested_model: Optional[str] = None
+    # Sharing / distribution metadata (optional)
+    long_description: Optional[str] = None
+    repository: Optional[str] = None
+    homepage: Optional[str] = None
+    license: Optional[str] = None
+    min_app_version: Optional[str] = None
+    readme: Optional[str] = None
+
+    class Config:
+        extra = "allow"  # Forward-compatible: ignore unknown fields from newer versions
 
 class LoadedConfig(BaseModel):
     merged_prompt: str
@@ -57,7 +69,10 @@ class LoadedConfig(BaseModel):
     suggested_tokens: int
     suggested_thinking: bool
     suggested_max_rounds: int = 6
+    suggested_temperature: Optional[float] = None
+    suggested_top_p: Optional[float] = None
     suggested_model: Optional[str] = None
+    input_methods: List[Dict[str, Any]] = []
 
 class CartridgeLoader:
     def __init__(self, cartridges_dir: str = "cartridges/builtins"):
@@ -206,6 +221,12 @@ class CartridgeLoader:
                     "accent_color": c.theme.accent_color,
                     "glow_color": c.theme.glow_color,
                 },
+                # Sharing metadata (optional — may be None)
+                **({"repository": c.repository} if c.repository else {}),
+                **({"homepage": c.homepage} if c.homepage else {}),
+                **({"license": c.license} if c.license else {}),
+                **({"readme": c.readme} if c.readme else {}),
+                **({"long_description": c.long_description} if c.long_description else {}),
             }
             for c in self.registry.values()
         ]
@@ -273,6 +294,37 @@ class CartridgeLoader:
                 if p not in suggested_prompts:
                     suggested_prompts.append(p)
 
+        # Collect custom input method templates (optional)
+        # Methods can be either inline dicts or string IDs referencing standalone input types
+        input_methods: List[Dict[str, Any]] = []
+        seen_method_ids = set()
+        
+        # Import input type loader for resolving string references
+        try:
+            from .input_type_loader import input_type_loader
+        except ImportError:
+            input_type_loader = None
+        
+        for c in carts:
+            methods = getattr(c, "input_methods", []) or []
+            if not isinstance(methods, list):
+                continue
+            for m in methods:
+                # Resolve string IDs from InputTypeLoader
+                if isinstance(m, str) and input_type_loader:
+                    resolved = input_type_loader.resolve_input_method(m)
+                    if resolved:
+                        m = resolved
+                    else:
+                        continue
+                if not isinstance(m, dict):
+                    continue
+                mid = str(m.get("id", "")).strip() or f"method-{len(input_methods)+1}"
+                if mid in seen_method_ids:
+                    continue
+                seen_method_ids.add(mid)
+                input_methods.append(m)
+
         # Validate tool IDs against known tools (warn, don't error — plugins may load later)
         try:
             from .tool_registry import BUILTIN_TOOLS
@@ -294,5 +346,8 @@ class CartridgeLoader:
             suggested_tokens=carts[-1].suggested_tokens,
             suggested_thinking=carts[-1].suggested_thinking,
             suggested_max_rounds=max(c.suggested_max_rounds for c in carts),
+            suggested_temperature=next((c.suggested_temperature for c in reversed(carts) if c.suggested_temperature is not None), None),
+            suggested_top_p=next((c.suggested_top_p for c in reversed(carts) if c.suggested_top_p is not None), None),
             suggested_model=next((c.suggested_model for c in reversed(carts) if c.suggested_model), None),
+            input_methods=input_methods,
         )

@@ -1,63 +1,18 @@
-"""
-Chat persistence and user memory system.
+"""Chat persistence and user memory system.
 Stores conversations and learned user preferences to disk as JSON.
 """
-import os
 import json
 import logging
 import time
 import hashlib
 import secrets
-import fcntl
-import tempfile
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
+from backend.core.shared import atomic_write_json as _atomic_write_json, CHATS_DIR, CACHE_DIR, USER_MEMORY_FILE as USER_FILE
+
 logger = logging.getLogger(__name__)
-
-# Storage directories
-DATA_DIR = Path.home() / ".kasset"
-CHATS_DIR = DATA_DIR / "chats"
-USER_FILE = DATA_DIR / "user_memory.json"
-CACHE_DIR = DATA_DIR / "cache"
-
-
-def _ensure_dirs():
-    CHATS_DIR.mkdir(parents=True, exist_ok=True)
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
-
-_ensure_dirs()
-
-
-def _atomic_write_json(path: Path, data: Any, indent: int = 2):
-    """Write JSON to a file atomically using write-to-temp + rename.
-    Uses fcntl advisory locking to prevent concurrent write corruption."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = path.with_suffix(path.suffix + ".lock")
-    try:
-        with open(lock_path, "w") as lock_file:
-            fcntl.flock(lock_file, fcntl.LOCK_EX)
-            try:
-                fd, tmp_path = tempfile.mkstemp(
-                    dir=str(path.parent), suffix=".tmp", prefix=".write_"
-                )
-                try:
-                    with os.fdopen(fd, "w") as f:
-                        json.dump(data, f, ensure_ascii=False, indent=indent)
-                    os.replace(tmp_path, str(path))
-                except Exception:
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
-                    raise
-            finally:
-                fcntl.flock(lock_file, fcntl.LOCK_UN)
-    except Exception:
-        # Fallback: direct write if locking fails (e.g. filesystem doesn't support locks)
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=indent))
 
 
 # ═══════════════════════════════════════════
@@ -70,6 +25,29 @@ class ChatStore:
     @staticmethod
     def _chat_path(chat_id: str) -> Path:
         return CHATS_DIR / f"{chat_id}.json"
+
+    @staticmethod
+    def _graph_path(chat_id: str) -> Path:
+        return CHATS_DIR / f"{chat_id}.graph.json"
+
+    @staticmethod
+    def save_graph(chat_id: str, graph_data: dict) -> None:
+        """Persist a conversation's knowledge graph."""
+        try:
+            _atomic_write_json(ChatStore._graph_path(chat_id), graph_data, indent=0)
+        except Exception as e:
+            logger.warning(f"Failed to save graph for {chat_id}: {e}")
+
+    @staticmethod
+    def load_graph(chat_id: str) -> Optional[dict]:
+        """Load a conversation's knowledge graph."""
+        path = ChatStore._graph_path(chat_id)
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            return None
 
     @staticmethod
     def generate_id() -> str:
@@ -224,6 +202,60 @@ class ChatStore:
             path.unlink()
             return True
         return False
+
+    @staticmethod
+    def save_feedback(chat_id: str, message_index: int, rating: str, comment: str = "") -> bool:
+        """Save thumbs up/down feedback for a specific message. rating: 'up' | 'down'."""
+        path = ChatStore._chat_path(chat_id)
+        if not path.exists():
+            return False
+        try:
+            data = json.loads(path.read_text())
+            if "feedback" not in data:
+                data["feedback"] = {}
+            data["feedback"][str(message_index)] = {
+                "rating": rating,
+                "comment": comment,
+                "timestamp": datetime.now().isoformat(),
+            }
+            _atomic_write_json(path, data)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save feedback for {chat_id}[{message_index}]: {e}")
+            return False
+
+    @staticmethod
+    def get_feedback_stats() -> dict:
+        """Aggregate feedback statistics across all chats for self-learning insights."""
+        total_up = 0
+        total_down = 0
+        down_contexts: list = []
+        for f in CHATS_DIR.glob("*.json"):
+            try:
+                data = json.loads(f.read_text())
+                feedback = data.get("feedback", {})
+                messages = data.get("messages", [])
+                for idx_str, fb in feedback.items():
+                    if fb.get("rating") == "up":
+                        total_up += 1
+                    elif fb.get("rating") == "down":
+                        total_down += 1
+                        idx = int(idx_str)
+                        if idx > 0 and idx < len(messages):
+                            down_contexts.append({
+                                "chat_id": data.get("id"),
+                                "message": messages[idx].get("content", "")[:200],
+                                "timestamp": fb.get("timestamp"),
+                            })
+            except Exception:
+                continue
+        return {
+            "total_up": total_up,
+            "total_down": total_down,
+            "total": total_up + total_down,
+            "satisfaction_rate": round(total_up / (total_up + total_down) * 100, 1) if (total_up + total_down) > 0 else None,
+            "recent_down_contexts": down_contexts[-10:],
+        }
 
     @staticmethod
     def _auto_title(messages: List[Dict]) -> str:

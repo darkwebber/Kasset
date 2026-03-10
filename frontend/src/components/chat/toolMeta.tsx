@@ -1,5 +1,5 @@
 import React from "react";
-import { FileText, Terminal, Play, Search, FolderOpen, Calculator, Clock, Wrench, Globe, Rss, MapPin } from "lucide-react";
+import { FileText, Terminal, Play, Search, FolderOpen, Calculator, Clock, Wrench, Globe, Rss, MapPin, MessageSquare, Code, StickyNote, FileCode, Pencil } from "lucide-react";
 
 export const TOOL_META: Record<string, { icon: React.ReactNode; label: string; color: string }> = {
   read_file:       { icon: <FileText size={13} />,   label: "Reading file",       color: "#60a5fa" },
@@ -15,6 +15,12 @@ export const TOOL_META: Record<string, { icon: React.ReactNode; label: string; c
   read_url:        { icon: <Globe size={13} />,        label: "Reading URL",        color: "#2dd4bf" },
   read_rss:        { icon: <Rss size={13} />,          label: "Reading RSS",        color: "#fb923c" },
   get_location:    { icon: <MapPin size={13} />,       label: "Getting location",   color: "#f472b6" },
+  request_user_input: { icon: <MessageSquare size={13} />, label: "Requesting input", color: "#a78bfa" },
+  write_file:      { icon: <FileText size={13} />,   label: "Writing file",       color: "#4ade80" },
+  edit_file:       { icon: <Pencil size={13} />,     label: "Editing file",       color: "#fbbf24" },
+  grep_code:       { icon: <Search size={13} />,     label: "Searching code",     color: "#c084fc" },
+  html_preview:    { icon: <Code size={13} />,       label: "HTML preview",       color: "#22d3ee" },
+  save_notes:      { icon: <StickyNote size={13} />, label: "Saving notes",       color: "#a3e635" },
 };
 
 export function getToolMeta(name: string) {
@@ -35,6 +41,12 @@ export const TOOL_DISPLAY: Record<string, string> = {
   read_url: "URL Reader",
   read_rss: "RSS Reader",
   get_location: "Location",
+  request_user_input: "User Input",
+  write_file: "File Writer",
+  edit_file: "Editor",
+  grep_code: "Code Search",
+  html_preview: "HTML Preview",
+  save_notes: "Notes",
 };
 
 export const TOOL_EXAMPLES: Record<string, string> = {

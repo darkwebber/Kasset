@@ -24,6 +24,27 @@
       "type": "string",
       "description": "Detailed markdown description for store listing"
     },
+    "repository": {
+      "type": "string",
+      "description": "URL to the source repository (GitHub, GitLab, etc.)"
+    },
+    "homepage": {
+      "type": "string",
+      "description": "URL to the cartridge's homepage or documentation"
+    },
+    "license": {
+      "type": "string",
+      "description": "SPDX license identifier (e.g., 'MIT', 'Apache-2.0', 'GPL-3.0')"
+    },
+    "min_app_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Minimum Kasset app version required (semver)"
+    },
+    "readme": {
+      "type": "string",
+      "description": "Inline markdown readme with usage instructions, shown in the store"
+    },
     "icon": {
       "type": "string",
       "description": "Emoji or URL to pixel art icon"
@@ -173,9 +194,26 @@
       "default": 6,
       "description": "Maximum number of tool-calling rounds per turn"
     },
+    "suggested_temperature": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 2.0,
+      "description": "Preferred sampling temperature (0.0-2.0). Higher = more creative, lower = more deterministic. If not set, defaults are used (1.0 for thinking, 0.7 otherwise)."
+    },
+    "suggested_top_p": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "Preferred nucleus sampling threshold (0.0-1.0). If not set, defaults are used (0.95 for thinking, 0.8 otherwise)."
+    },
     "suggested_model": {
       "type": "string",
       "description": "Preferred model ID for this kasset (e.g. 'mlx-community/Qwen3.5-9B-MLX-4bit'). If set, the UI will suggest switching to this model when the kasset is loaded."
+    },
+    "input_methods": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Input type IDs this kasset exposes for request_user_input calls (e.g. 'file_selector', 'range_slider', 'code_reviewer'). Each ID must match a builtin or user-installed input type manifest."
     }
   },
   "additionalProperties": true

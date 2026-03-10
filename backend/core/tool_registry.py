@@ -180,8 +180,8 @@ def _extract_code_structure(content: str, ext: str) -> str:
     return "\n\n".join(sections)
 
 
-def read_file(path: str, max_lines: int = 100) -> str:
-    """Read a text file. For files over 50KB, returns a structural overview instead of erroring."""
+def read_file(path: str, max_lines: int = 100, start_line: int = 0, end_line: int = 0) -> str:
+    """Read a text file. Use start_line/end_line (1-indexed) to read specific line ranges. For files over 50KB with no range, returns a structural overview."""
     try:
         fp = Path(path).expanduser().resolve()
         err = _check_path_access(fp)
@@ -199,13 +199,23 @@ def read_file(path: str, max_lines: int = 100) -> str:
             return "Error: Binary file detected - cannot display"
         
         lines = content.splitlines()
+        total_lines = len(lines)
+        
+        # Line range mode: return specific lines with line numbers
+        if start_line > 0:
+            s = max(1, int(start_line)) - 1  # Convert to 0-indexed
+            e = min(total_lines, int(end_line)) if end_line > 0 else min(s + 200, total_lines)
+            selected = lines[s:e]
+            numbered = [f"{i+s+1:4d} | {line}" for i, line in enumerate(selected)]
+            header = f"=== {fp.name} (lines {s+1}-{e} of {total_lines}) ==="
+            return header + "\n" + "\n".join(numbered)
         
         # Large file: return structural overview instead of erroring
         if size > 50 * 1024:
             ext = fp.suffix.lower()
             overview = _extract_code_structure(content, ext)
-            header = f"=== {fp.name} ({len(lines)} lines, {size // 1024}KB) — STRUCTURAL OVERVIEW ===\n"
-            header += f"(File too large for full read. Showing imports, signatures, and exports.)\n\n"
+            header = f"=== {fp.name} ({total_lines} lines, {size // 1024}KB) — STRUCTURAL OVERVIEW ===\n"
+            header += f"(File too large for full read. Use start_line/end_line to read specific sections.)\n\n"
             if overview:
                 result = header + overview
                 # Also show first 20 and last 10 lines for context
@@ -218,12 +228,119 @@ def read_file(path: str, max_lines: int = 100) -> str:
                 # Fallback: show head + tail
                 head = "\n".join(lines[:50])
                 tail = "\n".join(lines[-20:])
-                return header + head + f"\n\n... ({len(lines) - 70} lines omitted) ...\n\n" + tail
+                return header + head + f"\n\n... ({total_lines - 70} lines omitted) ...\n\n" + tail
             
         max_lines = min(max(1, int(max_lines)), 200)
-        if len(lines) > max_lines:
-            content = "\n".join(lines[:max_lines]) + f"\n... ({len(lines) - max_lines} more lines)"
-        return f"=== {fp.name} ({len(lines)} lines, {size} bytes) ===\n{content}"
+        if total_lines > max_lines:
+            content = "\n".join(lines[:max_lines]) + f"\n... ({total_lines - max_lines} more lines)"
+        return f"=== {fp.name} ({total_lines} lines, {size} bytes) ===\n{content}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+def write_file(path: str, content: str, mode: str = "overwrite") -> str:
+    """Write text content to a file. mode: 'overwrite' (default) or 'append'."""
+    try:
+        fp = Path(path).expanduser().resolve()
+        err = _check_path_access(fp)
+        if err: return err
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        if mode == "append":
+            with open(fp, "a", encoding="utf-8") as f:
+                f.write(content)
+            return f"Appended {len(content)} chars to {fp}"
+        else:
+            fp.write_text(content, encoding="utf-8")
+            return f"Wrote {len(content)} chars to {fp} ({fp.stat().st_size} bytes)"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+def edit_file(path: str, old_text: str, new_text: str) -> str:
+    """Surgical find-and-replace in a file. Replaces the FIRST occurrence of old_text with new_text. Use for targeted edits without rewriting the whole file."""
+    try:
+        fp = Path(path).expanduser().resolve()
+        err = _check_path_access(fp)
+        if err: return err
+        if not fp.exists(): return f"Error: '{path}' does not exist"
+        if not fp.is_file(): return f"Error: '{path}' is not a file"
+        
+        content = fp.read_text(encoding="utf-8")
+        if old_text not in content:
+            # Try to find a close match to help debug
+            stripped = old_text.strip()
+            if stripped and stripped in content:
+                return f"Error: Exact match not found, but the trimmed version exists. Check whitespace/indentation in old_text."
+            return f"Error: old_text not found in {fp.name}. Read the file first to get the exact text."
+        
+        count = content.count(old_text)
+        new_content = content.replace(old_text, new_text, 1)
+        fp.write_text(new_content, encoding="utf-8")
+        
+        # Find the line number of the edit for context
+        before = content[:content.index(old_text)]
+        line_num = before.count('\n') + 1
+        
+        result = f"Edited {fp.name} at line {line_num}"
+        if count > 1:
+            result += f" (replaced 1 of {count} occurrences)"
+        result += f" — {len(old_text)} chars → {len(new_text)} chars"
+        return result
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+def grep_code(pattern: str, directory: str = ".", include: str = "", max_results: int = 30) -> str:
+    """Search file contents for a regex pattern. Returns matching lines with file paths and line numbers. Use 'include' to filter by extension (e.g. '*.py' or '*.ts')."""
+    try:
+        dir_path = Path(directory).expanduser().resolve()
+        err = _check_path_access(dir_path)
+        if err: return err
+        if not dir_path.exists() or not dir_path.is_dir():
+            return f"Error: '{directory}' is not a valid directory"
+        
+        # Build grep/ripgrep command for speed
+        rg = shutil.which("rg")
+        if rg:
+            cmd = [rg, "--no-heading", "--line-number", "--color=never",
+                   "--max-count=5",  # max matches per file
+                   f"--max-filesize=500K"]
+            if include:
+                cmd.extend(["--glob", include])
+            cmd.extend(["--", pattern, str(dir_path)])
+        else:
+            # Fallback to grep
+            cmd = ["grep", "-rn", "--color=never"]
+            if include:
+                cmd.extend(["--include", include])
+            cmd.extend(["--", pattern, str(dir_path)])
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15,
+                                cwd=str(dir_path))
+        output = result.stdout.strip()
+        if not output:
+            return f"No matches for '{pattern}' in {directory}" + (f" (filter: {include})" if include else "")
+        
+        lines = output.splitlines()
+        truncated = len(lines) > max_results
+        lines = lines[:max_results]
+        
+        # Make paths relative for readability
+        formatted = []
+        for line in lines:
+            try:
+                line = line.replace(str(dir_path) + "/", "")
+            except Exception:
+                pass
+            formatted.append(line)
+        
+        header = f"Found matches for '{pattern}'" + (f" in {include} files" if include else "") + ":\n"
+        result_text = header + "\n".join(formatted)
+        if truncated:
+            result_text += f"\n... (capped at {max_results} results)"
+        return result_text
+    except subprocess.TimeoutExpired:
+        return "Error: Search timed out (15s limit). Try a more specific pattern or directory."
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -456,7 +573,7 @@ def _validate_redirects(command: str) -> str:
         return "Error: Output redirection '>' is not allowed"
     return ""
 
-def run_command(command: str) -> str:
+def run_command(command: str, cwd: str = None) -> str:
     """Run shell commands. Dangerous commands are blocked; write operations need user consent."""
     try:
         redirect_err = _validate_redirects(command)
@@ -484,17 +601,238 @@ def run_command(command: str) -> str:
                 f"The user must approve it before it can run."
             )
 
-        return _execute_shell(command)
+        return _execute_shell(command, cwd=cwd)
     except Exception as e:
         return f"Error: {str(e)}"
 
 
-def _execute_shell(command: str) -> str:
-    """Execute a shell command and return output."""
+# ── Background process tracking ──
+_background_processes: dict = {}  # pid -> {proc, command, cwd, started, output_file}
+_bg_lock = __import__('threading').Lock()
+_bg_counter = 0
+
+# Commands that run indefinitely (servers, watchers, live-tailing)
+# IMPORTANT: Only use specific compound patterns — never standalone words like
+# 'dev' (matches /dev/null), 'start' (matches any sentence), 'run' (too broad).
+_LONG_RUNNING_PATTERNS = re.compile(
+    r'(?:'
+    r'\btail\s+-[fF]\b'
+    r'|\bnodemon\b'
+    r'|\buvicorn\b'
+    r'|\bgunicorn\b'
+    r'|\bflask\s+run\b'
+    r'|\bnpm\s+start\b'
+    r'|\bnpm\s+run\s+(?:dev|serve|start)\b'
+    r'|\byarn\s+(?:dev|start|serve)\b'
+    r'|\bnpx\s+next\s+dev\b'
+    r'|\bnext\s+dev\b'
+    r'|\bpython3?\s+-m\s+http'
+    r'|\blive-server\b'
+    r'|\bhttp-server\b'
+    r'|\bdocker\s+compose\s+up\b'
+    r'|\bdocker-compose\s+up\b'
+    r'|\bkubectl\s+port-forward\b'
+    r'|\bngrok\b'
+    r'|\blocaltunnel\b'
+    r'|\bstreamlit\s+run\b'
+    r'|\bjupyter\s+(?:notebook|lab)\b'
+    r'|\bgradio\b'
+    r'|\bwatch\s+-n\b'
+    r'|\bfswatch\b'
+    r')', re.I
+)
+
+# Commands that may take 30s-3min (searching large dirs, builds, installs)
+_MEDIUM_PATTERNS = re.compile(
+    r'(?:'
+    r'\bfind\s+[/~]'
+    r'|\bgrep\s+-[rRl]'
+    r'|\brg\s+.*\s+/'
+    r'|\bag\s+.*\s+/'
+    r'|\bmdfind\b'
+    r'|\blocate\s'
+    r'|\bdu\s+-[sh]'
+    r'|\bmake\b'
+    r'|\bcmake\b'
+    r'|\bcargo\s+build\b'
+    r'|\bgo\s+build\b'
+    r'|\bxcodebuild\b'
+    r'|\bswift\s+build\b'
+    r'|\bgcc\s'
+    r'|\bg\+\+\s'
+    r'|\bclang\s'
+    r'|\bpip3?\s+install\b'
+    r'|\bnpm\s+install\b'
+    r'|\byarn\s+install\b'
+    r'|\byarn\s+add\b'
+    r')', re.I
+)
+
+def _classify_command_duration(command: str) -> str:
+    """Classify command as 'fast', 'medium', or 'background'.
+    Check medium FIRST so find/grep with /dev/null don't false-match as background."""
+    stripped = command.strip()
+    # Medium first — prevents find/grep + /dev/null from hitting background patterns
+    if _MEDIUM_PATTERNS.search(stripped):
+        return "medium"
+    if _LONG_RUNNING_PATTERNS.search(stripped):
+        return "background"
+    return "fast"
+
+def _start_background(command: str, cwd: str) -> str:
+    """Start a command in the background and return status info."""
+    global _bg_counter
+    home = str(Path.home())
+    run_env = {**os.environ, "LANG": "en_US.UTF-8"}
+    work_dir = cwd or home
+
+    cache_dir = os.path.join(home, ".kasset", "cache", "bg")
+    os.makedirs(cache_dir, exist_ok=True)
+
+    with _bg_lock:
+        _bg_counter += 1
+        bg_id = f"bg_{_bg_counter}"
+
+    out_file = os.path.join(cache_dir, f"{bg_id}.log")
+    f_out = open(out_file, "w")
+
     try:
+        proc = subprocess.Popen(
+            command, shell=True, stdout=f_out, stderr=subprocess.STDOUT,
+            text=True, cwd=work_dir, env=run_env,
+            start_new_session=True,
+        )
+    except Exception as e:
+        f_out.close()
+        return f"Error starting background process: {e}"
+
+    with _bg_lock:
+        _background_processes[bg_id] = {
+            "proc": proc, "command": command, "cwd": work_dir,
+            "started": time.time(), "output_file": out_file, "file_handle": f_out,
+        }
+
+    # Wait briefly to catch instant failures
+    time.sleep(0.5)
+    if proc.poll() is not None:
+        f_out.close()
+        try:
+            output = Path(out_file).read_text()[:4000]
+        except Exception:
+            output = ""
+        rc = proc.returncode
+        with _bg_lock:
+            _background_processes.pop(bg_id, None)
+        if rc != 0:
+            return f"Process exited immediately with code {rc}.\n{output}".strip()
+        return output.strip() or "(process completed instantly with no output)"
+
+    return (
+        f"[BACKGROUND] Process started (id: {bg_id}, pid: {proc.pid}).\n"
+        f"Command: {command}\n"
+        f"Working dir: {work_dir}\n"
+        f"Log file: {out_file}\n"
+        f"Use `run_command` with command `bg_status {bg_id}` to check output, "
+        f"or `bg_stop {bg_id}` to terminate."
+    )
+
+def _bg_status(bg_id: str) -> str:
+    """Get status and recent output of a background process."""
+    with _bg_lock:
+        entry = _background_processes.get(bg_id)
+    if not entry:
+        return f"No background process with id '{bg_id}'. Active: {list(_background_processes.keys()) or 'none'}"
+
+    proc = entry["proc"]
+    running = proc.poll() is None
+    elapsed = time.time() - entry["started"]
+
+    try:
+        content = Path(entry["output_file"]).read_text()
+        # Show last 4000 chars
+        tail = content[-4000:] if len(content) > 4000 else content
+    except Exception:
+        tail = "(could not read log)"
+
+    status = "RUNNING" if running else f"EXITED (code {proc.returncode})"
+    return (
+        f"[{status}] {bg_id} — {entry['command']}\n"
+        f"Elapsed: {elapsed:.0f}s\n"
+        f"--- Recent output ---\n{tail}"
+    ).strip()
+
+def _bg_stop(bg_id: str) -> str:
+    """Stop a background process."""
+    with _bg_lock:
+        entry = _background_processes.get(bg_id)
+    if not entry:
+        return f"No background process with id '{bg_id}'."
+
+    proc = entry["proc"]
+    if proc.poll() is None:
+        import signal
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        proc.wait(timeout=5)
+
+    # Read final output
+    try:
+        entry["file_handle"].close()
+    except Exception:
+        pass
+    try:
+        content = Path(entry["output_file"]).read_text()
+        tail = content[-4000:] if len(content) > 4000 else content
+    except Exception:
+        tail = ""
+
+    with _bg_lock:
+        _background_processes.pop(bg_id, None)
+
+    return f"[STOPPED] {bg_id}\n{tail}".strip()
+
+def _execute_shell(command: str, cwd: str = None) -> str:
+    """Execute a shell command with smart timeout based on command type."""
+    try:
+        # Handle background process management commands
+        stripped = command.strip()
+        if stripped.startswith("bg_status "):
+            return _bg_status(stripped.split(" ", 1)[1].strip())
+        if stripped.startswith("bg_stop "):
+            return _bg_stop(stripped.split(" ", 1)[1].strip())
+        if stripped == "bg_list":
+            with _bg_lock:
+                if not _background_processes:
+                    return "No background processes running."
+                lines = []
+                for bid, entry in _background_processes.items():
+                    running = entry["proc"].poll() is None
+                    elapsed = time.time() - entry["started"]
+                    lines.append(f"  {bid}: {'RUNNING' if running else 'EXITED'} ({elapsed:.0f}s) — {entry['command'][:80]}")
+                return "Background processes:\n" + "\n".join(lines)
+
         home = str(Path.home())
         run_env = {**os.environ, "LANG": "en_US.UTF-8"}
         suppress_stderr = "2>" in command
+
+        # Validate and resolve working directory
+        work_dir = home
+        if cwd and isinstance(cwd, str) and cwd.strip():
+            resolved = os.path.abspath(os.path.expanduser(cwd.strip()))
+            if os.path.isdir(resolved):
+                work_dir = resolved
+            else:
+                return f"Error: Working directory does not exist: {cwd}"
+
+        # Smart timeout classification
+        duration_class = _classify_command_duration(command)
+
+        if duration_class == "background":
+            return _start_background(command, work_dir)
+
+        timeout = 120 if duration_class == "medium" else 30
 
         proc = subprocess.run(
             command,
@@ -502,8 +840,8 @@ def _execute_shell(command: str) -> str:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL if suppress_stderr else subprocess.PIPE,
             text=True,
-            timeout=30,
-            cwd=home,
+            timeout=timeout,
+            cwd=work_dir,
             env=run_env,
         )
 
@@ -516,12 +854,14 @@ def _execute_shell(command: str) -> str:
             output = output[:8000] + "\n... (truncated)"
         return output.strip() or "(no output)"
     except subprocess.TimeoutExpired:
-        return "Error: Command timed out (30s limit)"
+        duration_class = _classify_command_duration(command)
+        limit = 120 if duration_class == "medium" else 30
+        return f"Error: Command timed out ({limit}s limit). If this is a long-running process, the system should have started it in the background automatically. Try rephrasing or running a simpler command."
     except Exception as e:
         return f"Error: {str(e)}"
 
 
-def run_approved_command(command: str) -> str:
+def run_approved_command(command: str, cwd: str = None) -> str:
     """Execute a user-approved command. Still blocks truly dangerous commands."""
     redirect_err = _validate_redirects(command)
     if redirect_err:
@@ -542,7 +882,7 @@ def run_approved_command(command: str) -> str:
             for arg in parts[1:]:
                 if arg in BLOCKED_COMMANDS:
                     return f"Error: '{arg}' is blocked."
-    return _execute_shell(command)
+    return _execute_shell(command, cwd=cwd)
 
 # ──────────────────────────────────────────
 # REGISTRY
@@ -744,6 +1084,61 @@ def get_location() -> str:
     except Exception as e:
         return f"Error getting location: {str(e)}"
 
+# ──────────────────────────────────────────
+# HTML PREVIEW — Direct tool (no sandbox needed)
+# ──────────────────────────────────────────
+def html_preview(html: str, title: str = "Interactive Preview") -> dict:
+    """Embed interactive HTML directly in the chat as a sandboxed iframe.
+    Use for buttons, demos, mini-apps, interactive widgets, visualizations.
+    The HTML is rendered live — user can interact with it."""
+    if not html or not html.strip():
+        return {"output": "Error: Empty HTML string provided.", "images": []}
+    return {
+        "output": f"HTML artifact displayed: {title} ({len(html)} chars)",
+        "images": [],
+        "html": html.strip(),
+    }
+
+
+# ──────────────────────────────────────────
+# SCRATCHPAD / NOTES — Persistent across rounds
+# ──────────────────────────────────────────
+# Session-scoped notes. Cleared when a new chat starts.
+_session_notes: dict = {"content": ""}
+
+def save_notes(notes: str, mode: str = "append") -> str:
+    """Save working notes/findings that persist across tool rounds.
+    Use this to accumulate findings, track progress, or maintain context.
+    When the user says 'continue', your notes are automatically available.
+    Args:
+        notes: Text to save (findings, analysis, progress tracking)
+        mode: 'append' (add to existing notes) or 'replace' (overwrite)
+    """
+    if mode == "replace":
+        _session_notes["content"] = notes.strip()
+    else:
+        if _session_notes["content"]:
+            _session_notes["content"] += "\n\n" + notes.strip()
+        else:
+            _session_notes["content"] = notes.strip()
+    line_count = _session_notes["content"].count('\n') + 1
+    return f"Notes saved ({line_count} lines, {len(_session_notes['content'])} chars). Your notes persist across rounds and will be available if the user says 'continue'."
+
+def get_session_notes() -> str:
+    """Return current session notes (called by agent.py for context injection)."""
+    return _session_notes["content"]
+
+def clear_session_notes():
+    """Clear session notes (called at start of new chat)."""
+    _session_notes["content"] = ""
+
+
+# Tools intercepted directly by agent.py before execute_tool() is called.
+# Listed here so cartridge validation and get_all_tool_ids() include them.
+AGENT_HANDLED_TOOLS = {
+    "request_user_input",
+}
+
 BUILTIN_TOOLS = {
     "get_current_time": get_current_time,
     "get_location": get_location,
@@ -751,6 +1146,9 @@ BUILTIN_TOOLS = {
     "get_system_info": get_system_info,
     "search_files": search_files,
     "read_file": read_file,
+    "write_file": write_file,
+    "edit_file": edit_file,
+    "grep_code": grep_code,
     "run_command": run_command,
     "calculate": calculate,
     "execute_python": execute_python,
@@ -758,6 +1156,10 @@ BUILTIN_TOOLS = {
     "search_web": search_web,
     "read_url": read_url,
     "read_rss": read_rss,
+    "html_preview": html_preview,
+    "save_notes": save_notes,
+    # Agent-handled tools (stubs — intercepted in agent.py before dispatch)
+    "request_user_input": lambda **kw: "Error: This tool is handled by the agent runtime, not the tool registry.",
 }
 
 # Backwards compat
@@ -765,8 +1167,9 @@ AVAILABLE_TOOLS = BUILTIN_TOOLS
 
 
 def get_all_tool_ids() -> list:
-    """Return IDs of all available tools (built-in + plugins)."""
+    """Return IDs of all available tools (built-in + agent-handled + plugins)."""
     ids = list(BUILTIN_TOOLS.keys())
+    ids.extend(AGENT_HANDLED_TOOLS - set(ids))  # avoid duplicates
     ids.extend(plugin_loader.manifests.keys())
     return ids
 
