@@ -23,6 +23,7 @@
     "run_command",
     "calculate",
     "execute_python",
+    "save_notes",
     "request_user_input"
   ],
   "input_methods": [

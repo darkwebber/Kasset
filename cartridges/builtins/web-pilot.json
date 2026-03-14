@@ -23,6 +23,7 @@
     "get_location",
     "read_file",
     "execute_python",
+    "save_notes",
     "request_user_input"
   ],
   "input_methods": [

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useLayoutEffect } from "react";
+import { createPortal } from "react-dom";
 import { Check, ChevronRight, Rss, Plus, Trash2, Loader2 } from "lucide-react";
 import { getApiBase } from "@/lib/api";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -12,9 +13,10 @@ interface QuickSettingsProps {
   hasRssTool: boolean;
   onOpenFullPreview: () => void;
   onModelChange: (name: string) => void;
+  anchorRef?: React.RefObject<HTMLElement | null>;
 }
 
-export default function QuickSettings({ onClose, hasRssTool, onOpenFullPreview, onModelChange }: QuickSettingsProps) {
+export default function QuickSettings({ onClose, hasRssTool, onOpenFullPreview, onModelChange, anchorRef }: QuickSettingsProps) {
   const { context: ctxSettings, updateContext } = useSettingsStore();
   const [models, setModels] = useState<any[]>([]);
   const [currentModel, setCurrentModel] = useState("");
@@ -25,6 +27,18 @@ export default function QuickSettings({ onClose, hasRssTool, onOpenFullPreview, 
   const [newRssName, setNewRssName] = useState("");
   const [newRssUrl, setNewRssUrl] = useState("");
   const popoverRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{bottom: number; right: number} | null>(null);
+
+  // Compute fixed position from anchor button
+  useLayoutEffect(() => {
+    if (anchorRef?.current) {
+      const rect = anchorRef.current.getBoundingClientRect();
+      setPos({
+        bottom: window.innerHeight - rect.top + 8,
+        right: window.innerWidth - rect.right,
+      });
+    }
+  }, [anchorRef]);
 
   // Fetch models + poll status while open
   useEffect(() => {
@@ -115,10 +129,18 @@ export default function QuickSettings({ onClose, hasRssTool, onOpenFullPreview, 
     { key: "use_global_profile", label: "Global Profile" },
   ];
 
-  return (
+  const popover = (
     <div
       ref={popoverRef}
-      className="absolute bottom-full right-0 mb-2 w-72 bg-[#0c0c10] border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50 animate-in fade-in slide-in-from-bottom-2 duration-150"
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+      className="fixed w-full sm:w-72 max-h-[80dvh] sm:max-h-[70vh] bg-[#0c0c10] border border-white/10 rounded-xl shadow-2xl overflow-y-auto animate-in fade-in slide-in-from-bottom-2 duration-150"
+      style={{
+        zIndex: 9999,
+        ...(pos
+          ? { bottom: pos.bottom, right: pos.right, left: 'auto', top: 'auto' }
+          : { bottom: 0, left: 0, right: 0, borderRadius: '0.75rem 0.75rem 0 0' })
+      }}
     >
       {/* Models */}
       <div className="p-3 border-b border-white/5">
@@ -233,4 +255,7 @@ export default function QuickSettings({ onClose, hasRssTool, onOpenFullPreview, 
       </button>
     </div>
   );
+
+  if (typeof document === 'undefined') return popover;
+  return createPortal(popover, document.body);
 }

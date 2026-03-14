@@ -2,488 +2,135 @@
   <img src="branding/logo.png" alt="Kasset" width="420" />
 </p>
 
+<h3 align="center">Local AI Studio for Mac</h3>
+
 <p align="center">
-  <strong>A local AI assistant for Mac with swappable agent kassets, tool calling, and streaming — powered by Qwen 3.5 on Apple Silicon.</strong>
+  Modular AI agents with tool calling, code execution, image editing, and interactive widgets — running entirely on Apple Silicon. No API keys. No cloud. Just your Mac.
 </p>
 
 <p align="center">
-  Fully private, multimodal AI on your Mac. No cloud, no API keys, no data leaves your machine.
+  <code>⚠️ Alpha (v0) — Expect rough edges. Contributions welcome.</code>
 </p>
 
 <p align="center">
-  <a href="#quick-start">Quick Start</a> · <a href="#built-in-kassets">Kassets</a> · <a href="#kasset-forge">Forge</a> · <a href="#network-access">Network</a> · <a href="#api-reference">API</a>
+  <a href="#quick-start">Quick Start</a> · <a href="#features">Features</a> · <a href="#kassets">Kassets</a> · <a href="#tools">Tools</a> · <a href="docs/">Documentation</a> · <a href="docs/contributing.md">Contributing</a>
 </p>
 
 ---
 
+## What is Kasset?
+
+Kasset is a local-first AI studio that runs large language models on your Mac via [MLX](https://github.com/ml-explore/mlx). It features a **cartridge system** — swap between specialized AI agents (called *kassets*) that each bring their own tools, personality, and UI theme. Think of it as a modular AI workbench where each kasset is a purpose-built agent.
+
 ## Features
 
-- **Kasset System** — swap between 10 specialized agents with stacking constraint enforcement (conflicts, requirements)
-- **Collaborative Editing** — interactive Draft Blocks render inline in chat with edit, copy, download, and "Refine with AI" actions for iterative document refinement without clunky popups
-- **Image Editor** — natural-language image editing with 35+ built-in helpers (adjust, tint, sepia, sharpen, posterize, vignette, gradient map, etc.) with live slider preview and cross-turn persistence
-- **Kasset Forge** — create your own kassets and custom tools through an in-app GUI studio
-- **Tool Plugin System** — extend the agent with custom Python tools (3D charts, audio, web artifacts, anything)
-- **Vision** — paste images, solve problems from screenshots, describe photos
-- **Streaming** — real-time token streaming with thinking/reasoning display and live code preview during tool calls
-- **Tool Calling** — file access, shell commands (smart timeout + background process management), Python sandbox, web search, C++ execution, and user plugins
-- **Interactive Widgets** — choice selectors, sliders with live preview, collaborative text editors, and forms — agents use these for structured user input
-- **HTML Artifacts** — `html_preview` tool embeds interactive HTML directly in chat as sandboxed iframes (Plotly, web apps, visualizations)
-- **Knowledge Graph** — per-conversation structured graph tracks intents, files, tool results, errors, and state — persisted across requests and injected as a compact map every 3 tool rounds
-- **Session Notes** — agents can save progressive findings with `save_notes`; tool activity is also auto-saved so nothing is lost
-- **Network Access** — access Kasset from your phone/tablet on the same Wi-Fi, with password-protected authentication
-- **Smart Continuation** — auto-detects "continue" messages, injects knowledge map + tool history summary + session notes so the agent picks up exactly where it left off
-- **Context Management** — session summaries with trim notifications, per-kasset memory, global user profile, async post-conversation processing
-- **Inline Attachments** — attach files/directories as inline chips in your messages
-- **Visualization** — matplotlib plots auto-captured, built-in `qchart_*` helpers, Plotly 3D support
-- **Persistent Memory** — learns your preferences across conversations
-- **LaTeX & Code** — renders math equations and syntax-highlighted code blocks
+- **Kasset System** — 10 built-in agent personas (code, data, image editing, writing, 3D viz, etc.) that you can swap or stack
+- **Tool Calling** — agents can run Python, C++, shell commands, read/write files, search the web, and use custom plugins
+- **Sandboxed Code Execution** — Python sandbox with 100+ pre-loaded libraries (numpy, pandas, matplotlib, plotly, PIL, etc.)
+- **Interactive Widgets** — agents present forms, editors, choice selectors, and diffs inline in chat for structured interaction
+- **HTML Artifacts** — render interactive HTML (dashboards, mini-apps, visualizations) directly in chat with copy/download buttons
+- **Image Editing** — natural-language image editing with 100+ built-in functions, live canvas with pop-out window, freeform selection, undo/redo, and before/after comparison
+- **Collaborative Editing** — versioned Draft Blocks with inline commenting, diff view, and one-click finalize to desktop
+- **Vision** — paste images or screenshots for the AI to analyze, describe, or edit; multi-turn vision persists across tool rounds
+- **Streaming** — real-time token streaming with chain-of-thought reasoning, cooperative cancellation, and automatic thinking-loop detection
+- **Kasset Forge** — create custom kassets and tools through an in-app GUI studio
+- **Context Management** — knowledge graph, session memory, adaptive sampling, and automatic context trimming
+- **Network Access** — optional LAN sharing with password auth and rate limiting
 
 ## Quick Start
 
-> **Requirements:** macOS with Apple Silicon (M1+), Python 3.10+, Node.js 18+, ~6 GB RAM free
+> **Requirements:** macOS with Apple Silicon (M1+), Python 3.10+, Node.js 18+, ~16 GB RAM recommended
 
 ```bash
-git clone https://github.com/darkwebber/Kasset.git
-cd Kasset
+git clone https://github.com/darkwebber/kasset.git
+cd kasset
 chmod +x start.sh
 ./start.sh
 ```
 
-That's it. `start.sh` handles everything:
+`start.sh` handles everything — virtual environment, dependencies, model download, and startup. Open **http://localhost:3000** when ready.
 
-1. Validates Python 3.10+, Node.js 18+, npm, and port availability
-2. Creates a Python virtual environment (first run only)
-3. Installs all backend and frontend dependencies
-4. Creates user data directories at `~/.kasset/`
-5. Starts the FastAPI backend (port 7861) and Next.js frontend (port 3000)
-6. Detects your LAN IP and displays a network URL for mobile access
+> **First run** downloads the model (~5 GB) from Hugging Face. Subsequent starts take ~10 seconds.
 
-Open **http://localhost:3000** and press **Ctrl+C** to stop both servers.
+Press **Ctrl+C** to stop all servers cleanly.
 
-> **First run?** The model (~5 GB) downloads automatically from Hugging Face. Subsequent starts take ~10 seconds.
+## Kassets
 
-## Built-in Kassets
+| Kasset | Icon | Purpose |
+|--------|------|---------|
+| General Assistant | 🤖 | All-purpose helper (all tools enabled) |
+| Code Pilot | 🚀 | Pair programming, debugging, code review |
+| Data Analyst | 📊 | Data analysis, statistics, visualization |
+| Image Editor | 🎨 | Natural-language image editing (100+ functions) |
+| Writer | ✍️ | Collaborative writing with Draft Blocks |
+| 3D Visualizer | 🧊 | Interactive 3D visualizations (Plotly) |
+| Terminal | 💻 | Natural language shell interface |
+| Tutor | 🎓 | Adaptive teaching with interactive demos |
+| Web Researcher | 🌐 | Web search and information synthesis |
+| Creative Studio | 🎭 | Creative content generation |
 
-| Kasset | Icon | Tools | Purpose |
-|--------|------|-------|---------|
-| General Assistant | 🤖 | All | Default all-purpose helper |
-| Code Pilot | 🚀 | Python, C++, file, shell, html_preview, save_notes, edit_file, grep_code | Pair programming, debugging, code review (v2.1 — 16 rounds, progressive grep-first exploration, surgical edits) |
-| Tutor | 🎓 | Python, search, file | Teaching with examples and analogies |
-| Data Analyst | 📊 | Python, file, search | Data analysis, statistics, visualization |
-| Terminal | 💻 | Shell, file, system | Natural language shell interface |
-| Writer | ✍️ | File, search, web | Creative and technical writing with iterative Draft Block refinement |
-| DevOps | 🔧 | Shell, file, search | Git, Docker, CI/CD, infrastructure |
-| Web Pilot | 🌐 | Search, web, file | Web research and information synthesis |
-| 3D Visualizer | 🧊 | Python | Interactive 3D visualizations with Plotly |
-| Image Editor | 🎨 | Python, file, search | Natural-language image manipulation |
-
-## Built-in Tools
+## Tools
 
 | Tool | Description |
 |------|-------------|
-| `get_current_time` | Current date and time |
-| `list_directory` | Browse files with sizes |
-| `get_system_info` | OS, hardware, disk, uptime |
-| `search_files` | Glob-based recursive file search |
-| `read_file` | Read text files — under 50 KB shown fully, over 50 KB returns structural overview (imports, signatures, exports). Max 500 KB |
-| `write_file` | Write text content to a file (overwrite or append). Creates parent dirs automatically |
-| `run_command` | Shell commands with smart timeout (30s/120s/background), consent flow, and background process management (`bg_status`, `bg_stop`, `bg_list`) |
-| `calculate` | Safe math evaluator (sqrt, trig, factorial, etc.) |
-| `execute_python` | Stateful Python sandbox with pandas, numpy, matplotlib, scipy, seaborn, scikit-learn, Plotly, PIL |
-| `execute_cpp` | Compile and run C++ code (C++17) |
-| `search_web` | DuckDuckGo web search |
-| `read_url` | Fetch and extract text from web pages — ads, navs, and boilerplate auto-stripped |
-| `read_rss` | Read RSS/Atom feeds — returns structured entries with title, date, link, summary |
-| `get_location` | IP-based geolocation — city, region, country, timezone, coordinates |
-| `edit_file` | Surgical find-and-replace in files — better than `write_file` for targeted code edits |
-| `grep_code` | Search file contents by regex across a directory tree — uses ripgrep if available |
-| `html_preview` | Embed interactive HTML directly in chat as a sandboxed iframe — buttons, demos, mini-apps, visualizations |
-| `save_notes` | Persistent scratchpad for multi-step tasks — notes survive across tool rounds and "continue" messages |
-
-## Image Editing
-
-The **Image Editor** kasset provides 35+ Python helpers available inside `execute_python`:
-
-**Loading & Display**: `img_load`, `img_show`, `img_preview` (no-save display), `img_save`, `img_info`, `img_get_original`
-
-**Adjustments**: `img_adjust` (brightness/contrast/saturation/sharpness), `img_auto_contrast`, `img_equalize`, `img_sharpen` (unsharp mask), `img_channel_mix`
-
-**Color**: `img_hue_shift`, `img_tint`, `img_tint_highlights`, `img_tint_shadows`, `img_adjust_highlights`, `img_adjust_shadows`, `img_color_replace`, `img_color_range_replace`, `img_overlay_color`, `img_gradient_map`
-
-**Effects**: `img_blur`, `img_edge_detect`, `img_emboss`, `img_sepia`, `img_invert`, `img_posterize`, `img_solarize`, `img_vignette`, `img_noise`, `img_pixelate`, `img_grayscale`, `img_threshold`
-
-**Transform & Drawing**: `img_crop`, `img_resize`, `img_rotate`, `img_flip`, `img_draw_rect`, `img_draw_text`, `img_border`, `img_opacity`, `img_convert`
-
-Images persist across conversation turns — say "add green tint" then "now make it warmer" and the agent continues editing the same image.
-
-## Collaborative Editing (Draft Blocks)
-
-When an agent outputs text in a `` ```text `` code block, it renders as an interactive **Draft Block** — a living document embedded in the chat:
-
-- **View mode** — formatted text with word/character count. Click anywhere to enter edit mode.
-- **Edit mode** — inline textarea for direct editing. No popup, no modal, no friction.
-- **Copy** — one-click clipboard copy
-- **Download** — save as `.txt` file
-- **Refine with AI** — send the (possibly edited) text back to the agent for suggestions
-
-### Iterative Refinement Flow
-
-1. Agent generates a draft → rendered as a Draft Block
-2. User edits inline (optional) → clicks "Refine with AI"
-3. Agent analyzes the draft → suggests specific improvements → outputs improved version as a new Draft Block
-4. User edits again → refines again → repeat until satisfied
-5. User copies or downloads the final version
-
-This replaces the old editor-widget popup pattern. No clunky modals, no "no edits were made" messages — just a natural conversation around a living document.
-
-Draft Blocks trigger on these code fence languages: `text`, `draft`, `email`, `markdown`, `md`.
-
-## Vision & Image Processing
-
-Attach images via paste (Ctrl/Cmd+V), file picker, or drag-and-drop. The pipeline:
-
-1. **Upload** — saved to `~/.kasset/uploads/`, validated (extension, size ≤ 10 MB, path sandboxing)
-2. **EXIF auto-rotation** — phone photos corrected for orientation
-3. **RGBA flattening** — transparent PNGs composited onto white for VLM compatibility
-4. **Adaptive resize** — images exceeding 768 px downscaled with LANCZOS to prevent OOM
-5. **Template switching** — VLM's original chat template restored for vision inference
-6. **Vision on first round** — image passed to model on initial generation; subsequent tool rounds retain understanding
-7. **Temp file cleanup** — resized images cleaned up after each turn
-
-Supported: `.jpg` `.jpeg` `.png` `.gif` `.bmp` `.webp` `.tiff`
-
-## Network Access
-
-Kasset binds to `0.0.0.0` so any device on your local network can connect. On first network access:
-
-1. **Local setup** — visit Kasset on your Mac and set a network password
-2. **Remote login** — open the Network URL (shown in terminal) on your phone/tablet and enter the password
-3. **Safety** — network clients can chat and upload files, but **cannot** execute shell commands, run code, or browse the host filesystem
-
-Authentication uses scrypt password hashing with session tokens and a 3-strike lockout per IP.
-
-## Context Management
-
-Four layers of context work together to maintain awareness across sessions:
-
-- **Knowledge Graph** — per-conversation structured graph (intents, files, tool results, errors, states with typed edges). Persisted to `~/.kasset/chats/<id>.graph.json` and reloaded on resume. Serialized into a compact "Session Knowledge Map" injected into the system prompt and refreshed every 3 tool rounds.
-- **Session Summary** — when conversations get long, older messages are intelligently summarized to free context space
-- **Kasset Context** — remembers topics and patterns from previous chats with the same kasset
-- **Global Profile** — app-wide understanding of you across all kassets (usage patterns, languages, preferences)
-
-### Smart Continuation
-
-When you say "continue", "go on", or "keep going", the system injects:
-
-1. **Knowledge Map** — structured summary of intents, files touched, discoveries, errors, and state from the knowledge graph
-2. **Tool History** — list of tools already called with their key arguments (extracted from conversation history)
-3. **Session Notes** — manually saved findings + auto-saved tool activity log
-4. **Directive** — explicit instruction to NOT restart, NOT re-read files, and pick up where it left off
-
-Tool activity is also auto-saved to session notes when the tool loop ends, so even if the agent never calls `save_notes` itself, continuation context is preserved.
-
-## Kasset Forge
-
-Open **Kasset Forge** from the kasset carousel or the wrench icon in the top bar.
-
-### Creating a Kasset
-
-1. **Kassets** tab → **New Kasset**
-2. Fill in name, description, system prompt, and select tools
-3. Customize theme colors and boot animation
-4. **Save** — appears in the carousel immediately
-
-### Creating a Custom Tool
-
-1. **Tools** tab → **New Tool**
-2. Define name, description (what the model sees), and parameters
-3. Choose output type: `text`, `html`, `image`, or `mixed`
-4. Write the handler in Python
-5. **Test** to verify, then **Save**
-
-The tool is instantly available to assign to any kasset.
-
-## Tool Plugin Standard
-
-Each custom tool lives in `~/.kasset/tools/<tool-id>/` with two files:
-
-### `manifest.json`
-
-```json
-{
-  "id": "plotly_3d",
-  "name": "Plotly 3D Chart",
-  "version": "1.0.0",
-  "description": "Create interactive 3D visualizations using Plotly",
-  "author": "user",
-  "icon": "cube",
-  "color": "#636efa",
-  "parameters": {
-    "code": {
-      "type": "string",
-      "description": "Python code using plotly to create 3D visualizations",
-      "required": true
-    }
-  },
-  "output_type": "html",
-  "handler": "handler.py",
-  "entry_point": "execute",
-  "sandbox": {
-    "timeout": 30,
-    "imports": ["plotly"],
-    "pre_run": "import plotly.graph_objects as go"
-  }
-}
-```
-
-### `handler.py`
-
-```python
-def execute(code: str) -> dict:
-    """Entry point called by the agent. Return types:
-        str  -> displayed as text
-        dict -> { "output": str, "images": [base64], "html": str }
-    """
-    import plotly.graph_objects as go
-    # ... execute user code, capture figure ...
-    return {
-        "output": "3D chart created",
-        "html": fig.to_html(include_plotlyjs=True)
-    }
-```
-
-### Output Types
-
-| Type | Return | Frontend Rendering |
-|------|--------|--------------------|
-| `text` | `str` | Plain text in tool result |
-| `html` | `dict` with `html` key | Sandboxed iframe artifact |
-| `image` | `dict` with `images` key (base64) | Inline images |
-| `mixed` | `dict` with any combination | All applicable renderers |
+| `execute_python` | Sandboxed Python with numpy, pandas, matplotlib, plotly, PIL, and more |
+| `execute_cpp` | Compile and run C++ (C++17) |
+| `read_file` / `write_file` / `edit_file` | File operations with smart size handling |
+| `run_command` | Shell commands with consent flow and smart timeouts |
+| `html_preview` | Render interactive HTML artifacts with copy/download |
+| `request_user_input` | Interactive widgets (forms, editors, choices, diffs) |
+| `web_search` / `web_fetch` | Web search and content extraction |
+| `save_notes` | Persistent scratchpad for multi-step tasks |
+| `grep_code` / `search_files` | Code search across directory trees |
 
 ## Project Structure
 
 ```
-Kasset/
-├── backend/                       # Python FastAPI backend
-│   ├── api.py                     # REST + SSE + Forge endpoints
-│   ├── model_server.py            # MLX-VLM model wrapper
-│   ├── utils.py                   # Image validation
-│   ├── core/
-│   │   ├── agent.py               # Agent orchestration & tool loop
-│   │   ├── cartridge_loader.py    # Kasset loading, stacking & CRUD
-│   │   ├── context_manager.py     # Multi-layer context management
-│   │   ├── persistence.py         # Chat storage, user memory & feedback
-│   │   ├── shared.py              # Shared utilities (atomic writes, path checks)
-│   │   ├── tool_parser.py         # Tool call parsing & error diagnosis
-│   │   ├── network_auth.py        # Network auth (scrypt + sessions)
-│   │   ├── input_type_loader.py   # Input type manifest loading
-│   │   ├── knowledge_graph.py     # Per-conversation knowledge graph (persisted, injected every 3 rounds)
-│   │   ├── plugin_loader.py       # Custom tool plugin discovery
-│   │   ├── sandbox.py             # Python sandbox + image helpers
-│   │   ├── tool_registry.py       # Built-in tools + plugin dispatch (html_preview, save_notes, etc.)
-│   │   └── signal_engine/         # Signal processing subsystem
-├── frontend/                      # Next.js React frontend
+kasset/
+├── backend/              # Python FastAPI backend
+│   ├── api.py            # REST + SSE endpoints
+│   ├── model_server.py   # MLX inference wrapper
+│   └── core/             # Agent, tools, sandbox, persistence, context
+├── frontend/             # Next.js React frontend
 │   └── src/
-│       ├── components/
-│       │   ├── Console.tsx            # Main chat UI
-│       │   ├── CartridgeCarousel.tsx   # Kasset selector
-│       │   ├── ChatDrawer.tsx         # Chat history sidebar
-│       │   ├── NetworkAuthModal.tsx    # Network login UI
-│       │   ├── Tutorial.tsx           # Onboarding guide
-│       │   ├── chat/                  # Chat sub-components (DraftBlock, ToolCallCard, etc.)
-│       │   ├── studio/                # Kasset Forge editor
-│       │   └── explorer/              # File browser
-│       ├── stores/                # Zustand state management
-│       └── lib/
-│           └── api.ts             # Dynamic API base (local/network)
-├── cartridges/
-│   ├── builtins/                  # 10 built-in kasset definitions
-│   │   └── input_types/           # Built-in input type manifests
-│   └── schema.json                # Kasset JSON schema
-├── docs/                          # Architecture & design docs
-├── branding/                      # Logo and favicon
-├── start.sh                       # One-command launcher
-└── README.md
+│       ├── components/   # UI components (chat/, console/, image/, studio/)
+│       ├── stores/       # Zustand state management
+│       └── lib/          # Shared utilities
+├── cartridges/           # Kasset definitions (JSON)
+│   └── builtins/         # 10 built-in kassets + input types
+├── tests/                # Python test suite
+├── docs/                 # Comprehensive documentation
+├── branding/             # Logo and favicon
+└── start.sh              # One-command launcher
 ```
 
-## User Data
+All user data lives in `~/.kasset/` (chats, memory, drafts, custom kassets, tools).
 
-All user data is stored at `~/.kasset/` (never in the repo):
+## Documentation
 
-```
-~/.kasset/
-├── cartridges/              # User-created kassets (JSON)
-├── tools/                   # User-created tool plugins
-│   └── <tool-id>/
-│       ├── manifest.json    # Tool metadata & parameter schema
-│       └── handler.py       # Python implementation
-├── chats/                   # Saved conversations
-├── context/
-│   ├── global_profile.json  # App-wide user understanding
-│   └── cartridges/          # Per-kasset context
-├── workspace/               # Sandbox working directory & edited images
-├── cache/                   # Summary cache
-├── uploads/                 # Pasted/uploaded files
-├── user_memory.json         # Learned user preferences
-├── settings.json            # User toggles
-└── network_auth.json        # Network password & sessions
-```
+See the [`docs/`](docs/) directory for detailed guides:
 
-## Architecture
-
-```
-┌─────────────────────────────┐          ┌─────────────────────────────┐
-│  Next.js Frontend (:3000)   │──HTTP──▶│  FastAPI Backend (:7861)     │
-│                             │◀──SSE───│                             │
-│  CartridgeCarousel          │          │  Agent (tool loop)          │
-│  Console (chat + segments)  │          │  MLX-VLM (Qwen 3.5)        │
-│  DraftBlock (collab edit)   │          │  Tool Registry + Plugins    │
-│  ForgeStudio (CRUD)         │          │  Knowledge Graph            │
-│  ChatDrawer (history)       │          │  Python Sandbox + img_*     │
-│  Zustand stores             │          │  Context Manager + Notes    │
-└─────────────────────────────┘          └──────────────┬──────────────┘
-                                                        │
-      📱 Phone/Tablet ──────── Wi-Fi ──────────────────┘
-      (password-protected, no code execution)
-
-      ~/.kasset/   ← all user data, kassets, tools, chats, memory
-```
-
-## Security Model
-
-- **Sandbox hardening** — `exec()`, `eval()`, `compile()`, `__import__()`, and builtins bypass tricks are blocked in the Python sandbox
-- **Plugin safety** — tool handler paths validated against directory traversal; all dynamic values (handler path, entry point, pre_run) passed via JSON stdin instead of string interpolation to prevent code injection
-- **CORS restriction** — origins restricted to `localhost`, `127.0.0.1`, and private LAN ranges (no wildcard `*`)
-- **Request size limits** — POST/PUT bodies capped at 10 MB to prevent abuse
-- **Rate limiting** — `/api/chat` endpoint rate-limited to 10 requests per 60 seconds per IP
-- **Inference lock** — concurrent model requests are serialized via threading lock to prevent corruption
-- **Atomic writes** — all JSON persistence uses `fcntl` file locking + write-to-temp-then-rename to prevent data corruption from concurrent access
-- **Blocklist + Consent** — destructive commands (`rm`, `sudo`) are blocked; process management (`kill`, `killall`, `pkill`) and write operations (`mkdir`, `cp`, `git commit`, `pip install`) require user approval via in-chat consent UI
-- **Shell chaining** — `&&`, `;`, `||` supported; each sub-command validated individually
-- **Pipes** — `cmd1 | cmd2 | cmd3` supported; each stage validated
-- **Path sandboxing** — file access restricted to home directory and temp folders
-- **Smart timeouts** — fast commands (30s), medium commands like system-wide search/builds (120s), long-running commands auto-backgrounded with process management
-- **Output limits** — command output capped at 8000 characters
-- **Plugin isolation** — custom tool handlers run in isolated subprocesses with stdout capture; errors caught and reported
-- **Network safety** — remote clients cannot execute code, shell commands, or browse the filesystem
-- **Auth** — scrypt password hashing, session tokens via `secrets.token_urlsafe(48)`, 3-strike lockout per IP
-- **Secure IDs** — chat IDs generated with `secrets.token_hex()` instead of predictable timestamps
-
-## API Reference
-
-### Core
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/chat` | POST | SSE streaming chat with tool execution |
-| `/api/kassets` | GET | List all kassets (builtin + user) |
-| `/api/kassets/load` | POST | Load merged config for a kasset stack |
-
-### Chat Persistence
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/chats` | GET | List all saved conversations |
-| `/api/chats/{id}` | GET | Load a conversation |
-| `/api/chats/{id}/save` | POST | Save/update a conversation |
-| `/api/chats/{id}` | DELETE | Delete a conversation |
-| `/api/chats/{id}/feedback` | POST | Save thumbs up/down on a message |
-| `/api/feedback/stats` | GET | Aggregated feedback statistics |
-
-### User Memory & Context
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/memory` | GET | Get all user memories |
-| `/api/memory` | POST | Add a memory |
-| `/api/memory/{id}` | PUT | Update a memory |
-| `/api/memory/{id}` | DELETE | Delete a memory |
-| `/api/settings` | GET | Get user settings |
-| `/api/settings/{section}` | PUT | Update a settings section |
-| `/api/context/kasset/{id}` | GET | Get persistent kasset context |
-| `/api/context/kasset/{id}` | DELETE | Clear kasset context |
-| `/api/context/global` | GET | Get global user profile |
-| `/api/context/global` | DELETE | Clear global profile |
-| `/api/rss-feeds` | GET | Get configured RSS feeds |
-| `/api/rss-feeds` | PUT | Replace all RSS feeds |
-| `/api/rss-feeds` | POST | Add a single RSS feed |
-| `/api/rss-feeds/{index}` | DELETE | Delete an RSS feed by index |
-
-### Kasset Forge
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/forge/tools` | GET | List all tools (builtin + user) |
-| `/api/forge/tools/{id}` | GET | Get tool manifest + handler code |
-| `/api/forge/tools` | POST | Create/update a tool plugin |
-| `/api/forge/tools/{id}` | DELETE | Delete a user tool |
-| `/api/forge/tools/test` | POST | Test-execute a tool |
-| `/api/forge/kassets/{id}` | GET | Get kasset JSON for editing |
-| `/api/forge/kassets` | POST | Create/update a user kasset |
-| `/api/forge/kassets/{id}` | DELETE | Delete a user kasset |
-| `/api/forge/all-tool-ids` | GET | All tool IDs for kasset editor |
-| `/api/forge/tool-meta` | GET | Frontend rendering metadata |
-
-### Authentication
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/auth/status` | GET | Check auth config + client type |
-| `/api/auth/setup` | POST | Set network password (local only) |
-| `/api/auth/login` | POST | Authenticate a network client |
-| `/api/auth/logout` | POST | Revoke session |
-
-### Filesystem
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/fs/list` | POST | List directory (local clients only) |
-| `/api/fs/read-image` | GET | Serve image for inline preview |
-| `/api/fs/upload` | POST | Upload a file to `~/.kasset/uploads/` |
-| `/api/tool/consent` | POST | Approve/deny a command |
-| `/api/tool/run-approved` | POST | Execute an approved command |
+- **[Architecture](docs/architecture.md)** — system overview, request flow, data storage
+- **[Backend](docs/backend.md)** — API reference, module map, agent loop, model server
+- **[Frontend](docs/frontend.md)** — component structure, stores, SSE events, theming
+- **[Cartridges](docs/cartridges.md)** — kasset schema, stacking, Forge, custom tools
+- **[Tools](docs/tools.md)** — tool system, sandbox, parser, custom plugins
+- **[Deployment](docs/deployment.md)** — configuration, network access, troubleshooting
+- **[Contributing](docs/contributing.md)** — development workflow, code style, testing
 
 ## Troubleshooting
 
-**Python not found?**
-```bash
-brew install python@3.12
-```
+| Problem | Fix |
+|---------|-----|
+| Python/Node not found | `brew install python@3.12 node` |
+| Port in use | `lsof -ti:7861 | xargs kill` |
+| Model download stalled | `rm -rf ~/.cache/huggingface/hub/models--Qwen* && ./start.sh` |
+| Frontend won't load | `cd frontend && rm -rf node_modules .next && npm install` |
 
-**Node.js not found?**
-```bash
-brew install node
-```
+## Status
 
-**Port in use?**
-```bash
-lsof -i :7861 -i :3000 -t | xargs kill -9
-```
-
-**Backend crashes on start?**
-```bash
-source venv/bin/activate
-python -m uvicorn backend.api:app --log-level debug
-```
-
-**Model download stalled?**
-```bash
-# Delete partial download and retry
-rm -rf ~/.cache/huggingface/hub/models--Qwen*
-./start.sh
-```
-
-**Frontend not loading?**
-```bash
-cd frontend && rm -rf node_modules .next && npm install
-```
-
-**Network access not working?**
-- Ensure both devices are on the same Wi-Fi network
-- Check that your firewall allows incoming connections on ports 3000 and 7861
-- Set a network password first from the local machine
+**Alpha (v0)** — Kasset is under active development. Core features work but expect rough edges. Contributions, bug reports, and feedback are very welcome.
 
 ## License
 
-MIT. Use it however you like.
+MIT

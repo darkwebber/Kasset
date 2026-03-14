@@ -12,6 +12,7 @@ import operator
 import platform
 import subprocess
 import tempfile
+import threading
 from datetime import datetime
 from pathlib import Path
 import requests
@@ -879,6 +880,10 @@ def run_approved_command(command: str, cwd: str = None) -> str:
                 return f"Error: Could not parse: {part}"
             if parts and parts[0] in BLOCKED_COMMANDS:
                 return f"Error: '{parts[0]}' is blocked."
+            # Unwrap wrappers (env, bash -c, etc.) and check inner command
+            inner = _extract_inner_command(parts)
+            if inner and inner is not parts and inner[0] in BLOCKED_COMMANDS:
+                return f"Error: '{inner[0]}' is blocked."
             for arg in parts[1:]:
                 if arg in BLOCKED_COMMANDS:
                     return f"Error: '{arg}' is blocked."
@@ -887,9 +892,9 @@ def run_approved_command(command: str, cwd: str = None) -> str:
 # ──────────────────────────────────────────
 # REGISTRY
 # ──────────────────────────────────────────
-def execute_python(code: str) -> str:
+def execute_python(code: str, _session_id: str = None) -> str:
     """Execute Python code in a sandbox. Captures stdout/stderr and matplotlib plots."""
-    result = execute_python_sandbox(code)
+    result = execute_python_sandbox(code, session_id=_session_id)
     return result  # Returns dict; agent.py handles structured output
 
 
@@ -1101,19 +1106,44 @@ def html_preview(html: str, title: str = "Interactive Preview") -> dict:
 
 
 # ──────────────────────────────────────────
-# SCRATCHPAD / NOTES — Persistent across rounds
+# SCRATCHPAD / NOTES — Graph-backed, persistent across rounds
 # ──────────────────────────────────────────
-# Session-scoped notes. Cleared when a new chat starts.
+# The graph reference is set by agent.py at the start of each conversation.
+# When set, save_notes writes structured note nodes to the graph.
+# Text fallback is maintained for backward compatibility.
 _session_notes: dict = {"content": ""}
+_thread_local = threading.local()  # Thread-safe graph ref for concurrent chats
 
-def save_notes(notes: str, mode: str = "append") -> str:
-    """Save working notes/findings that persist across tool rounds.
-    Use this to accumulate findings, track progress, or maintain context.
-    When the user says 'continue', your notes are automatically available.
+def set_graph_ref(graph):
+    """Set the knowledge graph reference for graph-backed notes.
+    Called by agent.py at conversation start. Thread-safe."""
+    _thread_local.graph_ref = graph
+
+def _get_graph_ref():
+    """Get the current thread's graph reference."""
+    return getattr(_thread_local, 'graph_ref', None)
+
+def save_notes(notes: str, category: str = "finding", mode: str = "append") -> str:
+    """Save structured notes to your scratchpad. Notes persist across rounds
+    and are automatically available when the user says 'continue'.
+    
     Args:
-        notes: Text to save (findings, analysis, progress tracking)
-        mode: 'append' (add to existing notes) or 'replace' (overwrite)
+        notes: Text to save (findings, analysis, plans, progress)
+        category: 'finding' (discoveries), 'plan' (next steps), 'todo'
+                  (remaining tasks), 'progress' (completed items),
+                  'observation' (general observations)
+        mode: 'append' (add to existing) or 'replace' (overwrite —
+              only affects text fallback, graph notes always accumulate)
     """
+    # Write to knowledge graph if available (primary storage)
+    graph = _get_graph_ref()
+    if graph is not None:
+        try:
+            graph.add_note(notes, category=category)
+        except Exception:
+            pass  # Fall through to text backup
+    
+    # Text fallback (for backward compat and when graph unavailable)
     if mode == "replace":
         _session_notes["content"] = notes.strip()
     else:
@@ -1121,11 +1151,21 @@ def save_notes(notes: str, mode: str = "append") -> str:
             _session_notes["content"] += "\n\n" + notes.strip()
         else:
             _session_notes["content"] = notes.strip()
+    
     line_count = _session_notes["content"].count('\n') + 1
-    return f"Notes saved ({line_count} lines, {len(_session_notes['content'])} chars). Your notes persist across rounds and will be available if the user says 'continue'."
+    return f"Notes saved ({line_count} lines, {len(_session_notes['content'])} chars). Category: {category}. Notes persist across rounds and are available on 'continue'."
 
 def get_session_notes() -> str:
-    """Return current session notes (called by agent.py for context injection)."""
+    """Return current session notes.
+    Prefers the graph-backed scratchpad view if available."""
+    graph = _get_graph_ref()
+    if graph is not None:
+        try:
+            view = graph.get_scratchpad_view()
+            if view:
+                return view
+        except Exception:
+            pass
     return _session_notes["content"]
 
 def clear_session_notes():
@@ -1174,10 +1214,13 @@ def get_all_tool_ids() -> list:
     return ids
 
 
-def execute_tool(name: str, args: dict):
+def execute_tool(name: str, args: dict, session_id: str = None):
     """Execute a tool by name. Checks built-ins first, then plugins."""
     if name in BUILTIN_TOOLS:
         try:
+            # Pass session_id to sandbox-based tools
+            if name == "execute_python" and session_id:
+                return BUILTIN_TOOLS[name](**args, _session_id=session_id)
             return BUILTIN_TOOLS[name](**args)
         except Exception as e:
             return f"Error executing tool '{name}': {str(e)}"

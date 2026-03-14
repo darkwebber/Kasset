@@ -1,8 +1,9 @@
 "use client";
 
-import { useMemo } from "react";
-import { Search } from "lucide-react";
+import { useMemo, useEffect, useState } from "react";
+import { Search, History } from "lucide-react";
 import { getToolMeta, TOOL_DISPLAY, TOOL_EXAMPLES } from "./toolMeta";
+import { getApiBase } from "@/lib/api";
 
 interface WelcomeScreenProps {
   cartridgeName: string;
@@ -17,9 +18,28 @@ interface WelcomeScreenProps {
   onOpenMemory?: () => void;
   onOpenContext?: () => void;
   onOpenSearch?: () => void;
+  cartridgeId: string;
 }
 
-export default function WelcomeScreen({ cartridgeName, cartridgeIcon, bootMessage, tools, suggestedPrompts, onSendPrompt, memoryCount, modelName, ctxActiveCount, onOpenMemory, onOpenContext, onOpenSearch }: WelcomeScreenProps) {
+export default function WelcomeScreen({ cartridgeName, cartridgeId, cartridgeIcon, bootMessage, tools, suggestedPrompts, onSendPrompt, memoryCount, modelName, ctxActiveCount, onOpenMemory, onOpenContext, onOpenSearch }: WelcomeScreenProps) {
+  const [recentTopics, setRecentTopics] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!cartridgeId) return;
+    const fetchContext = async () => {
+      try {
+        const res = await fetch(`${getApiBase()}/api/context/kasset/${cartridgeId}`);
+        const data = await res.json();
+        const topics = data?.context?.topics || [];
+        // Get the latest 4 unique topics
+        const latest = Array.from(new Set(topics.map((t: any) => t.text))).slice(-4).reverse() as string[];
+        setRecentTopics(latest);
+      } catch (err) {
+        console.error("Failed to fetch kasset context:", err);
+      }
+    };
+    fetchContext();
+  }, [cartridgeId]);
   const examples = useMemo(() => {
     // Prefer cartridge-defined prompts
     if (suggestedPrompts.length > 0) return suggestedPrompts.slice(0, 4);
@@ -48,17 +68,44 @@ export default function WelcomeScreen({ cartridgeName, cartridgeIcon, bootMessag
 
       {/* Example prompts — 2-col grid on desktop */}
       <div className="w-full max-w-lg mb-5 sm:mb-8">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 sm:gap-2">
-          {examples.map((prompt, i) => (
-            <button
-              key={i}
-              onClick={() => onSendPrompt(prompt)}
-              className="text-left px-3 py-2.5 rounded-lg border border-white/[0.05] hover:border-[var(--accent)]/25 bg-white/[0.02] hover:bg-[var(--accent)]/[0.04] text-white/35 hover:text-white/70 text-[11px] sm:text-xs font-mono transition-all leading-relaxed group cursor-pointer active:scale-[0.99]"
-            >
-              <span className="opacity-40 group-hover:opacity-70 mr-1">›</span> {prompt}
-            </button>
-          ))}
-        </div>
+        {recentTopics.length > 0 && (
+          <div className="mb-4">
+            <div className="flex items-center gap-1.5 justify-center mb-2 text-[10px] text-[var(--accent)]/50 uppercase tracking-widest font-bold">
+              <History size={10} />
+              <span>Recent Tasks</span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 sm:gap-2">
+              {recentTopics.map((topic, i) => (
+                <button
+                  key={`recent-${i}`}
+                  onClick={() => onSendPrompt(topic)}
+                  className="text-left px-3 py-2.5 rounded-lg border border-[var(--accent)]/[0.15] bg-[var(--accent)]/[0.02] hover:bg-[var(--accent)]/[0.06] text-white/50 hover:text-white/80 text-[11px] sm:text-xs font-mono transition-all leading-relaxed group cursor-pointer active:scale-[0.99] truncate"
+                >
+                  <span className="opacity-40 group-hover:opacity-70 mr-1 text-[var(--accent)]">›</span> {topic}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {examples.length > 0 && (
+          <div>
+            <div className="flex items-center justify-center mb-2 text-[10px] text-white/20 uppercase tracking-widest font-bold">
+              <span>Suggested</span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 sm:gap-2">
+              {examples.map((prompt, i) => (
+                <button
+                  key={`example-${i}`}
+                  onClick={() => onSendPrompt(prompt)}
+                  className="text-left px-3 py-2.5 rounded-lg border border-white/[0.05] hover:border-[var(--accent)]/25 bg-white/[0.02] hover:bg-[var(--accent)]/[0.04] text-white/35 hover:text-white/70 text-[11px] sm:text-xs font-mono transition-all leading-relaxed group cursor-pointer active:scale-[0.99]"
+                >
+                  <span className="opacity-40 group-hover:opacity-70 mr-1">›</span> {prompt}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Tool badges — compact */}

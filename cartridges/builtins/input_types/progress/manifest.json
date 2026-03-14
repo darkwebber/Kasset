@@ -1,0 +1,26 @@
+{
+  "id": "embed_progress",
+  "name": "Progress Steps Widget",
+  "description": "Visualizes multi-step progress in the chat via an embed block. Pass embed_type='progress' and a config with a title and steps array.",
+  "version": "1.0",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "embed_type": { "type": "string", "description": "Must be 'progress'"},
+      "title": { "type": "string", "description": "Title of the progress block" },
+      "steps": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "label": { "type": "string", "description": "Short description of the step" },
+            "status": { "type": "string", "enum": ["pending", "running", "completed", "error"] },
+            "detail": { "type": "string", "description": "Optional details about the current progress state" }
+          },
+          "required": ["label", "status"]
+        }
+      }
+    },
+    "required": ["embed_type", "steps"]
+  }
+}

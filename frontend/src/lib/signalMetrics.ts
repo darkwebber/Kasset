@@ -22,7 +22,7 @@ interface SnakeStats {
   achievements: string[];
 }
 
-const STORAGE_KEY = "kasset-snake-stats";
+const STORAGE_KEY = "kasset-signal-metrics";
 const MAX_RECENT_GAMES = 10;
 
 export function getSnakeStats(): SnakeStats {

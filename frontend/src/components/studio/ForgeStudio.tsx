@@ -10,6 +10,7 @@ import { useInputTypeForgeStore, InputTypeManifest } from "@/stores/inputTypeFor
 
 // Editors
 import { KassetEditor } from "./editors/KassetEditor";
+import { KassetWizard } from "./editors/KassetWizard";
 import { ToolEditor } from "./editors/ToolEditor";
 import { InputTypeEditor } from "./editors/InputTypeEditor";
 
@@ -137,6 +138,19 @@ export default function ForgeStudio({ onClose }: { onClose: () => void }) {
           {/* cartridges Tab */}
           {tab === "cartridges" && (
             editingCartridge ? (
+              isNewCartridge ? (
+                <KassetWizard
+                  initial={editingCartridge}
+                  onSave={async (c) => {
+                    await saveKasset(c);
+                    setEditingCartridge(null);
+                    loadAvailableCartridges();
+                    fetchToolIds();
+                    soundNewChat();
+                  }}
+                  onCancel={() => setEditingCartridge(null)}
+                />
+              ) : (
               <KassetEditor 
                 cartridge={editingCartridge} 
                 onSave={async (c) => {
@@ -149,7 +163,7 @@ export default function ForgeStudio({ onClose }: { onClose: () => void }) {
                 onDelete={() => { deleteKasset(editingCartridge.id).then(() => { setEditingCartridge(null); loadAvailableCartridges(); }); }}
                 onCancel={() => setEditingCartridge(null)}
                 isNew={isNewCartridge}
-              />
+              />)
             ) : (
               <div className="space-y-4">
                 <div className="flex items-center justify-between">

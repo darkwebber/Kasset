@@ -200,6 +200,13 @@ class ChatStore:
         path = ChatStore._chat_path(chat_id)
         if path.exists():
             path.unlink()
+            # Also clean up the knowledge graph file
+            graph_path = ChatStore._graph_path(chat_id)
+            if graph_path.exists():
+                try:
+                    graph_path.unlink()
+                except Exception:
+                    pass
             return True
         return False
 

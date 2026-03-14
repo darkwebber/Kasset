@@ -79,3 +79,5 @@ frontend/next-env.d.ts
 3D Visualizer*.md
 FIXES_SUMMARY.md
 progress.txt
+parse_test*.py
+_fix_*.py

@@ -36,8 +36,11 @@ DEFAULT_TOKENS = 4096
 VISION_TOKEN_CAP = 4096
 MAX_IMAGE_DIMENSION = 768
 
-class ModelClient:
-    """Wrapper around MLX-VLM to handle model loading, inference, and streaming."""
+from .core.inference_backend import InferenceBackend
+
+
+class ModelClient(InferenceBackend):
+    """MLX-VLM inference backend. Implements InferenceBackend interface."""
     
     def __init__(self, model_path: str = MODEL_PATH, lazy: bool = False):
         self.model_path = model_path
@@ -77,28 +80,17 @@ class ModelClient:
             self.processor = processor
             self.config = config
 
-            # Inject the simple template to avoid Qwen3.5 tool-calling errors
-            _SIMPLE_TEMPLATE = (
-                "{%- if enable_thinking is not defined -%}"
-                    "{%- set enable_thinking = true -%}"
-                "{%- endif -%}"
-                "{%- for message in messages -%}"
-                    "{{- '<|im_start|>' + message['role'] + '\\n' "
-                        "+ message['content'] + '<|im_end|>\\n' -}}"
-                "{%- endfor -%}"
-                "{%- if add_generation_prompt -%}"
-                    "{{- '<|im_start|>assistant\\n' -}}"
-                    "{%- if enable_thinking -%}"
-                        "{{- '<think>\\n' -}}"
-                    "{%- else -%}"
-                        "{{- '<think>\\n\\n</think>\\n\\n' -}}"
-                    "{%- endif -%}"
-                "{%- endif -%}"
-            )
+            # Store reference to the native template (for debugging)
             self._original_template = None
             if hasattr(self.processor, "tokenizer"):
                 self._original_template = getattr(self.processor.tokenizer, "chat_template", None)
-                self.processor.tokenizer.chat_template = _SIMPLE_TEMPLATE
+            # NOTE: We use the native Qwen3.5 chat template as-is.
+            # The previous _SIMPLE_TEMPLATE override broke native tool-calling format.
+            # The native template properly handles:
+            #   - Thinking tags (<think>...</think>)
+            #   - Tool call format (Qwen3-Coder XML)
+            #   - Rolling checkpoint (strip thinking from old messages)
+            #   - Message framing (ChatML)
             
             self._load_time = time.time() - t0
             logger.info(f"\u2705 Model loaded successfully in {self._load_time:.1f}s")
@@ -335,8 +327,8 @@ class ModelClient:
         prompt = self._build_prompt(messages, thinking, has_image)
         
         # Use provided values or fall back to defaults
-        temp = temperature if temperature is not None else (1.0 if thinking else 0.7)
-        tp = top_p if top_p is not None else (0.95 if thinking else 0.8)
+        temp = temperature if temperature is not None else 0.6
+        tp = top_p if top_p is not None else 0.95
         
         inference_image = None
         if has_image:
@@ -358,7 +350,7 @@ class ModelClient:
                 temperature=temp,
                 top_p=tp,
                 top_k=20,
-                repetition_penalty=1.05,
+                repetition_penalty=1.0,
                 verbose=False,
             )
         except Exception as e:
@@ -373,7 +365,7 @@ class ModelClient:
                     temperature=temp,
                     top_p=tp,
                     top_k=20,
-                    repetition_penalty=1.05,
+                    repetition_penalty=1.0,
                     verbose=False,
                 )
             else:
@@ -402,8 +394,8 @@ class ModelClient:
         prompt = self._build_prompt(messages, thinking, has_image)
         
         # Use provided values or fall back to defaults
-        temp = temperature if temperature is not None else (1.0 if thinking else 0.7)
-        tp = top_p if top_p is not None else (0.95 if thinking else 0.8)
+        temp = temperature if temperature is not None else 0.6
+        tp = top_p if top_p is not None else 0.95
         
         inference_image = None
         if has_image:
@@ -424,7 +416,7 @@ class ModelClient:
                 temperature=temp,
                 top_p=tp,
                 top_k=20,
-                repetition_penalty=1.05,
+                repetition_penalty=1.0,
             ):
                 yield chunk.text if hasattr(chunk, "text") else str(chunk)
         except Exception as e:
@@ -439,7 +431,7 @@ class ModelClient:
                     temperature=temp,
                     top_p=tp,
                     top_k=20,
-                    repetition_penalty=1.05,
+                    repetition_penalty=1.0,
                 ):
                     yield chunk.text if hasattr(chunk, "text") else str(chunk)
             else:

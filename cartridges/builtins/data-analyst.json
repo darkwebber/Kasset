@@ -21,6 +21,7 @@
     "run_command",
     "calculate",
     "execute_python",
+    "save_notes",
     "request_user_input"
   ],
   "input_methods": [
@@ -67,5 +68,6 @@
   "suggested_max_rounds": 10,
   "suggested_temperature": 0.1,
   "suggested_top_p": 0.9,
-  "memory_enabled": false
+  "memory_enabled": false,
+  "collaboration_mode": true
 }

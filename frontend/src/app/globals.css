@@ -283,6 +283,21 @@ input[type="range"].accent-slider:disabled::-webkit-slider-thumb {
   box-shadow: none;
 }
 
+/* ─── Responsive typography ─── */
+@media (max-width: 640px) {
+  .prose-crt { font-size: 13px; }
+  .prose-crt h1 { font-size: 1rem; margin-top: 1rem; }
+  .prose-crt h2 { font-size: 0.9rem; margin-top: 0.75rem; }
+  .prose-crt h3 { font-size: 0.85rem; margin-top: 0.5rem; }
+  .prose-crt table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .prose-crt pre { font-size: 12px; }
+}
+
+/* Landscape phone — reduce vertical padding to maximize content */
+@media (max-height: 500px) and (orientation: landscape) {
+  .crt-screen { padding-top: 0.25rem !important; padding-bottom: 0.25rem !important; }
+}
+
 /* Accessibility: reduced motion preference */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

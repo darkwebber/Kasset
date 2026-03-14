@@ -47,6 +47,7 @@ class Cartridge(BaseModel):
     suggested_temperature: Optional[float] = None
     suggested_top_p: Optional[float] = None
     memory_enabled: bool = False
+    collaboration_mode: bool = False
     suggested_model: Optional[str] = None
     # Sharing / distribution metadata (optional)
     long_description: Optional[str] = None
@@ -72,6 +73,7 @@ class LoadedConfig(BaseModel):
     suggested_temperature: Optional[float] = None
     suggested_top_p: Optional[float] = None
     suggested_model: Optional[str] = None
+    collaboration_mode: bool = False
     input_methods: List[Dict[str, Any]] = []
 
 class CartridgeLoader:
@@ -349,5 +351,6 @@ class CartridgeLoader:
             suggested_temperature=next((c.suggested_temperature for c in reversed(carts) if c.suggested_temperature is not None), None),
             suggested_top_p=next((c.suggested_top_p for c in reversed(carts) if c.suggested_top_p is not None), None),
             suggested_model=next((c.suggested_model for c in reversed(carts) if c.suggested_model), None),
+            collaboration_mode=any(c.collaboration_mode for c in carts),
             input_methods=input_methods,
         )

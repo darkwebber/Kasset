@@ -7,6 +7,7 @@ import ForgeStudio from "@/components/studio/ForgeStudio";
 import NetworkAuthModal from "@/components/NetworkAuthModal";
 import ToastContainer from "@/components/Toast";
 import Onboarding from "@/components/Onboarding";
+import UnsupportedScreen from "@/components/UnsupportedScreen";
 import { useCartridgeStore } from "@/stores/cartridgeStore";
 import { getApiBase, isLocalClient, onSessionExpired } from "@/lib/api";
 
@@ -93,7 +94,8 @@ export default function Home() {
   }
 
   return (
-    <main className="w-full h-screen flex items-center justify-center p-4 relative overflow-hidden">
+    <UnsupportedScreen>
+    <main className="w-full h-screen flex items-center justify-center p-0 sm:p-4 relative overflow-hidden">
       {showCarousel || !activeConfig ? (
         <CartridgeCarousel
           onSelect={() => setShowCarousel(false)}
@@ -122,5 +124,6 @@ export default function Home() {
 
       <ToastContainer />
     </main>
+    </UnsupportedScreen>
   );
 }

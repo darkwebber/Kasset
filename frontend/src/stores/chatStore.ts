@@ -67,8 +67,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (!res.ok) throw new Error(`Failed to load chat (${res.status})`);
       const data = await res.json();
       if (data.chat) {
+        const rawMessages = data.chat.messages;
+        if (!Array.isArray(rawMessages)) {
+          console.warn(`Chat ${chatId} has invalid messages (not an array)`);
+          return null;
+        }
+        const validMessages = rawMessages.filter(
+          (m: any) => m && typeof m === "object" && typeof m.role === "string" && m.content !== undefined
+        );
         set({ activeChatId: chatId });
-        return { messages: data.chat.messages, cartridge_ids: data.chat.cartridge_ids };
+        return { messages: validMessages, cartridge_ids: data.chat.cartridge_ids || [] };
       }
     } catch (e) {
       console.error("Failed to load chat", e);

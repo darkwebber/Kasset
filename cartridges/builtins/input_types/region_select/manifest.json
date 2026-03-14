@@ -1,0 +1,16 @@
+{
+  "id": "region_select",
+  "name": "Region Selector",
+  "version": "1.0.0",
+  "description": "Let the user paint or select a region on the current image. Returns a base64 mask image. Call request_user_input with widget_type 'region_select'.",
+  "author": "system",
+  "widget_type": "region_select",
+  "icon": "lasso",
+  "tags": ["image", "mask", "region", "selection"],
+  "config_template": {
+    "prompt": "Paint the region to select:",
+    "image_url": "",
+    "brush_size": 20,
+    "mode": "paint"
+  }
+}

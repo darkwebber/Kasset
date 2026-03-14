@@ -23,6 +23,8 @@ export function ToolEditor({ manifest: initManifest, handlerCode: initCode, onSa
   const [saving, setSaving] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
+  const [showTest, setShowTest] = useState(false);
+  const [testArgs, setTestArgs] = useState<Record<string, string>>({});
   const [depStatus, setDepStatus] = useState<Record<string, string> | null>(null);
   const [installingDeps, setInstallingDeps] = useState(false);
 
@@ -43,7 +45,16 @@ export function ToolEditor({ manifest: initManifest, handlerCode: initCode, onSa
     if (!manifest.id) return;
     setTesting(true);
     try {
-      const data = await testTool(manifest.id, {}); // Basic test with empty args
+      // Convert string inputs to proper types based on param definitions
+      const typedArgs: Record<string, any> = {};
+      for (const [k, v] of Object.entries(testArgs)) {
+        if (!v && v !== "0") continue;
+        const paramDef = manifest.parameters[k];
+        if (paramDef?.type === "number") typedArgs[k] = Number(v);
+        else if (paramDef?.type === "boolean") typedArgs[k] = v === "true";
+        else typedArgs[k] = v;
+      }
+      const data = await testTool(manifest.id, typedArgs);
       const result = typeof data.result === "string" ? data.result : JSON.stringify(data.result, null, 2);
       setTestResult(result);
     } catch (err: any) {
@@ -154,6 +165,32 @@ export function ToolEditor({ manifest: initManifest, handlerCode: initCode, onSa
           <Field label="Tags">
             <TagInput tags={manifest.tags || []} onChange={v => set("tags", v)} />
           </Field>
+        </div>
+      )}
+
+      {/* Test Panel */}
+      <SectionHeader title="Test Tool" open={showTest} onToggle={() => setShowTest(!showTest)} />
+      {showTest && (
+        <div className="space-y-2 pl-3 border-l border-emerald-500/10">
+          {Object.keys(manifest.parameters).length > 0 ? (
+            Object.entries(manifest.parameters).map(([key, val]: [string, any]) => (
+              <div key={key} className="flex items-center gap-2">
+                <label className="text-[10px] text-white/30 font-mono w-24 shrink-0 truncate" title={val.description || key}>{key}</label>
+                <input
+                  value={testArgs[key] || ""}
+                  onChange={e => setTestArgs(prev => ({ ...prev, [key]: e.target.value }))}
+                  placeholder={val.type === "boolean" ? "true / false" : val.type || "string"}
+                  className="flex-1 bg-white/[0.035] border border-white/[0.06] rounded-md px-2.5 py-[5px] text-[11px] text-white/60 font-mono focus:outline-none focus:border-emerald-500/30 transition-all"
+                />
+              </div>
+            ))
+          ) : (
+            <p className="text-[10px] text-white/20 italic">No parameters defined — test will run with empty args.</p>
+          )}
+          <button onClick={handleTest} disabled={testing || !manifest.id}
+            className="flex items-center gap-1.5 px-3 py-[6px] bg-emerald-500/8 hover:bg-emerald-500/15 text-emerald-400 rounded-md text-[10px] font-medium transition-all disabled:opacity-25">
+            <Play size={11} /> {testing ? "Running..." : "Run Test"}
+          </button>
         </div>
       )}
 

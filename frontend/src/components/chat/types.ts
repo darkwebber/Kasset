@@ -25,10 +25,13 @@ export interface TextSegment {
 export interface InteractiveSegment {
   kind: "interactive";
   widgetId: string;
-  widgetType: "choice" | "slider" | "editor" | "form" | "embed" | string;
+  widgetType: "choice" | "slider" | "editor" | "outline" | "form" | "embed" | "diff" | string;
   config: Record<string, any>;
-  status: "pending" | "submitted" | "dismissed";
+  status: "pending" | "submitted" | "dismissed" | "active";
   response?: any;
+  // Persistent widget support
+  persistentId?: string;       // Links widget to a persistent editing session
+  revision?: number;           // Which revision of the content this represents
 }
 
 export type Segment = ToolCallSegment | ThinkingSegment | TextSegment | InteractiveSegment;

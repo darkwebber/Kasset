@@ -2,98 +2,44 @@
 
 import React, { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
-import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import FileExplorer from "./explorer/FileExplorer";
 import ChatDrawer from "./ChatDrawer";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { showToast } from "./Toast";
 import CommandPalette from "./CommandPalette";
-import QuickSettings from "./QuickSettings";
 import type { ToolCallSegment, ThinkingSegment, TextSegment, InteractiveSegment, Segment, Message } from "./chat/types";
 import { TOOL_META, getToolMeta, TOOL_DISPLAY, TOOL_EXAMPLES } from "./chat/toolMeta";
 import ThinkingBlock from "./chat/ThinkingBlock";
 import ToolCallCard from "./chat/ToolCallCard";
 import InteractiveWidget from "./chat/InteractiveWidget";
+import ErrorRecovery from "./chat/ErrorRecovery";
 import DraftBlock, { DraftContext } from "./chat/DraftBlock";
 import WelcomeScreen from "./chat/WelcomeScreen";
+import MentalModelWidget from "./chat/MentalModelWidget";
 import Tutorial from "./Tutorial";
 import { useCartridgeStore } from "@/stores/cartridgeStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { FolderOpen, X, Copy, Check, History, Plus, ChevronDown, ChevronRight, Wrench, Terminal, FileText, Clock, Play, Search, Calculator, Volume2, VolumeX, Square, RefreshCw, Pencil, Scissors, Trash2, CornerDownLeft, Paperclip, HelpCircle, Download, Command, ThumbsUp, ThumbsDown } from "lucide-react";
+import { useUIStore } from "@/stores/uiStore";
+import { useAutoScroll } from "./console/hooks/useAutoScroll";
+import { useAttachments } from "./console/hooks/useAttachments";
+import { useMarkdownComponents } from "./console/MarkdownComponents";
+import ConsoleHeader from "./console/ConsoleHeader";
+import ConsoleFooter from "./console/ConsoleFooter";
+import { X, Copy, Check, History, Square, RefreshCw, Pencil, Scissors, CornerDownLeft, Paperclip, Command, ThumbsUp, ThumbsDown, FileText } from "lucide-react";
 import { soundSend, soundThinkStart, soundThinkEnd, soundToolStart, soundToolDone, soundDone, soundError, soundNewChat, soundTick, soundCartridgeEject, isMuted, setMuted } from "@/lib/sounds";
 import { getApiBase, isLocalClient } from "@/lib/api";
-import SnakeGame from "./SnakeGame";
-import dynamic from "next/dynamic";
-const MermaidDiagram = dynamic(() => import("./MermaidDiagram"), { ssr: false });
+import SignalProcessor from "./SignalProcessor";
+import ImagePanel from "./image/ImagePanel";
+import { useImageStore, useCanvasSync } from "@/stores/imageStore";
 
 // ═══════════════════════════════════════════
-// SUB-COMPONENTS (CopyButton stays here; others extracted to chat/)
+// SUB-COMPONENTS (CopyButton + HtmlPreviewBlock extracted to console/MarkdownComponents.tsx)
 // ═══════════════════════════════════════════
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
-      className="absolute top-1 right-1 p-1 rounded bg-white/5 text-white/25 hover:text-white/60 hover:bg-white/10 transition-all opacity-0 group-hover/code:opacity-100"
-    >
-      {copied ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
-    </button>
-  );
-}
-
-function HtmlPreviewBlock({ code }: { code: string }) {
-  const [showPreview, setShowPreview] = useState(false);
-  return (
-    <div className="relative group/code my-3">
-      <div className="flex items-center justify-between px-4 py-1.5 bg-white/5 border-b border-white/5 rounded-t-md">
-        <span className="text-[10px] uppercase tracking-widest text-white/30 font-mono">html</span>
-        <button
-          onClick={() => setShowPreview(p => !p)}
-          className="text-[10px] font-mono px-2 py-0.5 rounded bg-[var(--accent)]/10 text-[var(--accent)]/70 hover:bg-[var(--accent)]/20 hover:text-[var(--accent)] transition-all"
-        >
-          {showPreview ? "⟨/⟩ Code" : "▶ Preview"}
-        </button>
-      </div>
-      <CopyButton text={code} />
-      {showPreview ? (
-        <div className="rounded-b-md overflow-hidden border border-white/6 border-t-0">
-          <iframe
-            srcDoc={code}
-            sandbox="allow-scripts"
-            className="w-full bg-white rounded-b-md"
-            style={{ minHeight: 200, maxHeight: 500, border: "none" }}
-            title="HTML Preview"
-          />
-        </div>
-      ) : (
-        <SyntaxHighlighter
-          style={vscDarkPlus}
-          language="html"
-          PreTag="div"
-          customStyle={{
-            margin: 0,
-            borderRadius: "0 0 6px 6px",
-            background: "rgba(0,0,0,0.6)",
-            fontSize: "13px",
-            border: "1px solid rgba(255,255,255,0.06)",
-            borderTop: "none",
-          }}
-          codeTagProps={{ style: { fontFamily: "var(--font-mono), monospace" } }}
-        >
-          {code}
-        </SyntaxHighlighter>
-      )}
-    </div>
-  );
-}
 
 /** Strip raw tags and leaked JSON fragments from content for clean display */
 const _cleanRegexes = [
@@ -106,7 +52,13 @@ const _cleanRegexes = [
   { re: /<\|tool_call\|>[\s\S]*?<\|\/tool_call\|>/gi },
   { re: /<\|tool_call\|>[\s\S]*$/gi },
   { re: /<\|\/tool_call\|>/gi },
-  // Leaked JSON fragments from truncated tool calls (e.g. '"}> properly.' or '"}>  time.')
+  // Qwen3-Coder native XML tool call format
+  { re: /<function=\w+>[\s\S]*?<\/function>/gi },
+  { re: /<function=\w+>[\s\S]*$/gi },
+  { re: /<\/function>/gi },
+  // Leaked <answer> tags (Qwen3.5 sometimes wraps answers)
+  { re: /<\/?answer>/gi },
+  // Leaked JSON fragments from truncated tool calls (e.g. '"}> properly.' or '"}> time.')
   { re: /"\s*\}\s*>\s*[^<\n]{0,30}\.?\s*$/gm },
   // Raw JSON tool call objects that leaked through
   { re: /\{"name"\s*:\s*"[\w]+"\s*,\s*"arguments"\s*:\s*\{[\s\S]*?\}\s*\}/gi },
@@ -144,11 +96,16 @@ function extractStreamText(accumulated: string): string {
   text = text.replace(/<\/tool_call>[\s\S]*/gi, '');
   // Strip </think> tags that leak into visible text
   text = text.replace(/<\/think>/gi, '');
-  // Trim anything from <tool_call> onward (both formats)
+  // Trim anything from tool call tags onward (all formats)
   const toolIdx = text.indexOf("<tool_call>");
   if (toolIdx >= 0) text = text.substring(0, toolIdx);
   const toolIdx2 = text.indexOf("<|tool_call|>");
   if (toolIdx2 >= 0) text = text.substring(0, toolIdx2);
+  // Qwen3-Coder XML format: <function=name>...
+  const funcIdx = text.search(/<function=\w+>/);
+  if (funcIdx >= 0) text = text.substring(0, funcIdx);
+  // Strip leaked <answer> / </answer> tags
+  text = text.replace(/<\/?answer>/gi, '');
   // Strip trailing JSON closers leaked from tool calls (e.g. '"}}' or '"}}  ')
   text = text.replace(/"\s*\}\s*\}\s*$/gm, '');
   // Trim leaked JSON fragments like '"}> properly.'
@@ -250,10 +207,6 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [showExplorer, setShowExplorer] = useState(false);
-  const [showDrawer, setShowDrawer] = useState(false);
-  const [drawerTab, setDrawerTab] = useState<"history" | "memory" | "context">("history");
-  const [drawerFocusSearch, setDrawerFocusSearch] = useState(false);
   const [modelName, setModelName] = useState("");
   const [attachments, setAttachments] = useState<{path: string, name: string}[]>([]);
   const [contextInfo, setContextInfo] = useState<{message_count: number, estimated_tokens: number, max_tokens: number} | null>(null);
@@ -269,27 +222,54 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
   const [editingText, setEditingText] = useState("");
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [messageFeedback, setMessageFeedback] = useState<Record<number, 'up' | 'down'>>({});
-  const [showPalette, setShowPalette] = useState(false);
-  const [showTutorial, setShowTutorial] = useState(false);
-  const [showSnake, setShowSnake] = useState(false);
-  const [showQuickSettings, setShowQuickSettings] = useState(false);
-  const [drawerAutoPreview, setDrawerAutoPreview] = useState(false);
+
+  // UI overlay state — extracted to Zustand store
+  const {
+    showExplorer, setShowExplorer,
+    showDrawer, setShowDrawer,
+    drawerTab, setDrawerTab,
+    drawerFocusSearch, setDrawerFocusSearch,
+    drawerAutoPreview, setDrawerAutoPreview,
+    showPalette, setShowPalette,
+    showTutorial, setShowTutorial,
+    showSnake: showSignalDebug, setShowSnake: setShowSignalDebug,
+    showQuickSettings, setShowQuickSettings,
+    showMentalModel, setShowMentalModel,
+    togglePalette, toggleTutorial,
+  } = useUIStore();
+
   const redDotClicks = useRef(0);
   const redDotTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sessionStartRef = useRef(Date.now());
 
-  const scrollRef = useRef<HTMLDivElement>(null);
+  // Auto-scroll management — extracted to hook
+  const { scrollRef, pinnedToBottom } = useAutoScroll(isGenerating, streamSegments, messages.length);
   const thinkStartRef = useRef<number>(0);
   const abortRef = useRef<AbortController | null>(null);
-  const pinnedToBottom = useRef(true);
+  const rafIdRef = useRef<number | null>(null);        // 5.1: track RAF for cleanup on unmount
+  const activeConfigRef = useRef(activeConfig);         // 5.2: always-current config for closures
+  activeConfigRef.current = activeConfig;
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileUploadRef = useRef<HTMLInputElement>(null);
   const chatImportRef = useRef<HTMLInputElement>(null);
   const mirrorRef = useRef<HTMLDivElement>(null);
+  const qsAnchorDesktopRef = useRef<HTMLButtonElement>(null);
+  const qsAnchorMobileRef = useRef<HTMLButtonElement>(null);
   const isLocal = typeof window !== "undefined" ? isLocalClient() : true;
 
   // Derive cartridge info early (used by handlers below)
   const currentCartridge = activeConfig ? availableCartridges.find(c => c.id === activeConfig.active_cartridge_ids[0]) : null;
   const showWelcome = messages.length === 0 && !!activeConfig;
+
+  // Cleanup RAF on unmount (5.1)
+  useEffect(() => {
+    return () => {
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
+    };
+  }, []);
 
   // Sync mute state on mount
   useEffect(() => {
@@ -325,6 +305,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
       return m;
     });
     setMessages(hydrated);
+    resetCanvas();
     if (loadedChatId) {
       setChatId(loadedChatId);
       chatIdRef.current = loadedChatId;
@@ -351,6 +332,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
     setStreamSegments([]);
     setEditingIdx(null);
     setAttachments([]);
+    resetCanvas();
   };
 
   // ─── Render message to Markdown (for export/copy) ───
@@ -363,6 +345,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
       if (seg.kind === "text" && seg.content.trim()) {
         parts.push(seg.content);
       } else if (seg.kind === "tool") {
+          if (seg.name === "request_user_input" || seg.name === "save_notes") continue;
         const tool = seg as ToolCallSegment;
         const toolLabel = TOOL_DISPLAY[tool.name] || tool.name;
         const code = tool.args?.code || tool.args?.command || tool.args?.query || tool.args?.expression || "";
@@ -461,7 +444,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
     const handleKeyDown = (e: KeyboardEvent) => {
       const meta = e.metaKey || e.ctrlKey;
       // ⌘K — toggle command palette
-      if (meta && e.key === "k") { e.preventDefault(); setShowPalette(p => !p); return; }
+      if (meta && e.key === "k") { e.preventDefault(); togglePalette(); return; }
       // ⌘N — new chat
       if (meta && e.key === "n") { e.preventDefault(); handleNewChat(); return; }
       // ⌘E — export chat (lossless JSON)
@@ -471,7 +454,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
       // ⌘⇧F — open forge
       if (meta && e.shiftKey && e.key === "F") { e.preventDefault(); onOpenForge?.(); return; }
       // ⌘/ — toggle help
-      if (meta && e.key === "/") { e.preventDefault(); setShowTutorial(t => !t); return; }
+      if (meta && e.key === "/") { e.preventDefault(); toggleTutorial(); return; }
       // ⌘. — focus input
       if (meta && e.key === ".") { e.preventDefault(); inputRef.current?.focus(); return; }
       // Escape — close overlays or stop generation
@@ -481,6 +464,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
         if (showTutorial) { setShowTutorial(false); return; }
         if (showExplorer) { setShowExplorer(false); return; }
         if (showDrawer) { setShowDrawer(false); return; }
+        if (showMentalModel) { setShowMentalModel(false); return; }
         if (isGenerating) { handleStop(); return; }
       }
     };
@@ -490,10 +474,21 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
 
   // ─── Stop generation ───
   const handleStop = () => {
+    // 1. Signal backend to cancel the agent loop + model inference
+    if (chatId) {
+      fetch(`${getApiBase()}/api/chat/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId }),
+      }).catch(() => {}); // fire-and-forget
+    }
+    // 2. Abort the SSE fetch on the client side
     if (abortRef.current) {
       abortRef.current.abort();
       abortRef.current = null;
     }
+    // 3. Force generating state off
+    setIsGenerating(false);
   };
 
   // ─── Retry last assistant response ───
@@ -591,101 +586,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
     }
   };
 
-  const mdComponents = useMemo<Components>(() => ({
-    code({ className, children, ...props }) {
-      const match = /language-(\w+)/.exec(className || "");
-      const codeStr = String(children ?? "").replace(/\n$/, "");
-      // Skip empty or "undefined" code blocks (caused by broken model output)
-      if (!codeStr || codeStr === "undefined" || codeStr === "null") {
-        return null;
-      }
-      if (match) {
-        // Render mermaid diagrams as actual diagrams
-        if (match[1] === "mermaid") {
-          return <MermaidDiagram code={codeStr} />;
-        }
-        // Render text/draft/email/markdown as interactive DraftBlock
-        const DRAFT_LANGS = new Set(["text", "draft", "email", "markdown", "md"]);
-        if (DRAFT_LANGS.has(match[1]) && codeStr.length > 20) {
-          return <DraftBlock content={codeStr} language={match[1]} />;
-        }
-        // Render HTML code blocks with live preview toggle
-        if (match[1] === "html" && codeStr.includes("<") && codeStr.length > 40) {
-          return <HtmlPreviewBlock code={codeStr} />;
-        }
-        return (
-          <div className="relative group my-3">
-            <div className="flex items-center justify-between px-4 py-1.5 bg-white/5 border-b border-white/5 rounded-t-md">
-              <span className="text-[10px] uppercase tracking-widest text-white/30 font-mono">{match[1]}</span>
-            </div>
-            <CopyButton text={codeStr} />
-            <SyntaxHighlighter
-              style={vscDarkPlus}
-              language={match[1]}
-              PreTag="div"
-              customStyle={{
-                margin: 0,
-                borderRadius: "0 0 6px 6px",
-                background: "rgba(0,0,0,0.6)",
-                fontSize: "13px",
-                border: "1px solid rgba(255,255,255,0.06)",
-                borderTop: "none",
-              }}
-              codeTagProps={{ style: { fontFamily: "var(--font-mono), monospace" } }}
-            >
-              {codeStr}
-            </SyntaxHighlighter>
-          </div>
-        );
-      }
-      return <code className={className} {...props}>{children}</code>;
-    },
-    table({ children }) {
-      return <div className="overflow-x-auto my-4"><table>{children}</table></div>;
-    },
-    blockquote({ children }) {
-      return (
-        <blockquote className="border-l-2 border-[var(--accent)]/40 pl-4 my-3 text-white/60 italic">
-          {children}
-        </blockquote>
-      );
-    },
-    p({ children, ...props }) {
-      // Auto-embed YouTube links that appear as the sole content of a paragraph
-      const childArr = React.Children.toArray(children);
-      if (childArr.length === 1 && typeof childArr[0] === "object" && (childArr[0] as any)?.type === "a") {
-        const link = childArr[0] as React.ReactElement<{ href?: string }>;
-        const href = link.props?.href || "";
-        const ytMatch = href.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]+)/);
-        if (ytMatch) {
-          return (
-            <div className="my-3 rounded-lg overflow-hidden border border-white/8" style={{ background: "#0d1117" }}>
-              <iframe
-                src={`https://www.youtube.com/embed/${ytMatch[1]}`}
-                className="w-full rounded-lg"
-                style={{ height: 315, border: "none" }}
-                title="YouTube video"
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                allowFullScreen
-                sandbox="allow-scripts allow-same-origin allow-popups"
-              />
-            </div>
-          );
-        }
-      }
-      return <p {...props}>{children}</p>;
-    },
-    a({ href, children, ...props }) {
-      return (
-        <a href={href} target="_blank" rel="noopener noreferrer"
-          className="text-[var(--accent)]/80 hover:text-[var(--accent)] underline underline-offset-2 decoration-[var(--accent)]/30 transition-colors"
-          {...props}
-        >
-          {children}
-        </a>
-      );
-    },
-  }), []);
+  const mdComponents = useMarkdownComponents();
 
   // DraftBlock "Refine" callback — sends the draft text back to the agent for improvement
   const handleDraftRefine = useCallback((draftText: string) => {
@@ -715,46 +616,6 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
     setMessages(msgs);
     submitFromMessages(msgs, prompt);
   };
-
-  // Track user scroll position
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const onScroll = () => {
-      const { scrollTop, scrollHeight, clientHeight } = el;
-      pinnedToBottom.current = scrollHeight - scrollTop - clientHeight < 80;
-    };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
-  }, []);
-
-  // Auto-scroll — only when pinned to bottom AND actively generating
-  useEffect(() => {
-    if (scrollRef.current && pinnedToBottom.current && isGenerating) {
-      requestAnimationFrame(() => {
-        // Re-check pinnedToBottom inside rAF to handle race with user scroll
-        if (scrollRef.current && pinnedToBottom.current) {
-          scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-        }
-      });
-    }
-  }, [streamSegments, isGenerating]);
-
-  // Scroll once when new messages arrive (user send / finalize)
-  useEffect(() => {
-    if (scrollRef.current && pinnedToBottom.current) {
-      requestAnimationFrame(() => {
-        if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-      });
-    }
-  }, [messages.length]);
-
-  // Pin to bottom when generation starts
-  useEffect(() => {
-    if (isGenerating) {
-      pinnedToBottom.current = true;
-    }
-  }, [isGenerating]);
 
   // Auto-resize textarea
   const adjustTextareaHeight = () => {
@@ -881,6 +742,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
       if (!rafPending) {
         rafPending = true;
         rafId = requestAnimationFrame(flushSegments);
+        rafIdRef.current = rafId;
       }
     };
 
@@ -926,13 +788,14 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
           : [...prev, assistantMessage];
         // Auto-save chat after response completes — with retry + localStorage fallback
         const cid = chatIdRef.current;
-        if (cid && activeConfig) {
+        const currentConfig = activeConfigRef.current;
+        if (cid && currentConfig) {
           const saveable = updated.map(m => ({
             role: m.role,
             content: m.content,
             ...(m.segments && m.segments.length > 0 ? { segments: m.segments } : {}),
           }));
-          const payload = { messages: saveable, cartridge_ids: activeConfig.active_cartridge_ids };
+          const payload = { messages: saveable, cartridge_ids: currentConfig.active_cartridge_ids };
           const saveToServer = async (retries = 2) => {
             for (let attempt = 0; attempt <= retries; attempt++) {
               try {
@@ -1077,6 +940,8 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
                     try {
                       partialCode = codeMatch[1]
                         .replace(/\\n/g, '\n').replace(/\\t/g, '\t')
+                        .replace(/\\r/g, '\r').replace(/\\b/g, '\b').replace(/\\f/g, '\f')
+                        .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
                         .replace(/\\"/g, '"').replace(/\\\\/g, '\\');
                       if (partialCode.endsWith('\\')) partialCode = partialCode.slice(0, -1);
                       // Strip trailing JSON/XML artifacts from partial code preview
@@ -1160,7 +1025,61 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
                 widgetType: data.data.widget_type,
                 config: data.data,
                 status: "pending",
-              } as any, true);
+                persistentId: data.data.persistent_id || undefined,
+                revision: 1,
+              } as InteractiveSegment, true);
+            } else if (data.type === "interactive_update") {
+              // Update an existing persistent widget in-place
+              const pid = data.data.persistent_id;
+              const wid = data.data.widget_id;
+              let found = false;
+              segments = segments.map((s) => {
+                if (s.kind === "interactive") {
+                  const seg = s as InteractiveSegment;
+                  if (seg.persistentId === pid || seg.widgetId === wid) {
+                    found = true;
+                    return {
+                      ...seg,
+                      widgetType: data.data.widget_type || seg.widgetType,
+                      config: data.data,
+                      status: "pending" as const,
+                      revision: (seg.revision || 1) + 1,
+                      response: undefined,
+                    } as InteractiveSegment;
+                  }
+                }
+                return s;
+              });
+              if (!found) {
+                // Fallback: push as new if not found in current stream segments
+                // Also check finalized messages
+                setMessages((prev) => {
+                  const updated = prev.map((msg) => {
+                    if (!msg.segments) return msg;
+                    let msgFound = false;
+                    const newSegs = msg.segments.map((s) => {
+                      if (s.kind === "interactive") {
+                        const seg = s as InteractiveSegment;
+                        if (seg.persistentId === pid || seg.widgetId === wid) {
+                          msgFound = true;
+                          return {
+                            ...seg,
+                            widgetType: data.data.widget_type || seg.widgetType,
+                            config: data.data,
+                            status: "pending" as const,
+                            revision: (seg.revision || 1) + 1,
+                            response: undefined,
+                          } as InteractiveSegment;
+                        }
+                      }
+                      return s;
+                    });
+                    return msgFound ? { ...msg, segments: newSegs } : msg;
+                  });
+                  return updated;
+                });
+              }
+              flushSegments();
             } else if (data.type === "consent_required") {
               updateLastSegment((s) => ({
                 ...s,
@@ -1298,6 +1217,21 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
       history.push({ role: "assistant", content: activeConfig.boot_messages[0] });
     }
 
+    // Attach region selection from image canvas if present
+    const imgSelection = useImageStore.getState().selection;
+    if (imgSelection) {
+      if (imgSelection.type === "rect") {
+        const d = imgSelection.data;
+        userContent += `\n[Selected region: rect x=${d.x} y=${d.y} w=${d.w} h=${d.h}${d.tool === "crop" ? " (crop)" : ""}]`;
+      } else if (imgSelection.type === "lasso") {
+        const pts = imgSelection.data.points;
+        const xs = pts.map((p: {x:number}) => p.x);
+        const ys = pts.map((p: {y:number}) => p.y);
+        userContent += `\n[Selected region: freeform ${pts.length} points, bounds x=${Math.min(...xs)}-${Math.max(...xs)} y=${Math.min(...ys)}-${Math.max(...ys)}]`;
+      }
+      useImageStore.getState().setSelection(null);
+    }
+
     const userMsg: Message = { role: "user", content: userContent };
     const newMessages = [...history, userMsg];
     setMessages(newMessages);
@@ -1380,22 +1314,29 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
   }, []);
 
   // ─── Interactive widget handler ───
-  const handleInteractiveRespond = useCallback(async (widgetId: string, response: any, dismissed: boolean) => {
+  const handleInteractiveRespond = useCallback(async (widgetId: string, response: any, dismissed: boolean, finalize?: boolean) => {
     try {
       const endpoint = dismissed ? "/api/interactive/dismiss" : "/api/interactive/respond";
-      const body = dismissed ? { widget_id: widgetId } : { widget_id: widgetId, response };
+      const body: any = dismissed
+        ? { widget_id: widgetId }
+        : { widget_id: widgetId, response, ...(finalize ? { finalize: true } : {}) };
       await fetch(`${getApiBase()}${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      // Update segment status
+      // Update segment status — persistent widgets stay "active" unless finalized
       const updater = (segs: Segment[]) =>
-        segs.map((s) =>
-          s.kind === "interactive" && (s as InteractiveSegment).widgetId === widgetId
-            ? { ...s, status: dismissed ? "dismissed" : "submitted", response } as InteractiveSegment
-            : s
-        );
+        segs.map((s) => {
+          if (s.kind !== "interactive") return s;
+          const seg = s as InteractiveSegment;
+          if (seg.widgetId !== widgetId) return s;
+          if (dismissed) return { ...seg, status: "dismissed" as const, response };
+          if (finalize) return { ...seg, status: "submitted" as const, response };
+          // Persistent widget: stay active for further interaction
+          if (seg.persistentId) return { ...seg, status: "active" as const, response };
+          return { ...seg, status: "submitted" as const, response };
+        });
       setStreamSegments(updater);
       setMessages((prev) =>
         prev.map((msg) => msg.segments ? { ...msg, segments: updater(msg.segments) } : msg)
@@ -1435,6 +1376,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
           );
         }
         if (seg.kind === "tool") {
+          if (seg.name === "request_user_input" || seg.name === "save_notes") return null;
           return <ToolCallCard key={`tool-${i}`} segment={seg} onConsent={handleConsent} />;
         }
         if (seg.kind === "interactive") {
@@ -1457,6 +1399,11 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
           const raw = typeof seg.content === "string"
             ? seg.content
             : (seg.content == null ? "" : JSON.stringify(seg.content));
+          // Render error segments with recovery UX instead of plain markdown
+          if (raw.startsWith("⚠️")) {
+            const errText = raw.replace(/^⚠️\s*/, "");
+            return <ErrorRecovery key={`err-${i}`} error={errText} onRetry={() => handleRetry(messages.length - 1)} onNewChat={handleNewChat} />;
+          }
           const cleaned = cleanContent(raw);
           if (!cleaned) return null;
           return (
@@ -1494,103 +1441,34 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
     "--glow": activeConfig.theme.glow_color,
   } as React.CSSProperties : {};
 
+  const { canvasActive: imageCanvasVisible, poppedOut, setPoppedOut, hideCanvas, resetCanvas } = useImageStore();
+  useCanvasSync(); // BroadcastChannel sync for pop-out canvas
+  // Canvas shows inside CRT when active AND not in a pop-out window
+  const canvasInsideCRT = imageCanvasVisible && !poppedOut;
+
   return (
+    <div className="w-full max-w-5xl h-[100dvh] sm:h-[90vh]">
     <div 
-      className="w-full max-w-5xl h-[100dvh] sm:h-[90vh] bg-[var(--color-console-bezel)] rounded-none sm:rounded-3xl p-3 sm:p-6 md:p-10 shadow-2xl flex flex-col border-0 sm:border border-white/5 relative"
+      className="w-full h-full bg-[var(--color-console-bezel)] rounded-none sm:rounded-3xl p-2 sm:p-6 md:p-10 shadow-2xl flex flex-col border-0 sm:border border-white/5 relative transition-all"
       style={themeStyle}
     >
-      {/* Hardware Accents — LEDs + context meter */}
-      <div className="absolute top-2 sm:top-4 left-3 sm:left-6 flex items-center gap-2 sm:gap-3">
-        <div className="flex gap-1.5 sm:gap-2">
-          <button
-            className="w-2.5 h-2.5 sm:w-3 sm:h-3 rounded-full bg-red-500 opacity-80 cursor-default"
-            onClick={() => {
-              redDotClicks.current++;
-              if (redDotTimer.current) clearTimeout(redDotTimer.current);
-              redDotTimer.current = setTimeout(() => { redDotClicks.current = 0; }, 1500);
-              if (redDotClicks.current >= 5) {
-                redDotClicks.current = 0;
-                setShowSnake(true);
-              }
-            }}
-          />
-          <div aria-label={isGenerating ? "Generating response" : "Idle"} className={`w-2.5 h-2.5 sm:w-3 sm:h-3 rounded-full ${isGenerating ? "bg-[var(--accent)] animate-pulse crt-glow" : "bg-white/20"}`} />
-        </div>
-        {contextInfo && (
-          <button
-            onClick={() => openDrawerTo("context")}
-            className="hidden sm:flex items-center gap-2 ml-2 hover:opacity-80 transition-opacity cursor-pointer"
-            title={`${contextInfo.estimated_tokens} / ${contextInfo.max_tokens} tokens · Click for context settings`}
-          >
-            <div className="w-24 h-1.5 bg-black/40 rounded-full overflow-hidden border border-white/5">
-              <div 
-                className="h-full rounded-full transition-all duration-500"
-                style={{
-                  width: `${Math.min(100, (contextInfo.estimated_tokens / contextInfo.max_tokens) * 100)}%`,
-                  background: contextInfo.estimated_tokens / contextInfo.max_tokens > 0.8 ? '#ef4444' : 
-                              contextInfo.estimated_tokens / contextInfo.max_tokens > 0.5 ? '#eab308' : 'var(--accent)',
-                }}
-              />
-            </div>
-            <span className="text-[9px] text-white/30 font-mono">{messages.length} msg</span>
-          </button>
-        )}
-      </div>
-      
-      {/* Top Bar — controls */}
-      <div className="absolute top-2 sm:top-4 right-3 sm:right-8 flex items-center gap-0.5 sm:gap-1 no-select">
-        <button onClick={handleNewChat} aria-label="New Chat" className="p-2 sm:p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all" title="New Chat (⌘N)">
-          <Plus size={15} />
-        </button>
-        <button onClick={() => openDrawerTo("history")} aria-label="Chat History" className="p-2 sm:p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all" title="Chat History">
-          <History size={15} />
-        </button>
-        <button onClick={() => { setShowPalette(true); soundTick(); }} aria-label="Command Palette" className="p-2 sm:p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all" title="Command Palette (⌘K)">
-          <Command size={15} />
-        </button>
-        {onOpenForge && (
-          <button onClick={onOpenForge} aria-label="Kasset Forge" className="p-2 sm:p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all" title="Kasset Forge (⌘⇧F)">
-            <Wrench size={15} />
-          </button>
-        )}
-        <button onClick={() => { setShowTutorial(true); soundTick(); }} aria-label="Quick Guide" className="p-2 sm:p-1.5 rounded text-white/30 hover:text-[var(--accent)] hover:bg-white/5 active:bg-white/10 transition-all" title="Quick Guide (⌘/)">
-          <HelpCircle size={15} />
-        </button>
-        <button
-          onClick={toggleMute}
-          className={`hidden sm:block p-1.5 rounded transition-all ${muted ? "text-white/15" : "text-white/30 hover:text-[var(--accent)] hover:bg-white/5"}`}
-          aria-label={muted ? "Unmute sounds" : "Mute sounds"}
-          title={muted ? "Unmute sounds" : "Mute sounds"}
-        >
-          {muted ? <VolumeX size={15} /> : <Volume2 size={15} />}
-        </button>
-        <div className="hidden sm:block w-px h-4 bg-white/5 mx-1" />
-        <div className="bg-black/40 border border-white/10 px-2 sm:px-3 py-1 rounded-lg text-[var(--accent)] font-bold text-[10px] sm:text-xs tracking-wider shadow-inner flex items-center gap-1.5 sm:gap-2 ml-0.5 sm:ml-1">
-          {currentCartridge && <span className="text-sm sm:text-base leading-none">{currentCartridge.icon}</span>}
-          <span className="max-w-[60px] sm:max-w-[120px] truncate text-glow">{currentCartridge?.name?.toUpperCase() || (activeConfig ? activeConfig.active_cartridge_ids[0].toUpperCase() : "NO KASSET")}</span>
-          <button 
-            onClick={() => {
-              const cartridgeIds = activeConfig?.active_cartridge_ids;
-              const name = currentCartridge?.name || "Kasset";
-              soundCartridgeEject();
-              ejectCartridge();
-              onChangeCartridge();
-              if (cartridgeIds?.length) {
-                showToast(`Ejected ${name}`, () => {
-                  useCartridgeStore.getState().loadActiveStack(cartridgeIds);
-                }, 3000);
-              }
-            }}
-            className="hover:text-white active:text-white transition-colors text-[var(--accent)]/50 hover:text-[var(--accent)]"
-            title="Eject Kasset"
-          >
-            ⏏
-          </button>
-        </div>
-      </div>
+      <ConsoleHeader
+        isGenerating={isGenerating}
+        contextInfo={contextInfo}
+        messageCount={messages.length}
+        muted={muted}
+        toggleMute={toggleMute}
+        currentCartridge={currentCartridge}
+        activeConfig={activeConfig}
+        onNewChat={handleNewChat}
+        onStop={handleStop}
+        onOpenDrawerTo={openDrawerTo}
+        onOpenForge={onOpenForge}
+        onChangeCartridge={onChangeCartridge}
+      />
 
       {/* Screen Area */}
-      <div className="flex-1 min-h-0 mt-8 sm:mt-10 rounded-xl sm:rounded-2xl border-2 sm:border-4 border-black/80 crt-screen p-3 sm:p-6 overflow-hidden flex flex-col relative">
+      <div className={`flex-1 min-h-0 mt-7 sm:mt-10 rounded-lg sm:rounded-2xl border sm:border-4 border-black/80 crt-screen ${canvasInsideCRT ? 'p-0' : 'p-2 sm:p-6'} overflow-hidden flex flex-col relative`}>
         {/* Modals — rendered INSIDE crt-screen so ::before scanlines cover them */}
         {showExplorer && (
           <FileExplorer 
@@ -1625,9 +1503,11 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
             onOpenHelp={() => setShowTutorial(true)}
             onToggleMute={toggleMute}
             onEjectCartridge={() => {
+              handleStop(); // Abort any in-progress SSE stream
               const cartridgeIds = activeConfig?.active_cartridge_ids;
               const name = currentCartridge?.name || "Kasset";
               soundCartridgeEject();
+              resetCanvas();
               ejectCartridge();
               onChangeCartridge();
               if (cartridgeIds?.length) {
@@ -1648,9 +1528,13 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
           <Tutorial onClose={() => setShowTutorial(false)} />
         )}
 
-        {showSnake && (
-          <SnakeGame
-            onClose={() => { setShowSnake(false); loadAvailableCartridges(); }}
+        {showMentalModel && (
+          <MentalModelWidget chatId={chatId} onClose={() => setShowMentalModel(false)} />
+        )}
+
+        {showSignalDebug && (
+          <SignalProcessor
+            onClose={() => { setShowSignalDebug(false); loadAvailableCartridges(); }}
             onUnlock={async () => {
               if (typeof window !== "undefined") localStorage.setItem("kasset-nsfw-unlocked", "true");
               try {
@@ -1663,8 +1547,70 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
           />
         )}
 
-        {showWelcome ? (
+        {/* ─── Canvas + Chat Split ─── */}
+        {canvasInsideCRT && (
+          <div className="flex-1 min-h-0 flex flex-col">
+            {/* Image panel — ~55% */}
+            <div className="h-[55%] min-h-0 relative">
+              <ImagePanel
+                showPopOut
+                onPopOut={() => {
+                  setPoppedOut(true);
+                  window.open('/canvas', '_blank', 'width=900,height=700,menubar=no,toolbar=no');
+                }}
+                onClose={hideCanvas}
+              />
+            </div>
+            {/* Divider */}
+            <div className="h-px bg-white/[0.06] shrink-0" />
+            {/* Chat area — ~45% */}
+            <div className="flex-1 min-h-0 overflow-y-auto crt-scroll px-3 sm:px-5 py-2 space-y-2">
+              <DraftContext.Provider value={draftCtx}>
+                {messages.map((msg, idx) => {
+                  const isUser = msg.role === "user";
+                  const msgKey = `${msg.role}-${idx}-${msg.content.slice(0, 32).replace(/\s/g, '')}`;
+                  return (
+                    <div key={msgKey} className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+                      <div className={`max-w-[95%] ${
+                        isUser
+                          ? "bg-[var(--accent)] text-black px-3 py-1.5 rounded-l-lg rounded-tr-lg font-medium text-[12px] shadow-[0_0_10px_var(--tint)]"
+                          : "prose-crt text-[12px]"
+                      }`}>
+                        {isUser ? (
+                          <span>{msg.content.length > 120 ? msg.content.slice(0, 120) + '…' : msg.content}</span>
+                        ) : msg.segments && msg.segments.length > 0 ? (
+                          <ErrorBoundary inline fallbackMessage="Render error">
+                            {renderSegments(msg.segments, false)}
+                          </ErrorBoundary>
+                        ) : (
+                          <ErrorBoundary inline fallbackMessage="Render error">
+                            <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={mdComponents}>
+                              {cleanContent(msg.content)}
+                            </ReactMarkdown>
+                          </ErrorBoundary>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+                {streamSegments.length > 0 && (
+                  <div className="flex justify-start">
+                    <div className="max-w-[92%] prose-crt text-[12px]">
+                      <ErrorBoundary inline fallbackMessage="Stream error">
+                        {renderSegments(streamSegments, true)}
+                      </ErrorBoundary>
+                    </div>
+                  </div>
+                )}
+              </DraftContext.Provider>
+            </div>
+          </div>
+        )}
+
+        {/* ─── Normal Chat Mode ─── */}
+        {!canvasInsideCRT && showWelcome ? (
           <WelcomeScreen
+            cartridgeId={activeConfig!.active_cartridge_ids[0]}
             cartridgeName={currentCartridge?.name || activeConfig!.active_cartridge_ids[0]}
             cartridgeIcon={currentCartridge?.icon || "🤖"}
             bootMessage={activeConfig!.boot_messages[0] || "Ready."}
@@ -1678,9 +1624,9 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
             onOpenContext={() => openDrawerTo("context")}
             onOpenSearch={() => openDrawerTo("history", true)}
           />
-        ) : (
+        ) : !canvasInsideCRT ? (
         <DraftContext.Provider value={draftCtx}>
-        <div ref={scrollRef} role="log" aria-live="polite" aria-label="Chat messages" className="flex-1 min-h-0 overflow-y-auto crt-scroll pr-2 sm:pr-4 space-y-3 sm:space-y-4">
+        <div ref={scrollRef} role="log" aria-live="polite" aria-label="Chat messages" className="flex-1 min-h-0 overflow-y-auto crt-scroll pr-1 sm:pr-4 px-2 sm:px-6 pt-2 space-y-2.5 sm:space-y-4">
           {/* Compact tool info strip — always visible at top of chat */}
           {activeConfig && activeConfig.tools.length > 0 && (
             <div className="flex flex-wrap items-center gap-1 pb-2 border-b border-white/[0.04] sticky top-0 z-10 bg-black/80 backdrop-blur-sm pt-1 -mt-1">
@@ -1710,7 +1656,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
                 key={msgKey} 
                 className={`group/msg flex ${isUser ? "justify-end" : "justify-start"}`}
               >
-                <div className="relative max-w-[85%]">
+                <div className="relative w-full max-w-full">
                   {/* Message bubble */}
                   <div 
                     className={
@@ -1844,7 +1790,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
           {/* Live streaming segments */}
           {streamSegments.length > 0 && (
             <div className="flex justify-start">
-              <div className="max-w-[85%] prose-crt">
+              <div className="max-w-[92%] sm:max-w-[85%] prose-crt">
                 <ErrorBoundary inline fallbackMessage="Stream render error">
                   {renderSegments(streamSegments, true)}
                 </ErrorBoundary>
@@ -1853,7 +1799,7 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
           )}
         </div>
         </DraftContext.Provider>
-        )}
+        ) : null}
       </div>
 
       {/* Input Area */}
@@ -1952,54 +1898,17 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
             )}
           </div>
         </form>
-        {/* Info strip — keyboard hints + interactive system indicators */}
-        <div className="hidden sm:flex items-center justify-between mt-1.5 text-[10px] text-white/25 font-mono select-none px-1">
-          <div className="flex items-center gap-3">
-            <span>⌘K commands</span>
-            <span className="text-white/10">·</span>
-            <span>⇧↵ newline</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => openDrawerTo("memory")}
-              className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-white/5 hover:text-[var(--accent)]/60 transition-all cursor-pointer"
-              title="View learned memories"
-            >
-              <span className="text-[9px]">🧠</span>
-              <span>{memories.length} memories</span>
-            </button>
-            <span className="text-white/10">·</span>
-            {/* Model & context — opens QuickSettings popover */}
-            <div className="relative">
-              <button
-                onClick={() => { setShowQuickSettings(q => !q); soundTick(); }}
-                className={`flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-white/5 transition-all cursor-pointer ${showQuickSettings ? "text-[var(--accent)]/60 bg-white/5" : "hover:text-[var(--accent)]/60"}`}
-                title="Model, context layers & RSS settings"
-              >
-                <span>{modelName || "model"}</span>
-                <span className="text-white/15">({ctxActiveCount}/3 ctx)</span>
-              </button>
-              {showQuickSettings && (
-                <QuickSettings
-                  onClose={() => setShowQuickSettings(false)}
-                  hasRssTool={activeConfig?.tools?.includes("read_rss") || false}
-                  onOpenFullPreview={() => openDrawerTo("context", false, true)}
-                  onModelChange={(name) => setModelName(name)}
-                />
-              )}
-            </div>
-            <span className="text-white/10">·</span>
-            <button
-              onClick={() => openDrawerTo("history", true)}
-              className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-white/5 hover:text-[var(--accent)]/60 transition-all cursor-pointer"
-              title="Search across all conversations"
-            >
-              <Search size={9} />
-              <span>all chats</span>
-            </button>
-          </div>
-        </div>
+        <ConsoleFooter
+          memoryCount={memories.length}
+          modelName={modelName}
+          ctxActiveCount={ctxActiveCount}
+          activeConfig={activeConfig}
+          sessionStart={sessionStartRef.current}
+          onModelChange={(name) => setModelName(name)}
+          onOpenDrawerTo={openDrawerTo}
+        />
       </div>
+    </div>
     </div>
   );
 }

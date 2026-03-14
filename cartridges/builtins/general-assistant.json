@@ -61,5 +61,5 @@
   "suggested_max_rounds": 10,
   "suggested_temperature": 0.4,
   "suggested_top_p": 0.95,
-  "memory_enabled": false
+  "memory_enabled": true
 }

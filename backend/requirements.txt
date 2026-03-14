@@ -21,3 +21,8 @@ markdownify>=0.11.6
 requests>=2.31.0
 mlx
 websockets
+rembg>=2.0.50
+onnxruntime>=1.16.0
+mediapipe>=0.10.8
+opencv-python-headless>=4.8.0
+timm>=0.9.12

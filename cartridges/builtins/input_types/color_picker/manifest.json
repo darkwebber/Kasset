@@ -1,0 +1,15 @@
+{
+  "id": "color_picker",
+  "name": "Color Picker",
+  "version": "1.0.0",
+  "description": "Let the user pick a color via a color wheel, sliders, or hex input. Call request_user_input with widget_type 'color_picker'. Returns {hex, r, g, b}.",
+  "author": "system",
+  "widget_type": "color_picker",
+  "icon": "pipette",
+  "tags": ["color", "picker", "image"],
+  "config_template": {
+    "prompt": "Pick a color:",
+    "default_color": "#ffffff",
+    "show_eyedropper": true
+  }
+}

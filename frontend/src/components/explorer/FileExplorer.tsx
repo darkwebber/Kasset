@@ -57,8 +57,8 @@ export default function FileExplorer({
   };
 
   return (
-    <div className="absolute inset-0 bg-black/80 z-40 flex items-center justify-center backdrop-blur-sm p-8">
-      <div className="w-full max-w-3xl h-full max-h-[600px] bg-zinc-950 border-2 border-[var(--accent)] rounded-xl flex flex-col shadow-[0_0_30px_var(--tint)] overflow-hidden font-mono">
+    <div className="absolute inset-0 bg-black/80 z-40 flex items-center justify-center backdrop-blur-sm p-2 sm:p-8">
+      <div className="w-full max-w-3xl h-full max-h-[100%] sm:max-h-[600px] bg-zinc-950 border-2 border-[var(--accent)] rounded-xl flex flex-col shadow-[0_0_30px_var(--tint)] overflow-hidden font-mono">
         {/* Header */}
         <div className="bg-[var(--accent)] text-black px-4 py-2 flex items-center justify-between font-bold">
           <span>SYSTEM_EXPLORER</span>
@@ -68,7 +68,7 @@ export default function FileExplorer({
         </div>
 
         {/* Path Bar */}
-        <div className="bg-zinc-900 px-4 py-3 border-b border-white/10 flex items-center gap-2">
+        <div className="bg-zinc-900 px-2 sm:px-4 py-2 sm:py-3 border-b border-white/10 flex items-center gap-2">
           <span className="text-[var(--accent)] opacity-70">PATH:</span>
           <input 
             type="text" 
@@ -100,7 +100,7 @@ export default function FileExplorer({
               <thead className="text-xs uppercase text-zinc-500 sticky top-0 bg-zinc-950 z-10 border-b border-white/10">
                 <tr>
                   <th className="px-4 py-2">Name</th>
-                  <th className="px-4 py-2 w-24 text-right">Size</th>
+                  <th className="px-4 py-2 w-24 text-right hidden sm:table-cell">Size</th>
                 </tr>
               </thead>
               <tbody>
@@ -128,7 +128,7 @@ export default function FileExplorer({
                         {item.name}
                       </span>
                     </td>
-                    <td className="px-4 py-2 text-right opacity-50 font-mono text-xs">
+                    <td className="px-4 py-2 text-right opacity-50 font-mono text-xs hidden sm:table-cell">
                       {formatSize(item.size)}
                     </td>
                   </tr>

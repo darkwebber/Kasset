@@ -1,0 +1,16 @@
+{
+  "id": "crop",
+  "name": "Crop Tool",
+  "version": "1.0.0",
+  "description": "Let the user visually select a crop region on the current image. Call request_user_input with widget_type 'crop'. Returns {left, top, right, bottom, width, height}.",
+  "author": "system",
+  "widget_type": "crop",
+  "icon": "crop",
+  "tags": ["image", "crop", "region"],
+  "config_template": {
+    "prompt": "Select the crop region:",
+    "image_url": "",
+    "aspect_ratios": ["free", "1:1", "4:3", "16:9", "3:2"],
+    "default_ratio": "free"
+  }
+}

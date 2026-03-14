@@ -109,7 +109,7 @@ const STEPS = [
     description: "Kasset works on phones and tablets too.",
     details: [
       "Swipe left/right on kasset carousel to browse",
-      "Swipe to steer in the Snake game",
+      "Swipe gestures supported in interactive widgets",
       "Tap the ⌘ button for the command palette (all actions)",
       "All buttons have touch-friendly tap targets",
       "Less-used buttons are hidden on small screens — use the command palette to access them",

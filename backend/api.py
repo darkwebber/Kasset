@@ -2,6 +2,7 @@ import os
 import json
 import time
 import logging
+import threading
 from typing import List, Optional
 from fastapi import FastAPI, Request, UploadFile, File, Query
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
@@ -16,6 +17,30 @@ from .core.input_type_loader import input_type_loader
 from .model_server import ModelClient # Refactored MLX wrapper
 
 logger = logging.getLogger(__name__)
+
+# ── Cancel registry: cooperative cancellation for in-flight streams ──
+_cancel_events: dict[str, threading.Event] = {}
+_cancel_lock = threading.Lock()
+
+def _register_cancel(chat_id: str) -> threading.Event:
+    """Create a cancel event for a chat stream. Returns the Event."""
+    evt = threading.Event()
+    with _cancel_lock:
+        _cancel_events[chat_id] = evt
+    return evt
+
+def _signal_cancel(chat_id: str):
+    """Signal cancellation for an in-flight stream."""
+    with _cancel_lock:
+        evt = _cancel_events.get(chat_id)
+    if evt:
+        evt.set()
+        logger.info(f"Cancel signalled for chat {chat_id}")
+
+def _cleanup_cancel(chat_id: str):
+    """Remove cancel event after stream ends."""
+    with _cancel_lock:
+        _cancel_events.pop(chat_id, None)
 
 app = FastAPI(title="Kasset API")
 
@@ -574,19 +599,34 @@ async def chat_stream_endpoint(request: Request):
                 except Exception as e:
                     logger.debug(f"Graph load failed: {e}")
 
-        STREAM_TIMEOUT = 300  # 5 minutes max total stream duration
+        # Sliding timeout: resets every time the agent yields an event
+        # (including keepalive pings during interactive widget waits).
+        # This prevents killing the stream while the user is editing.
+        IDLE_TIMEOUT = 300  # 5 min of complete silence = dead stream
+
+        cancel_event = _register_cancel(chat_id)
 
         def event_generator():
-            start_time = time.time()
+            last_event_time = time.time()
             try:
                 # Send chat_id to frontend so it can track this conversation
                 yield f"data: {json.dumps({'type': 'chat_id', 'data': chat_id})}\n\n"
                 
-                for event_json in agent.chat_stream(chat_req.messages, image_path):
-                    if time.time() - start_time > STREAM_TIMEOUT:
-                        logger.warning(f"Stream timeout ({STREAM_TIMEOUT}s) for chat {chat_id}")
-                        yield f"data: {json.dumps({'type': 'error', 'data': 'Response timed out after 5 minutes. Try a simpler request or break the task into steps.'})}\n\n"
+                for event_json in agent.chat_stream(
+                    chat_req.messages, image_path,
+                    chat_id=chat_id, cancel_event=cancel_event,
+                ):
+                    # Check cancel flag each iteration
+                    if cancel_event.is_set():
+                        logger.info(f"Stream cancelled for chat {chat_id}")
+                        yield f"data: {json.dumps({'type': 'done', 'data': 'cancelled'})}\n\n"
                         break
+                    now = time.time()
+                    if now - last_event_time > IDLE_TIMEOUT:
+                        logger.warning(f"Stream idle timeout ({IDLE_TIMEOUT}s) for chat {chat_id}")
+                        yield f"data: {json.dumps({'type': 'error', 'data': 'Stream timed out — no activity for 5 minutes.'})}\n\n"
+                        break
+                    last_event_time = now
                     yield f"data: {event_json}\n\n"
                 
                 # Persist knowledge graph after stream completes
@@ -596,15 +636,30 @@ async def chat_stream_endpoint(request: Request):
                 except Exception as e:
                     logger.debug(f"Graph save failed: {e}")
             except GeneratorExit:
+                # Client disconnected — signal cancel so agent/model stop promptly
+                cancel_event.set()
                 logger.info(f"Client disconnected for chat {chat_id}")
             except Exception as e:
                 logger.error(f"Stream error: {e}")
                 yield f"data: {json.dumps({'type': 'error', 'data': f'Stream error: {str(e)}'})}\n\n"
+            finally:
+                _cleanup_cancel(chat_id)
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
     except Exception as e:
         logger.error(f"Chat error: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/chat/cancel")
+async def cancel_chat(request: Request):
+    """Explicitly cancel an in-flight chat stream."""
+    body = await request.json()
+    chat_id = body.get("chat_id")
+    if not chat_id:
+        return JSONResponse({"error": "chat_id required"}, status_code=400)
+    _signal_cancel(chat_id)
+    return {"status": "cancelled", "chat_id": chat_id}
 
 
 # ═══════════════════════════════════════════
@@ -643,14 +698,14 @@ async def execute_workflow(request: Request):
             yield f"data: {json.dumps({'type': 'workflow_start', 'data': {'name': workflow_name, 'total_steps': len(workflow['steps'])}})}\n\n"
 
             history = []
+            agent = Agent(model_client, config, allow_shell=is_local)
             for step_idx, step_prompt in enumerate(workflow["steps"]):
                 yield f"data: {json.dumps({'type': 'workflow_step', 'data': {'step': step_idx + 1, 'total': len(workflow['steps']), 'prompt': step_prompt}})}\n\n"
 
                 history.append({"role": "user", "content": step_prompt})
-                agent = Agent(model_client, config, allow_shell=is_local)
 
                 step_events = []
-                for event_json in agent.chat_stream(history, None):
+                for event_json in agent.chat_stream(history, None, chat_id=chat_id):
                     yield f"data: {event_json}\n\n"
                     try:
                         evt = json.loads(event_json)
@@ -677,6 +732,14 @@ async def execute_workflow(request: Request):
 # ═══════════════════════════════════════════
 # CHAT PERSISTENCE ENDPOINTS
 # ═══════════════════════════════════════════
+
+@app.get("/api/chats/{chat_id}/graph")
+def get_chat_graph(chat_id: str):
+    """Retrieve the knowledge graph for a specific chat."""
+    graph_data = chat_store.load_graph(chat_id)
+    if not graph_data:
+        return {"nodes": {}, "edges": [], "round": 0}
+    return graph_data
 
 @app.get("/api/chats")
 def list_chats():
@@ -907,13 +970,15 @@ async def handle_consent(request: Request):
 
 @app.post("/api/interactive/respond")
 async def handle_interactive_respond(request: Request):
-    """Submit structured user response for an interactive widget. Unblocks the paused SSE stream."""
+    """Submit structured user response for an interactive widget. Unblocks the paused SSE stream.
+    Pass finalize=true to permanently close a persistent widget."""
     body = await request.json()
     widget_id = body.get("widget_id", "")
     response_data = body.get("response")
+    finalize = body.get("finalize", False)
     if not widget_id:
         return JSONResponse({"error": "No widget_id"}, status_code=400)
-    respond_interactive(widget_id, response_data)
+    respond_interactive(widget_id, response_data, finalize=finalize)
     return {"ok": True}
 
 @app.post("/api/interactive/dismiss")
@@ -1568,6 +1633,283 @@ def forge_unlock_secret():
         return {"status": "unlocked", "cartridge_id": "unfiltered-mode"}
     except Exception as e:
         return {"error": str(e)}
+
+
+# ═══════════════════════════════════════════
+# DRAFT COLLABORATION API
+# ═══════════════════════════════════════════
+
+from .core.draft_manager import draft_manager
+
+@app.post("/api/drafts")
+async def create_draft(request: Request):
+    """Create a new file-backed draft. Body: { content, title?, author?, language? }"""
+    body = await request.json()
+    content = body.get("content", "")
+    if not content:
+        return JSONResponse({"error": "No content"}, status_code=400)
+    draft = draft_manager.create(
+        content=content,
+        title=body.get("title", "Untitled Draft"),
+        author=body.get("author", "ai"),
+        language=body.get("language", "text"),
+    )
+    return {"draft": draft}
+
+@app.get("/api/drafts")
+def list_drafts():
+    """List all drafts (metadata only)."""
+    return {"drafts": draft_manager.list_all()}
+
+@app.get("/api/drafts/{draft_id}")
+def get_draft(draft_id: str, version: int = 0):
+    """Get full draft state, optionally at a specific version."""
+    draft = draft_manager.get(draft_id, version if version > 0 else None)
+    if not draft:
+        return JSONResponse({"error": "Draft not found"}, status_code=404)
+    return {"draft": draft}
+
+@app.post("/api/drafts/{draft_id}/versions")
+async def add_draft_version(draft_id: str, request: Request):
+    """Add a new version to a draft. Body: { content, author? }"""
+    body = await request.json()
+    content = body.get("content", "")
+    if not content:
+        return JSONResponse({"error": "No content"}, status_code=400)
+    draft = draft_manager.add_version(draft_id, content, author=body.get("author", "user"))
+    if not draft:
+        return JSONResponse({"error": "Draft not found or finalized"}, status_code=404)
+    return {"draft": draft}
+
+@app.post("/api/drafts/{draft_id}/comments")
+async def add_draft_comment(draft_id: str, request: Request):
+    """Add a comment to a draft. Body: { selection, start_offset, end_offset, text, author? }"""
+    body = await request.json()
+    draft = draft_manager.add_comment(
+        draft_id,
+        selection=body.get("selection", ""),
+        start_offset=body.get("start_offset", 0),
+        end_offset=body.get("end_offset", 0),
+        text=body.get("text", ""),
+        author=body.get("author", "user"),
+        version=body.get("version"),
+    )
+    if not draft:
+        return JSONResponse({"error": "Draft not found"}, status_code=404)
+    return {"draft": draft}
+
+@app.post("/api/drafts/{draft_id}/comments/{comment_id}/resolve")
+def resolve_draft_comment(draft_id: str, comment_id: str):
+    """Mark a comment as resolved."""
+    draft = draft_manager.resolve_comment(draft_id, comment_id)
+    if not draft:
+        return JSONResponse({"error": "Not found"}, status_code=404)
+    return {"draft": draft}
+
+@app.delete("/api/drafts/{draft_id}/comments/{comment_id}")
+def delete_draft_comment(draft_id: str, comment_id: str):
+    """Delete a comment."""
+    draft = draft_manager.delete_comment(draft_id, comment_id)
+    if not draft:
+        return JSONResponse({"error": "Not found"}, status_code=404)
+    return {"draft": draft}
+
+@app.get("/api/drafts/{draft_id}/diff")
+def get_draft_diff(draft_id: str, v1: int = 0, v2: int = 0):
+    """Get diff between two versions. If omitted, diffs current vs previous."""
+    draft = draft_manager.get(draft_id)
+    if not draft:
+        return JSONResponse({"error": "Draft not found"}, status_code=404)
+    if v2 <= 0:
+        v2 = draft["current_version"]
+    if v1 <= 0:
+        v1 = max(1, v2 - 1)
+    diff = draft_manager.diff(draft_id, v1, v2)
+    if not diff:
+        return JSONResponse({"error": "Version not found"}, status_code=404)
+    return {"diff": diff}
+
+@app.post("/api/drafts/{draft_id}/navigate")
+async def navigate_draft_version(draft_id: str, request: Request):
+    """Switch the active version. Body: { version: int }"""
+    body = await request.json()
+    version = body.get("version", 0)
+    if version <= 0:
+        return JSONResponse({"error": "Invalid version"}, status_code=400)
+    draft = draft_manager.set_current_version(draft_id, version)
+    if not draft:
+        return JSONResponse({"error": "Draft or version not found"}, status_code=404)
+    return {"draft": draft}
+
+@app.post("/api/drafts/{draft_id}/finalize")
+async def finalize_draft(draft_id: str, request: Request):
+    """Finalize a draft and save to Desktop. Body: { filename? }"""
+    body = await request.json()
+    draft = draft_manager.finalize(draft_id, filename=body.get("filename"))
+    if not draft:
+        return JSONResponse({"error": "Draft not found"}, status_code=404)
+    return {"draft": draft}
+
+@app.delete("/api/drafts/{draft_id}")
+def delete_draft(draft_id: str):
+    """Delete a draft and all versions."""
+    ok = draft_manager.delete(draft_id)
+    return {"deleted": ok}
+
+
+# ═══════════════════════════════════════════
+# IMAGE EDITING ENDPOINTS
+# ═══════════════════════════════════════════
+
+WORKSPACE_DIR = Path.home() / ".kasset" / "workspace"
+
+@app.get("/api/image/current")
+def get_current_image():
+    """Get the current working image path and metadata."""
+    current_path = WORKSPACE_DIR / "_current_edit.png"
+    if not current_path.exists():
+        return {"has_image": False}
+    import struct
+    # Read PNG dimensions from header
+    w, h = 0, 0
+    try:
+        with open(current_path, "rb") as f:
+            f.read(8)  # PNG signature
+            f.read(4)  # chunk length
+            f.read(4)  # IHDR
+            w = struct.unpack(">I", f.read(4))[0]
+            h = struct.unpack(">I", f.read(4))[0]
+    except Exception:
+        pass
+    return {
+        "has_image": True,
+        "path": str(current_path),
+        "width": w,
+        "height": h,
+        "modified": current_path.stat().st_mtime,
+    }
+
+@app.get("/api/image/history")
+def get_image_history():
+    """Get the edit history from the sandbox globals."""
+    from .core.sandbox import _SHARED_GLOBALS
+    hist = _SHARED_GLOBALS.get("_edit_history", [])
+    redo = _SHARED_GLOBALS.get("_edit_redo", [])
+    entries = []
+    for i, entry in enumerate(hist):
+        entries.append({
+            "index": i,
+            "timestamp": entry.get("ts", 0),
+            "has_image": True,
+        })
+    return {
+        "history": entries,
+        "redo_count": len(redo),
+        "current_index": len(hist) - 1 if hist else -1,
+    }
+
+@app.post("/api/image/undo")
+def image_undo():
+    """Undo the last image edit and return the restored image path."""
+    from .core.sandbox import _SHARED_GLOBALS
+    hist = _SHARED_GLOBALS.get("_edit_history", [])
+    redo = _SHARED_GLOBALS.setdefault("_edit_redo", [])
+    if not hist:
+        return JSONResponse({"error": "Nothing to undo"}, status_code=400)
+    # Save current to redo
+    current = _SHARED_GLOBALS.get("_current_image")
+    if current is not None:
+        redo.append({"image": current.copy(), "ts": time.time()})
+    # Pop from history
+    entry = hist.pop()
+    img = entry["image"]
+    _SHARED_GLOBALS["_current_image"] = img
+    # Save to disk
+    WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+    save_path = WORKSPACE_DIR / "_current_edit.png"
+    img.save(str(save_path))
+    _SHARED_GLOBALS["_current_image_path"] = str(save_path)
+    return {"success": True, "path": str(save_path), "history_remaining": len(hist)}
+
+@app.post("/api/image/redo")
+def image_redo():
+    """Redo a previously undone image edit."""
+    from .core.sandbox import _SHARED_GLOBALS
+    hist = _SHARED_GLOBALS.setdefault("_edit_history", [])
+    redo = _SHARED_GLOBALS.get("_edit_redo", [])
+    if not redo:
+        return JSONResponse({"error": "Nothing to redo"}, status_code=400)
+    # Save current to history
+    current = _SHARED_GLOBALS.get("_current_image")
+    if current is not None:
+        hist.append({"image": current.copy(), "ts": time.time()})
+    # Pop from redo
+    entry = redo.pop()
+    img = entry["image"]
+    _SHARED_GLOBALS["_current_image"] = img
+    WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+    save_path = WORKSPACE_DIR / "_current_edit.png"
+    img.save(str(save_path))
+    _SHARED_GLOBALS["_current_image_path"] = str(save_path)
+    return {"success": True, "path": str(save_path), "redo_remaining": len(redo)}
+
+@app.post("/api/image/revert")
+def image_revert():
+    """Revert to the original unedited image."""
+    from .core.sandbox import _SHARED_GLOBALS
+    original = _SHARED_GLOBALS.get("_original_image")
+    if original is None:
+        return JSONResponse({"error": "No original image available"}, status_code=400)
+    # Push current to history before reverting
+    hist = _SHARED_GLOBALS.setdefault("_edit_history", [])
+    current = _SHARED_GLOBALS.get("_current_image")
+    if current is not None:
+        if len(hist) >= 30:
+            hist.pop(0)
+        hist.append({"image": current.copy(), "ts": time.time()})
+    _SHARED_GLOBALS["_edit_redo"] = []
+    _SHARED_GLOBALS["_current_image"] = original.copy()
+    WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+    save_path = WORKSPACE_DIR / "_current_edit.png"
+    original.save(str(save_path))
+    _SHARED_GLOBALS["_current_image_path"] = str(save_path)
+    return {"success": True, "path": str(save_path)}
+
+@app.get("/api/image/preview")
+def get_image_preview(path: str = Query(...)):
+    """Serve any image from the workspace for canvas preview."""
+    from .utils import validate_image_file
+    p = Path(path)
+    if not p.exists() or not p.is_file():
+        return JSONResponse({"error": "File not found"}, status_code=404)
+    ext = p.suffix.lower()
+    media_types = {
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+        ".tiff": "image/tiff", ".tif": "image/tiff", ".svg": "image/svg+xml",
+    }
+    return FileResponse(str(p), media_type=media_types.get(ext, "image/png"))
+
+@app.post("/api/image/save")
+async def save_image_to_path(request: Request):
+    """Save the current working image to a user-specified path.
+    Body: { "path": "/Users/.../output.png", "format": "png" }"""
+    body = await request.json()
+    target = body.get("path")
+    fmt = body.get("format", "png").upper()
+    if not target:
+        return JSONResponse({"error": "path required"}, status_code=400)
+    from .core.sandbox import _SHARED_GLOBALS
+    img = _SHARED_GLOBALS.get("_current_image")
+    if img is None:
+        return JSONResponse({"error": "No current image"}, status_code=400)
+    target_path = Path(target)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    if fmt == "JPEG" or fmt == "JPG":
+        img.convert("RGB").save(str(target_path), format="JPEG", quality=95)
+    else:
+        img.save(str(target_path), format=fmt)
+    return {"success": True, "path": str(target_path), "size": target_path.stat().st_size}
 
 
 if __name__ == "__main__":

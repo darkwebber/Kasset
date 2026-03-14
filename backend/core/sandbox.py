@@ -14,13 +14,16 @@ import matplotlib.pyplot as plt
 # Monkey-patch plt.show to be a complete no-op
 plt.show = lambda *args, **kwargs: None
 
-# Global state to persist across multiple executions within a single session
-_SHARED_GLOBALS = {
+# Base globals shared across all sessions (libraries only — immutable references)
+_BASE_GLOBALS = {
     'plt': plt,
     'pd': None,  # lazy-loaded if needed
     'np': None,
     '__name__': '__main__',
 }
+
+# Legacy alias — points to default session globals
+_SHARED_GLOBALS = _BASE_GLOBALS
 
 # Try to make common data libs available initially
 try:
@@ -183,13 +186,390 @@ def _qchart_heatmap(data, xlabels=None, ylabels=None, title="", cmap='viridis'):
     if title: ax.set_title(title)
     plt.tight_layout()
 
-# Register visualization helpers in shared globals
-_SHARED_GLOBALS['qchart_bar'] = _qchart_bar
-_SHARED_GLOBALS['qchart_pie'] = _qchart_pie
-_SHARED_GLOBALS['qchart_line'] = _qchart_line
-_SHARED_GLOBALS['qchart_scatter'] = _qchart_scatter
-_SHARED_GLOBALS['qchart_hist'] = _qchart_hist
-_SHARED_GLOBALS['qchart_heatmap'] = _qchart_heatmap
+# Register visualization helpers in base globals
+_BASE_GLOBALS['qchart_bar'] = _qchart_bar
+_BASE_GLOBALS['qchart_pie'] = _qchart_pie
+_BASE_GLOBALS['qchart_line'] = _qchart_line
+_BASE_GLOBALS['qchart_scatter'] = _qchart_scatter
+_BASE_GLOBALS['qchart_hist'] = _qchart_hist
+_BASE_GLOBALS['qchart_heatmap'] = _qchart_heatmap
+
+
+# ──────────────────────────────────────────
+# DIAGRAM HELPERS (for teaching / explanations)
+# ──────────────────────────────────────────
+
+def _qdiagram_flowchart(steps: list, title: str = "", direction: str = "vertical"):
+    """Draw a flowchart / process diagram.
+    steps: list of str labels (or list of {label, shape} dicts).
+           shape: 'box' (default), 'diamond', 'oval', 'parallelogram'
+    direction: 'vertical' (top-down) or 'horizontal' (left-right)
+    Example: qdiagram_flowchart(["Start", "Process A", {"label": "Decision?", "shape": "diamond"}, "End"])
+    """
+    import matplotlib.patches as mpatches
+    n = len(steps)
+    if n == 0:
+        return
+    # Normalize steps
+    nodes = []
+    for s in steps:
+        if isinstance(s, str):
+            nodes.append({"label": s, "shape": "box"})
+        else:
+            nodes.append({"label": s.get("label", ""), "shape": s.get("shape", "box")})
+
+    vertical = direction.startswith("v")
+    fig_w = 10 if vertical else max(10, n * 2.5)
+    fig_h = max(6, n * 1.4) if vertical else 6
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    ax.set_xlim(-1, 10)
+    ax.set_ylim(-0.5, n + 0.5)
+    ax.axis('off')
+
+    colors = ['#58a6ff', '#3fb950', '#f85149', '#a371f7', '#d29922', '#e3b341']
+
+    for i, node in enumerate(nodes):
+        if vertical:
+            cx, cy = 5, n - 1 - i
+        else:
+            cx, cy = i * (9.0 / max(1, n - 1)) + 0.5 if n > 1 else 5, 2
+        color = colors[i % len(colors)]
+
+        shape = node["shape"]
+        if shape == "diamond":
+            diamond = mpatches.FancyBboxPatch((cx - 1.2, cy - 0.35), 2.4, 0.7,
+                boxstyle="round,pad=0.1", facecolor=color + "30", edgecolor=color, linewidth=2)
+            ax.add_patch(diamond)
+        elif shape == "oval":
+            ellipse = mpatches.Ellipse((cx, cy), 2.6, 0.7,
+                facecolor=color + "30", edgecolor=color, linewidth=2)
+            ax.add_patch(ellipse)
+        else:
+            rect = mpatches.FancyBboxPatch((cx - 1.3, cy - 0.3), 2.6, 0.6,
+                boxstyle="round,pad=0.15", facecolor=color + "30", edgecolor=color, linewidth=2)
+            ax.add_patch(rect)
+
+        ax.text(cx, cy, node["label"], ha='center', va='center',
+                fontsize=11, color='#e6edf3', fontweight='bold', wrap=True)
+
+        # Arrow to next
+        if i < n - 1:
+            if vertical:
+                nx, ny = 5, n - 2 - i
+                ax.annotate('', xy=(nx, ny + 0.4), xytext=(cx, cy - 0.4),
+                    arrowprops=dict(arrowstyle='->', color='#8b949e', lw=2))
+            else:
+                next_cx = (i + 1) * (9.0 / max(1, n - 1)) + 0.5 if n > 1 else 5
+                ax.annotate('', xy=(next_cx - 1.3, cy), xytext=(cx + 1.3, cy),
+                    arrowprops=dict(arrowstyle='->', color='#8b949e', lw=2))
+
+    if title:
+        ax.set_title(title, fontsize=14, fontweight='bold', color='#e6edf3', pad=15)
+    plt.tight_layout()
+
+def _qdiagram_concept_map(center: str, branches: dict, title: str = ""):
+    """Draw a radial concept/mind map.
+    center: label for the central node
+    branches: dict of {label: [sub-items]} or {label: str}
+    Example: qdiagram_concept_map("HashMap", {"put()": ["hash key", "find bucket", "insert"], "get()": ["hash key", "find bucket", "return value"]})
+    """
+    import math
+    fig, ax = plt.subplots(figsize=(12, 8))
+    ax.set_xlim(-6, 6)
+    ax.set_ylim(-5, 5)
+    ax.axis('off')
+    colors = ['#58a6ff', '#3fb950', '#f85149', '#a371f7', '#d29922', '#e3b341']
+
+    # Center node
+    center_circle = plt.Circle((0, 0), 0.8, color='#58a6ff', alpha=0.3, linewidth=2)
+    center_circle.set_edgecolor('#58a6ff')
+    ax.add_patch(center_circle)
+    ax.text(0, 0, center, ha='center', va='center', fontsize=13, fontweight='bold', color='#e6edf3')
+
+    branch_keys = list(branches.keys())
+    n_branches = len(branch_keys)
+    for bi, key in enumerate(branch_keys):
+        angle = 2 * math.pi * bi / n_branches - math.pi / 2
+        bx = 3.0 * math.cos(angle)
+        by = 3.0 * math.sin(angle)
+        color = colors[bi % len(colors)]
+
+        # Line from center to branch
+        ax.plot([0, bx], [0, by], color=color, lw=2, alpha=0.6)
+        # Branch node
+        branch_circle = plt.Circle((bx, by), 0.6, color=color, alpha=0.2, linewidth=2)
+        branch_circle.set_edgecolor(color)
+        ax.add_patch(branch_circle)
+        ax.text(bx, by, key, ha='center', va='center', fontsize=10, fontweight='bold', color='#e6edf3')
+
+        # Sub-items
+        subs = branches[key]
+        if isinstance(subs, str):
+            subs = [subs]
+        if not isinstance(subs, list):
+            subs = [str(subs)]
+        for si, sub in enumerate(subs):
+            sub_angle = angle + (si - len(subs) / 2 + 0.5) * 0.35
+            sx = bx + 1.8 * math.cos(sub_angle)
+            sy = by + 1.8 * math.sin(sub_angle)
+            ax.plot([bx, sx], [by, sy], color=color, lw=1.2, alpha=0.4)
+            ax.text(sx, sy, sub, ha='center', va='center', fontsize=9, color='#8b949e',
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='#161b22', edgecolor=color, alpha=0.8))
+
+    if title:
+        ax.set_title(title, fontsize=14, fontweight='bold', color='#e6edf3', pad=15)
+    plt.tight_layout()
+
+def _qdiagram_array(values: list, labels: list = None, highlights: list = None, title: str = ""):
+    """Draw an array / list / table visualization.
+    values: list of cell values
+    labels: optional index labels (same length as values)
+    highlights: optional list of indices to highlight
+    Example: qdiagram_array([10, 20, 30, 40], labels=["0", "1", "2", "3"], highlights=[1, 3], title="My Array")
+    """
+    n = len(values)
+    if n == 0:
+        return
+    highlights = set(highlights or [])
+    cell_w = max(1.2, min(2.0, 12.0 / n))
+    fig_w = min(16, n * cell_w + 2)
+    fig, ax = plt.subplots(figsize=(fig_w, 2.5))
+    ax.set_xlim(-0.5, n * cell_w + 0.5)
+    ax.set_ylim(-1, 2)
+    ax.axis('off')
+
+    for i, val in enumerate(values):
+        x = i * cell_w + 0.5
+        color = '#58a6ff' if i in highlights else '#30363d'
+        fill = '#58a6ff20' if i in highlights else '#161b22'
+        rect = plt.Rectangle((x, 0), cell_w - 0.1, 1.0,
+            facecolor=fill, edgecolor=color, linewidth=2, clip_on=False)
+        ax.add_patch(rect)
+        ax.text(x + (cell_w - 0.1) / 2, 0.5, str(val), ha='center', va='center',
+                fontsize=12, fontweight='bold', color='#e6edf3')
+        if labels:
+            lbl = labels[i] if i < len(labels) else str(i)
+            ax.text(x + (cell_w - 0.1) / 2, -0.3, lbl, ha='center', va='center',
+                    fontsize=9, color='#8b949e')
+
+    if title:
+        ax.set_title(title, fontsize=13, fontweight='bold', color='#e6edf3', pad=10)
+    plt.tight_layout()
+
+def _qdiagram_linked_list(values: list, title: str = "", circular: bool = False):
+    """Draw a linked list visualization.
+    values: list of node values
+    Example: qdiagram_linked_list([1, 2, 3, 4], title="Singly Linked List")
+    """
+    n = len(values)
+    if n == 0:
+        return
+    node_w = 1.5
+    gap = 1.0
+    fig_w = min(16, n * (node_w + gap) + 1)
+    fig, ax = plt.subplots(figsize=(fig_w, 2.5))
+    ax.set_xlim(-0.5, n * (node_w + gap) + 0.5)
+    ax.set_ylim(-0.5, 2)
+    ax.axis('off')
+
+    colors = ['#58a6ff', '#3fb950', '#f85149', '#a371f7', '#d29922', '#e3b341']
+    for i, val in enumerate(values):
+        x = i * (node_w + gap) + 0.5
+        color = colors[i % len(colors)]
+        # Node box
+        rect = plt.Rectangle((x, 0.2), node_w, 0.8,
+            facecolor=color + '20', edgecolor=color, linewidth=2, clip_on=False)
+        ax.add_patch(rect)
+        # Value
+        ax.text(x + node_w * 0.4, 0.6, str(val), ha='center', va='center',
+                fontsize=12, fontweight='bold', color='#e6edf3')
+        # Pointer box
+        ptr_rect = plt.Rectangle((x + node_w * 0.7, 0.2), node_w * 0.3, 0.8,
+            facecolor='#0d1117', edgecolor=color, linewidth=1.5, clip_on=False)
+        ax.add_patch(ptr_rect)
+        # Arrow to next
+        if i < n - 1:
+            ax.annotate('', xy=(x + node_w + gap, 0.6), xytext=(x + node_w, 0.6),
+                arrowprops=dict(arrowstyle='->', color='#8b949e', lw=2))
+        elif circular:
+            # Curved arrow back to first
+            ax.annotate('', xy=(0.5, 0.2), xytext=(x + node_w, 0.6),
+                arrowprops=dict(arrowstyle='->', color='#f85149', lw=2,
+                    connectionstyle="arc3,rad=-0.4"))
+        else:
+            # Null pointer
+            ax.text(x + node_w * 0.85, 0.6, '∅', ha='center', va='center',
+                    fontsize=10, color='#f85149')
+
+    if title:
+        ax.set_title(title, fontsize=13, fontweight='bold', color='#e6edf3', pad=10)
+    plt.tight_layout()
+
+def _qdiagram_tree(root: dict, title: str = ""):
+    """Draw a binary tree visualization.
+    root: nested dict {val, left?, right?}
+    Example: qdiagram_tree({"val": 10, "left": {"val": 5, "left": {"val": 2}, "right": {"val": 7}}, "right": {"val": 15}})
+    """
+    # Collect nodes via BFS with positions
+    if not root:
+        return
+    nodes = []
+    edges = []
+
+    def _traverse(node, x, y, dx):
+        if not node:
+            return
+        idx = len(nodes)
+        nodes.append((x, y, str(node.get("val", "?"))))
+        if node.get("left"):
+            child_idx = len(nodes)
+            edges.append((idx, child_idx))
+            _traverse(node["left"], x - dx, y - 1.5, dx * 0.55)
+        if node.get("right"):
+            child_idx = len(nodes)
+            edges.append((idx, child_idx))
+            _traverse(node["right"], x + dx, y - 1.5, dx * 0.55)
+
+    _traverse(root, 0, 0, 3.0)
+    if not nodes:
+        return
+
+    xs = [n[0] for n in nodes]
+    ys = [n[1] for n in nodes]
+    margin = 2
+    fig, ax = plt.subplots(figsize=(max(8, (max(xs) - min(xs)) + 4), max(5, (max(ys) - min(ys)) * -1 + 4)))
+    ax.set_xlim(min(xs) - margin, max(xs) + margin)
+    ax.set_ylim(min(ys) - margin, max(ys) + margin)
+    ax.axis('off')
+
+    colors = ['#58a6ff', '#3fb950', '#f85149', '#a371f7', '#d29922', '#e3b341']
+    # Edges first
+    for pi, ci in edges:
+        ax.plot([nodes[pi][0], nodes[ci][0]], [nodes[pi][1], nodes[ci][1]],
+                color='#8b949e', lw=2, zorder=1)
+    # Nodes
+    for i, (x, y, val) in enumerate(nodes):
+        color = colors[i % len(colors)]
+        circle = plt.Circle((x, y), 0.5, color=color, alpha=0.25, linewidth=2, zorder=2)
+        circle.set_edgecolor(color)
+        ax.add_patch(circle)
+        ax.text(x, y, val, ha='center', va='center', fontsize=12,
+                fontweight='bold', color='#e6edf3', zorder=3)
+
+    if title:
+        ax.set_title(title, fontsize=14, fontweight='bold', color='#e6edf3', pad=15)
+    ax.set_aspect('equal')
+    plt.tight_layout()
+
+def _qdiagram_hashtable(buckets: dict, title: str = "Hash Table"):
+    """Draw a hash table with buckets and chaining.
+    buckets: dict of {bucket_index: [values]} or {bucket_index: value}
+    Example: qdiagram_hashtable({0: ["apple", "avocado"], 1: [], 2: ["banana"], 3: ["cherry", "cranberry", "coconut"]})
+    """
+    n_buckets = max(buckets.keys()) + 1 if buckets else 0
+    if n_buckets == 0:
+        return
+
+    fig_h = max(4, n_buckets * 0.8 + 1)
+    max_chain = max((len(v) if isinstance(v, list) else 1) for v in buckets.values()) if buckets else 1
+    fig_w = max(8, 3 + max_chain * 2.5)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    ax.set_xlim(-0.5, 3 + max_chain * 2.5)
+    ax.set_ylim(-0.5, n_buckets + 0.5)
+    ax.axis('off')
+
+    colors = ['#58a6ff', '#3fb950', '#f85149', '#a371f7', '#d29922', '#e3b341']
+
+    for i in range(n_buckets):
+        y = n_buckets - 1 - i
+        color = colors[i % len(colors)]
+        # Bucket label
+        rect = plt.Rectangle((0, y - 0.25), 1.5, 0.5,
+            facecolor=color + '20', edgecolor=color, linewidth=2)
+        ax.add_patch(rect)
+        ax.text(0.75, y, f"[{i}]", ha='center', va='center',
+                fontsize=11, fontweight='bold', color='#e6edf3')
+
+        vals = buckets.get(i, [])
+        if not isinstance(vals, list):
+            vals = [vals]
+        for j, val in enumerate(vals):
+            nx = 2.2 + j * 2.2
+            # Chain node
+            node_rect = plt.Rectangle((nx, y - 0.2), 1.8, 0.4,
+                facecolor='#161b22', edgecolor=color, linewidth=1.5)
+            ax.add_patch(node_rect)
+            ax.text(nx + 0.9, y, str(val), ha='center', va='center',
+                    fontsize=10, color='#e6edf3')
+            # Arrow
+            if j == 0:
+                ax.annotate('', xy=(nx, y), xytext=(1.5, y),
+                    arrowprops=dict(arrowstyle='->', color='#8b949e', lw=1.5))
+            else:
+                prev_nx = 2.2 + (j - 1) * 2.2
+                ax.annotate('', xy=(nx, y), xytext=(prev_nx + 1.8, y),
+                    arrowprops=dict(arrowstyle='->', color='#8b949e', lw=1.5))
+
+    if title:
+        ax.set_title(title, fontsize=14, fontweight='bold', color='#e6edf3', pad=15)
+    plt.tight_layout()
+
+def _qdiagram_stack_queue(values: list, kind: str = "stack", title: str = ""):
+    """Draw a stack or queue visualization.
+    values: list of items (top/front first)
+    kind: 'stack' or 'queue'
+    Example: qdiagram_stack_queue([10, 20, 30], kind="stack", title="Call Stack")
+    """
+    n = len(values)
+    if n == 0:
+        return
+    colors = ['#58a6ff', '#3fb950', '#f85149', '#a371f7', '#d29922', '#e3b341']
+
+    if kind == "stack":
+        fig, ax = plt.subplots(figsize=(4, max(3, n * 0.8 + 1)))
+        ax.set_xlim(-0.5, 4)
+        ax.set_ylim(-1, n + 1)
+        ax.axis('off')
+        for i, val in enumerate(values):
+            y = n - 1 - i
+            color = colors[i % len(colors)]
+            rect = plt.Rectangle((0.5, y), 3, 0.7,
+                facecolor=color + '20', edgecolor=color, linewidth=2)
+            ax.add_patch(rect)
+            ax.text(2, y + 0.35, str(val), ha='center', va='center',
+                    fontsize=12, fontweight='bold', color='#e6edf3')
+            if i == 0:
+                ax.text(3.7, y + 0.35, '← TOP', fontsize=9, color='#58a6ff', va='center')
+    else:
+        fig, ax = plt.subplots(figsize=(max(6, n * 2), 3))
+        ax.set_xlim(-0.5, n * 2 + 1)
+        ax.set_ylim(-0.5, 2)
+        ax.axis('off')
+        for i, val in enumerate(values):
+            x = i * 1.8 + 0.5
+            color = colors[i % len(colors)]
+            rect = plt.Rectangle((x, 0.3), 1.5, 0.8,
+                facecolor=color + '20', edgecolor=color, linewidth=2)
+            ax.add_patch(rect)
+            ax.text(x + 0.75, 0.7, str(val), ha='center', va='center',
+                    fontsize=12, fontweight='bold', color='#e6edf3')
+            if i == 0:
+                ax.text(x + 0.75, 1.4, '↑ FRONT', fontsize=9, color='#58a6ff', ha='center')
+            if i == n - 1:
+                ax.text(x + 0.75, 1.4, '↑ BACK', fontsize=9, color='#f85149', ha='center')
+
+    if title:
+        ax.set_title(title or kind.capitalize(), fontsize=13, fontweight='bold', color='#e6edf3', pad=10)
+    plt.tight_layout()
+
+# Register diagram helpers in base globals
+_BASE_GLOBALS['qdiagram_flowchart'] = _qdiagram_flowchart
+_BASE_GLOBALS['qdiagram_concept_map'] = _qdiagram_concept_map
+_BASE_GLOBALS['qdiagram_array'] = _qdiagram_array
+_BASE_GLOBALS['qdiagram_linked_list'] = _qdiagram_linked_list
+_BASE_GLOBALS['qdiagram_tree'] = _qdiagram_tree
+_BASE_GLOBALS['qdiagram_hashtable'] = _qdiagram_hashtable
+_BASE_GLOBALS['qdiagram_stack_queue'] = _qdiagram_stack_queue
 
 
 # ──────────────────────────────────────────
@@ -251,6 +631,15 @@ def _img_save(img, path: str = None, fmt: str = None, quality: int = 92):
 
 def _img_show(img):
     """Display an image inline (auto-captured as plot). Usage: img_show(img)"""
+    # Push current state to history before overwriting
+    if '_current_image' in _SHARED_GLOBALS and _SHARED_GLOBALS['_current_image'] is not None:
+        import time as _ht
+        hist = _SHARED_GLOBALS.setdefault('_edit_history', [])
+        redo = _SHARED_GLOBALS.setdefault('_edit_redo', [])
+        if len(hist) >= 30:
+            hist.pop(0)
+        hist.append({'image': _SHARED_GLOBALS['_current_image'].copy(), 'ts': _ht.time()})
+        redo.clear()
     # Auto-save current working image for cross-turn persistence
     workspace = os.path.join(os.path.expanduser("~"), ".kasset", "workspace")
     os.makedirs(workspace, exist_ok=True)
@@ -802,49 +1191,1357 @@ def _img_preview(img):
     fig.subplots_adjust(left=0, right=1, top=0.93, bottom=0)
     plt.tight_layout(pad=0)
 
-# Register image editing helpers
-_SHARED_GLOBALS['img_load'] = _img_load
-_SHARED_GLOBALS['img_save'] = _img_save
-_SHARED_GLOBALS['img_show'] = _img_show
-_SHARED_GLOBALS['img_adjust'] = _img_adjust
-_SHARED_GLOBALS['img_hue_shift'] = _img_hue_shift
-_SHARED_GLOBALS['img_crop'] = _img_crop
-_SHARED_GLOBALS['img_resize'] = _img_resize
-_SHARED_GLOBALS['img_rotate'] = _img_rotate
-_SHARED_GLOBALS['img_flip'] = _img_flip
-_SHARED_GLOBALS['img_grayscale'] = _img_grayscale
-_SHARED_GLOBALS['img_convert'] = _img_convert
-_SHARED_GLOBALS['img_draw_rect'] = _img_draw_rect
-_SHARED_GLOBALS['img_draw_text'] = _img_draw_text
-_SHARED_GLOBALS['img_blur'] = _img_blur
-_SHARED_GLOBALS['img_edge_detect'] = _img_edge_detect
-_SHARED_GLOBALS['img_threshold'] = _img_threshold
-_SHARED_GLOBALS['img_color_replace'] = _img_color_replace
-_SHARED_GLOBALS['img_color_range_replace'] = _img_color_range_replace
-_SHARED_GLOBALS['img_tint'] = _img_tint
-_SHARED_GLOBALS['img_adjust_highlights'] = _img_adjust_highlights
-_SHARED_GLOBALS['img_adjust_shadows'] = _img_adjust_shadows
-_SHARED_GLOBALS['img_overlay_color'] = _img_overlay_color
-_SHARED_GLOBALS['img_tint_highlights'] = _img_tint_highlights
-_SHARED_GLOBALS['img_tint_shadows'] = _img_tint_shadows
-_SHARED_GLOBALS['img_vignette'] = _img_vignette
-_SHARED_GLOBALS['img_get_original'] = _img_get_original
-_SHARED_GLOBALS['img_info'] = _img_info
-_SHARED_GLOBALS['img_sepia'] = _img_sepia
-_SHARED_GLOBALS['img_invert'] = _img_invert
-_SHARED_GLOBALS['img_opacity'] = _img_opacity
-_SHARED_GLOBALS['img_posterize'] = _img_posterize
-_SHARED_GLOBALS['img_solarize'] = _img_solarize
-_SHARED_GLOBALS['img_emboss'] = _img_emboss
-_SHARED_GLOBALS['img_sharpen'] = _img_sharpen
-_SHARED_GLOBALS['img_auto_contrast'] = _img_auto_contrast
-_SHARED_GLOBALS['img_equalize'] = _img_equalize
-_SHARED_GLOBALS['img_channel_mix'] = _img_channel_mix
-_SHARED_GLOBALS['img_gradient_map'] = _img_gradient_map
-_SHARED_GLOBALS['img_noise'] = _img_noise
-_SHARED_GLOBALS['img_pixelate'] = _img_pixelate
-_SHARED_GLOBALS['img_border'] = _img_border
-_SHARED_GLOBALS['img_preview'] = _img_preview
+# Register image editing helpers in base globals
+_BASE_GLOBALS['img_load'] = _img_load
+_BASE_GLOBALS['img_save'] = _img_save
+_BASE_GLOBALS['img_show'] = _img_show
+_BASE_GLOBALS['img_adjust'] = _img_adjust
+_BASE_GLOBALS['img_hue_shift'] = _img_hue_shift
+_BASE_GLOBALS['img_crop'] = _img_crop
+_BASE_GLOBALS['img_resize'] = _img_resize
+_BASE_GLOBALS['img_rotate'] = _img_rotate
+_BASE_GLOBALS['img_flip'] = _img_flip
+_BASE_GLOBALS['img_grayscale'] = _img_grayscale
+_BASE_GLOBALS['img_convert'] = _img_convert
+_BASE_GLOBALS['img_draw_rect'] = _img_draw_rect
+_BASE_GLOBALS['img_draw_text'] = _img_draw_text
+_BASE_GLOBALS['img_blur'] = _img_blur
+_BASE_GLOBALS['img_edge_detect'] = _img_edge_detect
+_BASE_GLOBALS['img_threshold'] = _img_threshold
+_BASE_GLOBALS['img_color_replace'] = _img_color_replace
+_BASE_GLOBALS['img_color_range_replace'] = _img_color_range_replace
+_BASE_GLOBALS['img_tint'] = _img_tint
+_BASE_GLOBALS['img_adjust_highlights'] = _img_adjust_highlights
+_BASE_GLOBALS['img_adjust_shadows'] = _img_adjust_shadows
+_BASE_GLOBALS['img_overlay_color'] = _img_overlay_color
+_BASE_GLOBALS['img_tint_highlights'] = _img_tint_highlights
+_BASE_GLOBALS['img_tint_shadows'] = _img_tint_shadows
+_BASE_GLOBALS['img_vignette'] = _img_vignette
+_BASE_GLOBALS['img_get_original'] = _img_get_original
+_BASE_GLOBALS['img_info'] = _img_info
+_BASE_GLOBALS['img_sepia'] = _img_sepia
+_BASE_GLOBALS['img_invert'] = _img_invert
+_BASE_GLOBALS['img_opacity'] = _img_opacity
+_BASE_GLOBALS['img_posterize'] = _img_posterize
+_BASE_GLOBALS['img_solarize'] = _img_solarize
+_BASE_GLOBALS['img_emboss'] = _img_emboss
+_BASE_GLOBALS['img_sharpen'] = _img_sharpen
+_BASE_GLOBALS['img_auto_contrast'] = _img_auto_contrast
+_BASE_GLOBALS['img_equalize'] = _img_equalize
+_BASE_GLOBALS['img_channel_mix'] = _img_channel_mix
+_BASE_GLOBALS['img_gradient_map'] = _img_gradient_map
+_BASE_GLOBALS['img_noise'] = _img_noise
+_BASE_GLOBALS['img_pixelate'] = _img_pixelate
+_BASE_GLOBALS['img_border'] = _img_border
+_BASE_GLOBALS['img_preview'] = _img_preview
+
+
+# ──────────────────────────────────────────
+# PHASE 1D — UNDO / REDO HISTORY
+# ──────────────────────────────────────────
+
+def _img_undo():
+    """Undo the last edit and return the previous image state.
+    Usage: img = img_undo()"""
+    hist = _SHARED_GLOBALS.get('_edit_history', [])
+    if not hist:
+        raise RuntimeError("Nothing to undo — edit history is empty.")
+    entry = hist.pop()
+    redo = _SHARED_GLOBALS.setdefault('_edit_redo', [])
+    if '_current_image' in _SHARED_GLOBALS and _SHARED_GLOBALS['_current_image'] is not None:
+        redo.append({'image': _SHARED_GLOBALS['_current_image'].copy(), 'ts': entry['ts']})
+    img = entry['image']
+    workspace = os.path.join(os.path.expanduser("~"), ".kasset", "workspace")
+    os.makedirs(workspace, exist_ok=True)
+    save_path = os.path.join(workspace, "_current_edit.png")
+    img.save(save_path)
+    _SHARED_GLOBALS['_current_image_path'] = save_path
+    _SHARED_GLOBALS['_current_image'] = img
+    print(f"Undo successful. {len(hist)} state(s) remaining in history.")
+    return img
+
+def _img_redo():
+    """Re-apply the last undone edit.
+    Usage: img = img_redo()"""
+    redo = _SHARED_GLOBALS.get('_edit_redo', [])
+    if not redo:
+        raise RuntimeError("Nothing to redo.")
+    entry = redo.pop()
+    hist = _SHARED_GLOBALS.setdefault('_edit_history', [])
+    if '_current_image' in _SHARED_GLOBALS and _SHARED_GLOBALS['_current_image'] is not None:
+        hist.append({'image': _SHARED_GLOBALS['_current_image'].copy(), 'ts': entry['ts']})
+    img = entry['image']
+    workspace = os.path.join(os.path.expanduser("~"), ".kasset", "workspace")
+    os.makedirs(workspace, exist_ok=True)
+    save_path = os.path.join(workspace, "_current_edit.png")
+    img.save(save_path)
+    _SHARED_GLOBALS['_current_image_path'] = save_path
+    _SHARED_GLOBALS['_current_image'] = img
+    print(f"Redo successful. {len(redo)} redo state(s) remaining.")
+    return img
+
+def _img_history():
+    """List all edit states in the undo history.
+    Usage: img_history()"""
+    import time as _t
+    hist = _SHARED_GLOBALS.get('_edit_history', [])
+    if not hist:
+        print("Edit history is empty.")
+        return []
+    lines = []
+    for i, entry in enumerate(hist):
+        age = _t.time() - entry['ts']
+        w, h = entry['image'].size
+        if age < 60:
+            age_str = f"{int(age)}s ago"
+        elif age < 3600:
+            age_str = f"{int(age/60)}m ago"
+        else:
+            age_str = f"{int(age/3600)}h ago"
+        lines.append(f"  [{i}] {w}x{h} — {age_str}")
+    print(f"Edit history ({len(hist)} states):\n" + "\n".join(lines))
+    return hist
+
+def _img_revert(n: int):
+    """Revert to a specific state in the edit history (by index).
+    Usage: img = img_revert(0)  — revert to the earliest saved state"""
+    hist = _SHARED_GLOBALS.get('_edit_history', [])
+    if n < 0 or n >= len(hist):
+        raise ValueError(f"Invalid history index {n}. Range: 0-{len(hist)-1}")
+    img = hist[n]['image'].copy()
+    # Trim history to that point
+    _SHARED_GLOBALS['_edit_history'] = hist[:n]
+    _SHARED_GLOBALS['_edit_redo'] = []
+    workspace = os.path.join(os.path.expanduser("~"), ".kasset", "workspace")
+    os.makedirs(workspace, exist_ok=True)
+    save_path = os.path.join(workspace, "_current_edit.png")
+    img.save(save_path)
+    _SHARED_GLOBALS['_current_image_path'] = save_path
+    _SHARED_GLOBALS['_current_image'] = img
+    print(f"Reverted to state [{n}].")
+    return img
+
+_BASE_GLOBALS['img_undo'] = _img_undo
+_BASE_GLOBALS['img_redo'] = _img_redo
+_BASE_GLOBALS['img_history'] = _img_history
+_BASE_GLOBALS['img_revert'] = _img_revert
+
+
+# ──────────────────────────────────────────
+# PHASE 1A — COMPOSITION & LAYERING
+# ──────────────────────────────────────────
+
+def _img_create(width: int, height: int, color="white"):
+    """Create a blank image canvas.
+    Usage: canvas = img_create(800, 600, 'black')"""
+    from PIL import Image as _Img
+    if isinstance(color, str):
+        c = _resolve_color_name(color)
+        if c is None:
+            c = color
+        color = c
+    return _Img.new('RGB', (width, height), color)
+
+def _img_paste(base, overlay, x: int = 0, y: int = 0, mask=None):
+    """Paste overlay image onto base at position (x, y). Optional mask for shaped pasting.
+    Usage: img = img_paste(base, overlay, 100, 50)
+           img = img_paste(base, overlay, 0, 0, mask=my_mask)"""
+    result = base.copy()
+    if overlay.mode == 'RGBA' and mask is None:
+        result.paste(overlay, (x, y), overlay)
+    elif mask is not None:
+        if mask.mode != 'L':
+            mask = mask.convert('L')
+        result.paste(overlay, (x, y), mask)
+    else:
+        result.paste(overlay, (x, y))
+    return result
+
+def _img_composite(fg, bg, mask):
+    """Alpha-aware composite: combine fg and bg using a grayscale mask.
+    White mask pixels = fg, black = bg.
+    Usage: img = img_composite(foreground, background, mask)"""
+    from PIL import Image as _Img
+    fg_rgb = fg.convert('RGB')
+    bg_rgb = bg.convert('RGB')
+    if mask.mode != 'L':
+        mask = mask.convert('L')
+    if fg_rgb.size != bg_rgb.size:
+        bg_rgb = bg_rgb.resize(fg_rgb.size, _Img.LANCZOS)
+    if mask.size != fg_rgb.size:
+        mask = mask.resize(fg_rgb.size, _Img.LANCZOS)
+    return _Img.composite(fg_rgb, bg_rgb, mask)
+
+def _img_blend(img1, img2, alpha: float = 0.5):
+    """Linear blend of two images. alpha=0.0 gives img1, alpha=1.0 gives img2.
+    Usage: img = img_blend(photo, overlay, 0.3)"""
+    from PIL import Image as _Img
+    i1 = img1.convert('RGB')
+    i2 = img2.convert('RGB')
+    if i1.size != i2.size:
+        i2 = i2.resize(i1.size, _Img.LANCZOS)
+    return _Img.blend(i1, i2, alpha)
+
+def _img_alpha_paste(base, overlay, x: int = 0, y: int = 0):
+    """Paste an RGBA overlay onto base preserving alpha transparency.
+    Usage: img = img_alpha_paste(background, logo_with_alpha, 50, 50)"""
+    result = base.convert('RGBA')
+    ov = overlay.convert('RGBA')
+    result.paste(ov, (x, y), ov)
+    return result.convert('RGB')
+
+def _img_stack_h(images, gap: int = 0, bg_color="white"):
+    """Stack images horizontally with optional gap.
+    Usage: img = img_stack_h([img1, img2, img3], gap=10)"""
+    from PIL import Image as _Img
+    if not images:
+        raise ValueError("No images provided.")
+    max_h = max(im.size[1] for im in images)
+    total_w = sum(im.size[0] for im in images) + gap * (len(images) - 1)
+    if isinstance(bg_color, str):
+        c = _resolve_color_name(bg_color)
+        bg_color = c if c else bg_color
+    canvas = _Img.new('RGB', (total_w, max_h), bg_color)
+    x_off = 0
+    for im in images:
+        canvas.paste(im.convert('RGB'), (x_off, (max_h - im.size[1]) // 2))
+        x_off += im.size[0] + gap
+    return canvas
+
+def _img_stack_v(images, gap: int = 0, bg_color="white"):
+    """Stack images vertically with optional gap.
+    Usage: img = img_stack_v([img1, img2], gap=5)"""
+    from PIL import Image as _Img
+    if not images:
+        raise ValueError("No images provided.")
+    max_w = max(im.size[0] for im in images)
+    total_h = sum(im.size[1] for im in images) + gap * (len(images) - 1)
+    if isinstance(bg_color, str):
+        c = _resolve_color_name(bg_color)
+        bg_color = c if c else bg_color
+    canvas = _Img.new('RGB', (max_w, total_h), bg_color)
+    y_off = 0
+    for im in images:
+        canvas.paste(im.convert('RGB'), ((max_w - im.size[0]) // 2, y_off))
+        y_off += im.size[1] + gap
+    return canvas
+
+_BASE_GLOBALS['img_create'] = _img_create
+_BASE_GLOBALS['img_paste'] = _img_paste
+_BASE_GLOBALS['img_composite'] = _img_composite
+_BASE_GLOBALS['img_blend'] = _img_blend
+_BASE_GLOBALS['img_alpha_paste'] = _img_alpha_paste
+_BASE_GLOBALS['img_stack_h'] = _img_stack_h
+_BASE_GLOBALS['img_stack_v'] = _img_stack_v
+
+
+# ──────────────────────────────────────────
+# PHASE 1B — ENHANCED DRAWING & ANNOTATION
+# ──────────────────────────────────────────
+
+def _img_draw_circle(img, cx: int, cy: int, r: int, color="red", width: int = 3, fill=None):
+    """Draw a circle on the image.
+    Usage: img = img_draw_circle(img, 200, 200, 50, color='blue', fill='lightblue')"""
+    from PIL import ImageDraw as _Draw
+    draw = _Draw.Draw(img)
+    bbox = [cx - r, cy - r, cx + r, cy + r]
+    draw.ellipse(bbox, outline=color, width=width, fill=fill)
+    return img
+
+def _img_draw_ellipse(img, left: int, top: int, right: int, bottom: int, color="red", width: int = 3, fill=None):
+    """Draw an ellipse bounded by (left, top, right, bottom).
+    Usage: img = img_draw_ellipse(img, 100, 50, 300, 200, color='green')"""
+    from PIL import ImageDraw as _Draw
+    draw = _Draw.Draw(img)
+    draw.ellipse([left, top, right, bottom], outline=color, width=width, fill=fill)
+    return img
+
+def _img_draw_line(img, x1: int, y1: int, x2: int, y2: int, color="red", width: int = 3):
+    """Draw a straight line from (x1,y1) to (x2,y2).
+    Usage: img = img_draw_line(img, 0, 0, 500, 500, color='white', width=5)"""
+    from PIL import ImageDraw as _Draw
+    draw = _Draw.Draw(img)
+    draw.line([(x1, y1), (x2, y2)], fill=color, width=width)
+    return img
+
+def _img_draw_arrow(img, x1: int, y1: int, x2: int, y2: int, color="red", width: int = 3, head_size: int = 15):
+    """Draw a line with an arrowhead pointing from (x1,y1) to (x2,y2).
+    Usage: img = img_draw_arrow(img, 100, 100, 300, 200, color='yellow')"""
+    import math
+    from PIL import ImageDraw as _Draw
+    draw = _Draw.Draw(img)
+    draw.line([(x1, y1), (x2, y2)], fill=color, width=width)
+    angle = math.atan2(y2 - y1, x2 - x1)
+    a1 = angle + math.pi * 0.85
+    a2 = angle - math.pi * 0.85
+    hx1 = x2 + int(head_size * math.cos(a1))
+    hy1 = y2 + int(head_size * math.sin(a1))
+    hx2 = x2 + int(head_size * math.cos(a2))
+    hy2 = y2 + int(head_size * math.sin(a2))
+    draw.polygon([(x2, y2), (hx1, hy1), (hx2, hy2)], fill=color)
+    return img
+
+def _img_draw_polygon(img, points, color="red", width: int = 3, fill=None):
+    """Draw a polygon from a list of (x, y) points.
+    Usage: img = img_draw_polygon(img, [(100,100),(200,50),(300,100),(250,200),(150,200)], color='blue', fill='lightblue')"""
+    from PIL import ImageDraw as _Draw
+    draw = _Draw.Draw(img)
+    draw.polygon(points, outline=color, fill=fill)
+    if width > 1 and fill is None:
+        draw.polygon(points, outline=color)
+    return img
+
+def _img_draw_rounded_rect(img, left: int, top: int, right: int, bottom: int, radius: int = 10,
+                           color="red", width: int = 3, fill=None):
+    """Draw a rounded rectangle.
+    Usage: img = img_draw_rounded_rect(img, 50, 50, 300, 200, radius=20, color='blue', fill='navy')"""
+    from PIL import ImageDraw as _Draw
+    draw = _Draw.Draw(img)
+    draw.rounded_rectangle([left, top, right, bottom], radius=radius, outline=color, width=width, fill=fill)
+    return img
+
+def _img_draw_rich_text(img, x: int, y: int, text: str, color="white", size: int = 24,
+                        font_name: str = None, align: str = 'left',
+                        outline_color=None, outline_width: int = 0,
+                        shadow: bool = False, max_width: int = None):
+    """Draw text with advanced options: outline, shadow, alignment, word wrap.
+    Usage: img = img_draw_rich_text(img, 50, 50, 'Hello World', size=48, outline_color='black', outline_width=2, shadow=True)"""
+    from PIL import ImageDraw as _Draw, ImageFont as _Font
+    draw = _Draw.Draw(img)
+    try:
+        fp = font_name or "/System/Library/Fonts/Helvetica.ttc"
+        font = _Font.truetype(fp, size)
+    except Exception:
+        try:
+            font = _Font.truetype("/System/Library/Fonts/SFNSMono.ttf", size)
+        except Exception:
+            font = _Font.load_default()
+    # Word wrap if max_width specified
+    if max_width and max_width > 0:
+        words = text.split(' ')
+        lines_out = []
+        current_line = ""
+        for word in words:
+            test = (current_line + " " + word).strip()
+            bbox = draw.textbbox((0, 0), test, font=font)
+            if bbox[2] - bbox[0] > max_width and current_line:
+                lines_out.append(current_line)
+                current_line = word
+            else:
+                current_line = test
+        if current_line:
+            lines_out.append(current_line)
+        text = "\n".join(lines_out)
+    if shadow:
+        draw.text((x + 2, y + 2), text, fill='black', font=font, align=align)
+    if outline_color and outline_width > 0:
+        for dx in range(-outline_width, outline_width + 1):
+            for dy in range(-outline_width, outline_width + 1):
+                if dx == 0 and dy == 0:
+                    continue
+                draw.text((x + dx, y + dy), text, fill=outline_color, font=font, align=align)
+    draw.text((x, y), text, fill=color, font=font, align=align)
+    return img
+
+def _img_watermark(img, text: str = "WATERMARK", position: str = "bottom-right",
+                   opacity: float = 0.3, size: int = 24, color="white"):
+    """Add a text watermark at a specified position.
+    position: 'center', 'bottom-right', 'bottom-left', 'top-right', 'top-left'.
+    Usage: img = img_watermark(img, '© 2025', position='bottom-right', opacity=0.5)"""
+    from PIL import Image as _Img, ImageDraw as _Draw, ImageFont as _Font
+    import numpy as _np
+    overlay = _Img.new('RGBA', img.size, (0, 0, 0, 0))
+    draw = _Draw.Draw(overlay)
+    try:
+        font = _Font.truetype("/System/Library/Fonts/Helvetica.ttc", size)
+    except Exception:
+        font = _Font.load_default()
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    w, h = img.size
+    margin = 20
+    positions = {
+        'center': ((w - tw) // 2, (h - th) // 2),
+        'bottom-right': (w - tw - margin, h - th - margin),
+        'bottom-left': (margin, h - th - margin),
+        'top-right': (w - tw - margin, margin),
+        'top-left': (margin, margin),
+    }
+    pos = positions.get(position, positions['bottom-right'])
+    if isinstance(color, str):
+        c = _resolve_color_name(color)
+        color = c if c else (255, 255, 255)
+    alpha = int(opacity * 255)
+    draw.text(pos, text, fill=(*color, alpha), font=font)
+    return _Img.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
+
+_BASE_GLOBALS['img_draw_circle'] = _img_draw_circle
+_BASE_GLOBALS['img_draw_ellipse'] = _img_draw_ellipse
+_BASE_GLOBALS['img_draw_line'] = _img_draw_line
+_BASE_GLOBALS['img_draw_arrow'] = _img_draw_arrow
+_BASE_GLOBALS['img_draw_polygon'] = _img_draw_polygon
+_BASE_GLOBALS['img_draw_rounded_rect'] = _img_draw_rounded_rect
+_BASE_GLOBALS['img_draw_rich_text'] = _img_draw_rich_text
+_BASE_GLOBALS['img_watermark'] = _img_watermark
+
+
+# ──────────────────────────────────────────
+# PHASE 1C — MASKING & SELECTION (PIL-based)
+# ──────────────────────────────────────────
+
+def _img_mask_from_color(img, color, tolerance: int = 30):
+    """Create a binary mask (white=match) from a color name or (R,G,B) tuple.
+    Usage: mask = img_mask_from_color(img, 'blue', tolerance=40)
+           mask = img_mask_from_color(img, (255, 0, 0), tolerance=30)"""
+    import numpy as _np
+    from PIL import Image as _Img
+    if isinstance(color, str):
+        # Use HSV-based matching for named colors
+        c_key = color.lower().strip()
+        if c_key in _COLOR_RANGES:
+            hsv = _np.array(img.convert('HSV'))
+            h_scaled = (hsv[:, :, 0].astype(_np.float32) / 255.0 * 180.0).astype(_np.uint8)
+            s, v = hsv[:, :, 1], hsv[:, :, 2]
+            lo1, hi1, lo2, hi2 = _COLOR_RANGES[c_key]
+            s_tol = int(tolerance * 2.55)
+            v_tol = int(tolerance * 2.55)
+            mask = (
+                (h_scaled >= max(lo1[0] - tolerance // 6, 0)) & (h_scaled <= min(hi1[0] + tolerance // 6, 180)) &
+                (s >= max(lo1[1] - s_tol, 0)) & (s <= min(hi1[1] + s_tol, 255)) &
+                (v >= max(lo1[2] - v_tol, 0)) & (v <= min(hi1[2] + v_tol, 255))
+            )
+            if lo2 is not None:
+                mask2 = (
+                    (h_scaled >= max(lo2[0] - tolerance // 6, 0)) & (h_scaled <= min(hi2[0] + tolerance // 6, 180)) &
+                    (s >= max(lo2[1] - s_tol, 0)) & (s <= min(hi2[1] + s_tol, 255)) &
+                    (v >= max(lo2[2] - v_tol, 0)) & (v <= min(hi2[2] + v_tol, 255))
+                )
+                mask = mask | mask2
+            mask_arr = (mask.astype(_np.uint8) * 255)
+            matched = int(_np.sum(mask))
+            total = mask.shape[0] * mask.shape[1]
+            print(f"Mask: {matched:,} pixels matched ({matched*100/total:.1f}%)")
+            return _Img.fromarray(mask_arr, 'L')
+        tc = _resolve_color_name(color)
+        if tc is None:
+            raise ValueError(f"Unknown color: '{color}'")
+        color = tc
+    arr = _np.array(img.convert('RGB'))
+    fc = _np.array(color)
+    mask = _np.all(_np.abs(arr.astype(int) - fc.astype(int)) <= tolerance, axis=-1)
+    mask_arr = (mask.astype(_np.uint8) * 255)
+    matched = int(_np.sum(mask))
+    total = mask.shape[0] * mask.shape[1]
+    print(f"Mask: {matched:,} pixels matched ({matched*100/total:.1f}%)")
+    return _Img.fromarray(mask_arr, 'L')
+
+def _img_mask_from_luminance(img, low: int = 0, high: int = 255):
+    """Create a mask based on pixel brightness range (0-255).
+    Usage: mask = img_mask_from_luminance(img, low=200, high=255)  — select highlights"""
+    import numpy as _np
+    from PIL import Image as _Img
+    gray = _np.array(img.convert('L'))
+    mask = ((gray >= low) & (gray <= high)).astype(_np.uint8) * 255
+    matched = int(_np.sum(mask > 0))
+    total = mask.shape[0] * mask.shape[1]
+    print(f"Luminance mask: {matched:,} pixels in range [{low}, {high}] ({matched*100/total:.1f}%)")
+    return _Img.fromarray(mask, 'L')
+
+def _img_mask_invert(mask):
+    """Invert a mask (swap white ↔ black).
+    Usage: inverted = img_mask_invert(mask)"""
+    from PIL import ImageOps as _Ops
+    return _Ops.invert(mask.convert('L'))
+
+def _img_mask_dilate(mask, radius: int = 3):
+    """Grow/expand a mask by radius pixels.
+    Usage: bigger_mask = img_mask_dilate(mask, 5)"""
+    from PIL import ImageFilter as _Filt
+    m = mask.convert('L')
+    for _ in range(radius):
+        m = m.filter(_Filt.MaxFilter(3))
+    return m
+
+def _img_mask_erode(mask, radius: int = 3):
+    """Shrink a mask by radius pixels.
+    Usage: smaller_mask = img_mask_erode(mask, 5)"""
+    from PIL import ImageFilter as _Filt
+    m = mask.convert('L')
+    for _ in range(radius):
+        m = m.filter(_Filt.MinFilter(3))
+    return m
+
+def _img_mask_feather(mask, radius: int = 5):
+    """Soft-edge (feather) a mask by blurring its boundary.
+    Usage: soft_mask = img_mask_feather(mask, 10)"""
+    from PIL import ImageFilter as _Filt
+    return mask.convert('L').filter(_Filt.GaussianBlur(radius=radius))
+
+def _img_apply_to_region(img, mask, func, *args, **kwargs):
+    """Apply any image editing function only to the masked region.
+    White mask pixels are affected, black pixels are preserved.
+    Usage: img = img_apply_to_region(img, mask, img_blur, radius=15)
+           img = img_apply_to_region(img, mask, img_adjust, brightness=1.5)"""
+    import numpy as _np
+    from PIL import Image as _Img
+    edited = func(img.copy(), *args, **kwargs)
+    mask_l = mask.convert('L')
+    mask_arr = _np.array(mask_l).astype(_np.float32) / 255.0
+    mask3 = _np.stack([mask_arr]*3, axis=2)
+    orig_arr = _np.array(img.convert('RGB')).astype(_np.float32)
+    edit_arr = _np.array(edited.convert('RGB')).astype(_np.float32)
+    result = orig_arr * (1.0 - mask3) + edit_arr * mask3
+    return _Img.fromarray(_np.clip(result, 0, 255).astype(_np.uint8))
+
+def _img_blur_region(img, mask, radius: int = 10):
+    """Blur only the masked region of an image.
+    Usage: img = img_blur_region(img, face_mask, radius=20)"""
+    return _img_apply_to_region(img, mask, _img_blur, radius=radius)
+
+def _img_fill_region(img, mask, color):
+    """Fill the masked region with a solid color.
+    Usage: img = img_fill_region(img, mask, 'red')
+           img = img_fill_region(img, mask, (0, 255, 0))"""
+    import numpy as _np
+    from PIL import Image as _Img
+    if isinstance(color, str):
+        tc = _resolve_color_name(color)
+        if tc is None:
+            raise ValueError(f"Unknown color: '{color}'")
+        color = tc
+    arr = _np.array(img.convert('RGB')).copy()
+    mask_arr = _np.array(mask.convert('L')) > 127
+    arr[mask_arr] = _np.array(color, dtype=_np.uint8)
+    return _Img.fromarray(arr)
+
+_BASE_GLOBALS['img_mask_from_color'] = _img_mask_from_color
+_BASE_GLOBALS['img_mask_from_luminance'] = _img_mask_from_luminance
+_BASE_GLOBALS['img_mask_invert'] = _img_mask_invert
+_BASE_GLOBALS['img_mask_dilate'] = _img_mask_dilate
+_BASE_GLOBALS['img_mask_erode'] = _img_mask_erode
+_BASE_GLOBALS['img_mask_feather'] = _img_mask_feather
+_BASE_GLOBALS['img_apply_to_region'] = _img_apply_to_region
+_BASE_GLOBALS['img_blur_region'] = _img_blur_region
+_BASE_GLOBALS['img_fill_region'] = _img_fill_region
+
+
+# ──────────────────────────────────────────
+# PHASE 1E — UTILITY & INFO
+# ──────────────────────────────────────────
+
+def _img_histogram(img):
+    """Display the RGB histogram of an image as a plot.
+    Usage: img_histogram(img)"""
+    import numpy as _np
+    arr = _np.array(img.convert('RGB'))
+    fig, ax = plt.subplots(figsize=(8, 4))
+    for i, (ch, col) in enumerate(zip(['Red', 'Green', 'Blue'], ['#ff4444', '#44ff44', '#4444ff'])):
+        ax.hist(arr[:, :, i].ravel(), bins=256, range=(0, 255), alpha=0.5, color=col, label=ch)
+    ax.set_xlabel('Pixel Value')
+    ax.set_ylabel('Count')
+    ax.set_title('RGB Histogram')
+    ax.legend()
+    ax.set_xlim(0, 255)
+    plt.tight_layout()
+
+def _img_dominant_colors(img, n: int = 5):
+    """Extract the N most dominant colors from an image as hex strings.
+    Usage: colors = img_dominant_colors(img, 8)"""
+    import numpy as _np
+    from collections import Counter
+    small = img.copy()
+    small.thumbnail((150, 150))
+    arr = _np.array(small.convert('RGB'))
+    pixels = arr.reshape(-1, 3)
+    # Quantize to reduce unique colors
+    quantized = (pixels // 16) * 16
+    counts = Counter(map(tuple, quantized))
+    top = counts.most_common(n)
+    result = []
+    for color_rgb, count in top:
+        hex_str = '#{:02x}{:02x}{:02x}'.format(*color_rgb)
+        result.append(hex_str)
+    print(f"Dominant colors: {', '.join(result)}")
+    return result
+
+def _img_color_palette(img, n: int = 8):
+    """Generate a color palette visualization from the image.
+    Usage: img_color_palette(img)"""
+    import numpy as _np
+    colors = _img_dominant_colors(img, n)
+    swatch_w = 80
+    swatch_h = 60
+    fig, axes = plt.subplots(1, n, figsize=(n * 1.2, 1.5))
+    if n == 1:
+        axes = [axes]
+    for ax, hex_col in zip(axes, colors):
+        r, g, b = int(hex_col[1:3], 16), int(hex_col[3:5], 16), int(hex_col[5:7], 16)
+        ax.imshow(_np.full((swatch_h, swatch_w, 3), [r, g, b], dtype=_np.uint8))
+        ax.set_title(hex_col, fontsize=8)
+        ax.axis('off')
+    plt.suptitle('Color Palette', fontsize=11)
+    plt.tight_layout()
+
+def _img_exif(path: str):
+    """Read EXIF metadata from an image file.
+    Usage: data = img_exif('/path/to/photo.jpg')"""
+    from PIL import Image as _Img
+    from PIL.ExifTags import TAGS
+    im = _Img.open(os.path.expanduser(path))
+    exif_data = im.getexif()
+    if not exif_data:
+        print("No EXIF data found.")
+        return {}
+    result = {}
+    for tag_id, value in exif_data.items():
+        tag_name = TAGS.get(tag_id, tag_id)
+        result[tag_name] = str(value)[:200]
+    for k, v in result.items():
+        print(f"  {k}: {v}")
+    return result
+
+def _img_compare(img1, img2):
+    """Display two images side by side for comparison.
+    Usage: img_compare(original, edited)"""
+    import numpy as _np
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+    ax1.imshow(img1)
+    ax1.set_title('Before', fontsize=12)
+    ax1.axis('off')
+    ax2.imshow(img2)
+    ax2.set_title('After', fontsize=12)
+    ax2.axis('off')
+    plt.tight_layout()
+
+def _img_diff(img1, img2):
+    """Show pixel-level difference between two images as a heatmap.
+    Usage: img_diff(original, edited)"""
+    import numpy as _np
+    from PIL import Image as _Img
+    a1 = _np.array(img1.convert('RGB')).astype(_np.float32)
+    a2 = _np.array(img2.convert('RGB')).astype(_np.float32)
+    if a1.shape != a2.shape:
+        i2 = img2.resize(img1.size, _Img.LANCZOS)
+        a2 = _np.array(i2.convert('RGB')).astype(_np.float32)
+    diff = _np.abs(a1 - a2).mean(axis=2)
+    fig, ax = plt.subplots(figsize=(8, 6))
+    im = ax.imshow(diff, cmap='hot', vmin=0, vmax=128)
+    ax.set_title('Pixel Difference Heatmap')
+    ax.axis('off')
+    plt.colorbar(im, ax=ax, label='Mean Δ')
+    plt.tight_layout()
+
+def _img_trim(img, fuzz: int = 10):
+    """Auto-crop whitespace or near-uniform borders from an image.
+    Usage: img = img_trim(img)"""
+    import numpy as _np
+    from PIL import Image as _Img
+    arr = _np.array(img.convert('RGB'))
+    # Compare to the corner pixel
+    ref = arr[0, 0].astype(int)
+    mask = _np.any(_np.abs(arr.astype(int) - ref) > fuzz, axis=2)
+    coords = _np.argwhere(mask)
+    if coords.size == 0:
+        return img
+    y0, x0 = coords.min(axis=0)
+    y1, x1 = coords.max(axis=0) + 1
+    result = img.crop((x0, y0, x1, y1))
+    print(f"Trimmed: {img.size[0]}x{img.size[1]} → {result.size[0]}x{result.size[1]}")
+    return result
+
+def _img_pad(img, top: int = 0, right: int = 0, bottom: int = 0, left: int = 0, color="white"):
+    """Add padding around an image.
+    Usage: img = img_pad(img, 20, 20, 20, 20, 'black')"""
+    from PIL import Image as _Img
+    if isinstance(color, str):
+        c = _resolve_color_name(color)
+        color = c if c else color
+    new_w = img.size[0] + left + right
+    new_h = img.size[1] + top + bottom
+    canvas = _Img.new('RGB', (new_w, new_h), color)
+    canvas.paste(img.convert('RGB'), (left, top))
+    return canvas
+
+def _img_tile(img, cols: int, rows: int):
+    """Tile an image into a cols×rows grid.
+    Usage: img = img_tile(pattern, 3, 3)"""
+    from PIL import Image as _Img
+    w, h = img.size
+    canvas = _Img.new('RGB', (w * cols, h * rows))
+    for r in range(rows):
+        for c in range(cols):
+            canvas.paste(img.convert('RGB'), (c * w, r * h))
+    return canvas
+
+def _img_sample_color(img, x: int, y: int):
+    """Sample the color at pixel (x, y) and return (R, G, B) + hex.
+    Usage: color = img_sample_color(img, 100, 200)"""
+    rgb = img.convert('RGB')
+    if x < 0 or x >= rgb.size[0] or y < 0 or y >= rgb.size[1]:
+        raise ValueError(f"Coordinates ({x}, {y}) out of bounds for {rgb.size[0]}x{rgb.size[1]} image.")
+    r, g, b = rgb.getpixel((x, y))
+    hex_str = '#{:02x}{:02x}{:02x}'.format(r, g, b)
+    print(f"Color at ({x}, {y}): RGB({r}, {g}, {b}) = {hex_str}")
+    return (r, g, b)
+
+def _img_scale_to_fit(img, max_w: int, max_h: int):
+    """Scale image to fit within max_w × max_h, preserving aspect ratio.
+    Usage: img = img_scale_to_fit(img, 1920, 1080)"""
+    from PIL import Image as _Img
+    w, h = img.size
+    ratio = min(max_w / w, max_h / h)
+    if ratio >= 1.0:
+        return img
+    new_w = int(w * ratio)
+    new_h = int(h * ratio)
+    result = img.resize((new_w, new_h), _Img.LANCZOS)
+    print(f"Scaled: {w}x{h} → {new_w}x{new_h}")
+    return result
+
+_BASE_GLOBALS['img_histogram'] = _img_histogram
+_BASE_GLOBALS['img_dominant_colors'] = _img_dominant_colors
+_BASE_GLOBALS['img_color_palette'] = _img_color_palette
+_BASE_GLOBALS['img_exif'] = _img_exif
+_BASE_GLOBALS['img_compare'] = _img_compare
+_BASE_GLOBALS['img_diff'] = _img_diff
+_BASE_GLOBALS['img_trim'] = _img_trim
+_BASE_GLOBALS['img_pad'] = _img_pad
+_BASE_GLOBALS['img_tile'] = _img_tile
+_BASE_GLOBALS['img_sample_color'] = _img_sample_color
+_BASE_GLOBALS['img_scale_to_fit'] = _img_scale_to_fit
+
+
+# ──────────────────────────────────────────
+# PHASE 1F — ADVANCED COLOR & EFFECTS
+# ──────────────────────────────────────────
+
+def _img_temperature(img, kelvin: float = 6500):
+    """Adjust color temperature. 6500K=neutral, <6500=warm (yellow/orange), >6500=cool (blue).
+    Usage: img = img_temperature(img, 4500)  — warmer
+           img = img_temperature(img, 8500)  — cooler"""
+    import numpy as _np
+    from PIL import Image as _Img
+    arr = _np.array(img.convert('RGB')).astype(_np.float32)
+    # Simplified color temperature mapping
+    if kelvin < 6500:
+        # Warm: boost red, reduce blue
+        t = (6500 - kelvin) / 6500
+        arr[:, :, 0] = _np.clip(arr[:, :, 0] * (1 + 0.3 * t), 0, 255)
+        arr[:, :, 1] = _np.clip(arr[:, :, 1] * (1 + 0.05 * t), 0, 255)
+        arr[:, :, 2] = _np.clip(arr[:, :, 2] * (1 - 0.3 * t), 0, 255)
+    else:
+        # Cool: boost blue, reduce red
+        t = (kelvin - 6500) / 6500
+        arr[:, :, 0] = _np.clip(arr[:, :, 0] * (1 - 0.2 * t), 0, 255)
+        arr[:, :, 2] = _np.clip(arr[:, :, 2] * (1 + 0.3 * t), 0, 255)
+    return _Img.fromarray(arr.astype(_np.uint8))
+
+def _img_vibrance(img, amount: float = 1.3):
+    """Smart saturation — boosts under-saturated colors more than already saturated ones.
+    amount: 1.0=no change, >1.0=more vibrant, <1.0=less vibrant.
+    Usage: img = img_vibrance(img, 1.5)"""
+    import numpy as _np
+    from PIL import Image as _Img
+    arr = _np.array(img.convert('RGB')).astype(_np.float32)
+    gray = _np.mean(arr, axis=2, keepdims=True)
+    sat = _np.max(arr, axis=2, keepdims=True) - _np.min(arr, axis=2, keepdims=True)
+    max_sat = sat.max() + 1e-6
+    # Lower saturation pixels get boosted more
+    weight = 1.0 - (sat / max_sat)
+    effective_amount = 1.0 + (amount - 1.0) * weight
+    result = gray + (arr - gray) * effective_amount
+    return _Img.fromarray(_np.clip(result, 0, 255).astype(_np.uint8))
+
+def _img_clarity(img, amount: float = 1.5):
+    """Enhance midtone contrast (clarity/punch). amount: 1.0=no change, >1.0=more clarity.
+    Usage: img = img_clarity(img, 2.0)"""
+    import numpy as _np
+    from PIL import Image as _Img, ImageFilter as _Filt
+    arr = _np.array(img.convert('RGB')).astype(_np.float32)
+    blurred = img.filter(_Filt.GaussianBlur(radius=10))
+    blur_arr = _np.array(blurred.convert('RGB')).astype(_np.float32)
+    # Unsharp mask focused on midtones
+    detail = arr - blur_arr
+    result = arr + detail * (amount - 1.0)
+    return _Img.fromarray(_np.clip(result, 0, 255).astype(_np.uint8))
+
+def _img_dehaze(img, strength: float = 0.5):
+    """Simple dehazing by boosting contrast and saturation.
+    strength: 0.0-1.0. Usage: img = img_dehaze(img, 0.7)"""
+    from PIL import ImageEnhance as _Enh
+    strength = max(0.0, min(1.0, strength))
+    result = img.copy()
+    result = _Enh.Contrast(result).enhance(1.0 + 0.5 * strength)
+    result = _Enh.Color(result).enhance(1.0 + 0.3 * strength)
+    result = _Enh.Brightness(result).enhance(1.0 + 0.1 * strength)
+    return result
+
+def _img_curves(img, shadows: float = 1.0, midtones: float = 1.0, highlights: float = 1.0):
+    """Approximate tone curves: adjust shadows, midtones, and highlights independently.
+    Values: 1.0=no change, >1.0=brighten, <1.0=darken.
+    Usage: img = img_curves(img, shadows=1.3, midtones=0.9, highlights=0.8)"""
+    import numpy as _np
+    from PIL import Image as _Img
+    arr = _np.array(img.convert('RGB')).astype(_np.float32) / 255.0
+    # Build a tone curve LUT
+    lut = _np.zeros(256, dtype=_np.float32)
+    for i in range(256):
+        x = i / 255.0
+        if x < 0.33:
+            w = x / 0.33
+            lut[i] = x * shadows
+        elif x < 0.67:
+            w = (x - 0.33) / 0.34
+            lut[i] = x * midtones
+        else:
+            lut[i] = x * highlights
+    lut = _np.clip(lut * 255, 0, 255).astype(_np.uint8)
+    arr_u8 = _np.array(img.convert('RGB'))
+    result = lut[arr_u8]
+    return _Img.fromarray(result)
+
+def _img_color_balance(img, cyan_red: float = 0, magenta_green: float = 0, yellow_blue: float = 0):
+    """Adjust color balance. Each parameter ranges from -100 to +100.
+    Negative = first color, Positive = second color.
+    Usage: img = img_color_balance(img, cyan_red=20, yellow_blue=-15)"""
+    import numpy as _np
+    from PIL import Image as _Img
+    arr = _np.array(img.convert('RGB')).astype(_np.float32)
+    arr[:, :, 0] = _np.clip(arr[:, :, 0] + cyan_red * 1.28, 0, 255)   # red channel
+    arr[:, :, 1] = _np.clip(arr[:, :, 1] + magenta_green * 1.28, 0, 255)  # green channel
+    arr[:, :, 2] = _np.clip(arr[:, :, 2] + yellow_blue * 1.28, 0, 255)  # blue channel
+    return _Img.fromarray(arr.astype(_np.uint8))
+
+def _img_lens_blur(img, radius: int = 10, shape: str = 'circle'):
+    """Bokeh-style lens blur. shape: 'circle' or 'hexagon'.
+    Usage: img = img_lens_blur(img, radius=15, shape='hexagon')"""
+    import numpy as _np
+    from PIL import Image as _Img, ImageFilter as _Filt
+    if shape == 'hexagon':
+        # Approximate hexagonal bokeh with multiple directional blurs
+        import math
+        arr = _np.array(img.convert('RGB')).astype(_np.float32)
+        result = _np.zeros_like(arr)
+        for angle in range(0, 360, 60):
+            blurred = img.filter(_Filt.GaussianBlur(radius=radius))
+            result += _np.array(blurred.convert('RGB')).astype(_np.float32)
+        result = result / 6.0
+        return _Img.fromarray(_np.clip(result, 0, 255).astype(_np.uint8))
+    else:
+        return img.filter(_Filt.GaussianBlur(radius=radius))
+
+def _img_motion_blur(img, size: int = 15, angle: float = 0):
+    """Apply motion blur at a specified angle (degrees).
+    Usage: img = img_motion_blur(img, size=20, angle=45)"""
+    import numpy as _np
+    from PIL import Image as _Img, ImageFilter as _Filt
+    import math
+    # Create a motion blur kernel
+    kernel_size = max(3, size)
+    kernel = _np.zeros((kernel_size, kernel_size), dtype=_np.float32)
+    center = kernel_size // 2
+    rad = math.radians(angle)
+    for i in range(kernel_size):
+        offset = i - center
+        x = center + int(round(offset * math.cos(rad)))
+        y = center + int(round(offset * math.sin(rad)))
+        if 0 <= x < kernel_size and 0 <= y < kernel_size:
+            kernel[y, x] = 1.0
+    kernel /= kernel.sum() + 1e-8
+    flat = kernel.flatten().tolist()
+    filt = _Filt.Kernel((kernel_size, kernel_size), flat, scale=1, offset=0)
+    return img.filter(filt)
+
+def _img_radial_blur(img, cx: int = None, cy: int = None, strength: int = 10):
+    """Radial (zoom) blur centered on (cx, cy).
+    Usage: img = img_radial_blur(img, strength=15)"""
+    import numpy as _np
+    from PIL import Image as _Img
+    w, h = img.size
+    if cx is None: cx = w // 2
+    if cy is None: cy = h // 2
+    arr = _np.array(img.convert('RGB')).astype(_np.float32)
+    result = arr.copy()
+    for s in range(1, strength + 1):
+        scale = 1.0 + s * 0.003
+        offset_x = int(cx * (1 - scale))
+        offset_y = int(cy * (1 - scale))
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        scaled = img.resize((new_w, new_h), _Img.BILINEAR)
+        cropped = scaled.crop((-offset_x, -offset_y, -offset_x + w, -offset_y + h))
+        if cropped.size != (w, h):
+            cropped = cropped.resize((w, h), _Img.BILINEAR)
+        result += _np.array(cropped.convert('RGB')).astype(_np.float32)
+    result /= (strength + 1)
+    return _Img.fromarray(_np.clip(result, 0, 255).astype(_np.uint8))
+
+_BASE_GLOBALS['img_temperature'] = _img_temperature
+_BASE_GLOBALS['img_vibrance'] = _img_vibrance
+_BASE_GLOBALS['img_clarity'] = _img_clarity
+_BASE_GLOBALS['img_dehaze'] = _img_dehaze
+_BASE_GLOBALS['img_curves'] = _img_curves
+_BASE_GLOBALS['img_color_balance'] = _img_color_balance
+_BASE_GLOBALS['img_lens_blur'] = _img_lens_blur
+_BASE_GLOBALS['img_motion_blur'] = _img_motion_blur
+_BASE_GLOBALS['img_radial_blur'] = _img_radial_blur
+
+
+# ──────────────────────────────────────────
+# PHASE 2 — LOCAL AI-POWERED TOOLS
+# All models lazy-loaded on first call.
+# ──────────────────────────────────────────
+
+# Shared model cache so we only load once per process
+_AI_MODEL_CACHE = {}
+
+def _img_remove_bg(img):
+    """Remove the background from an image. Returns an RGBA image with transparent background.
+    Requires: pip install rembg onnxruntime
+    Usage: img = img_remove_bg(img)"""
+    try:
+        from rembg import remove as _rembg_remove
+    except ImportError:
+        raise RuntimeError(
+            "Background removal requires the 'rembg' package.\n"
+            "Install it with: pip install rembg onnxruntime\n"
+            "The model (~170 MB) will auto-download on first use."
+        )
+    print("Removing background (this may take a few seconds on first run)...")
+    result = _rembg_remove(img)
+    print(f"Background removed. Output mode: {result.mode}, size: {result.size[0]}x{result.size[1]}")
+    return result
+
+def _img_replace_bg(img, new_bg):
+    """Remove background and composite onto a new background.
+    new_bg: color name/tuple, or a PIL Image.
+    Usage: img = img_replace_bg(img, 'white')
+           img = img_replace_bg(img, beach_photo)"""
+    from PIL import Image as _Img
+    fg = _img_remove_bg(img)
+    if isinstance(new_bg, str):
+        c = _resolve_color_name(new_bg)
+        if c is None:
+            c = new_bg
+        bg = _Img.new('RGBA', fg.size, (*c, 255) if isinstance(c, tuple) else c)
+    elif isinstance(new_bg, tuple):
+        bg = _Img.new('RGBA', fg.size, (*new_bg, 255))
+    else:
+        bg = new_bg.convert('RGBA').resize(fg.size, _Img.LANCZOS)
+    bg.paste(fg, (0, 0), fg)
+    return bg.convert('RGB')
+
+def _img_detect_faces(img):
+    """Detect faces in an image using MediaPipe. Returns list of bounding box dicts.
+    Each dict: {'x': int, 'y': int, 'w': int, 'h': int, 'confidence': float}
+    Requires: pip install mediapipe
+    Usage: faces = img_detect_faces(img)"""
+    try:
+        import mediapipe as _mp
+    except ImportError:
+        raise RuntimeError(
+            "Face detection requires the 'mediapipe' package.\n"
+            "Install it with: pip install mediapipe"
+        )
+    import numpy as _np
+    mp_face = _mp.solutions.face_detection
+    arr = _np.array(img.convert('RGB'))
+    h, w = arr.shape[:2]
+    with mp_face.FaceDetection(model_selection=1, min_detection_confidence=0.5) as detector:
+        results = detector.process(arr)
+    faces = []
+    if results.detections:
+        for det in results.detections:
+            bbox = det.location_data.relative_bounding_box
+            fx = int(bbox.xmin * w)
+            fy = int(bbox.ymin * h)
+            fw = int(bbox.width * w)
+            fh = int(bbox.height * h)
+            conf = det.score[0] if det.score else 0.0
+            faces.append({'x': fx, 'y': fy, 'w': fw, 'h': fh, 'confidence': round(conf, 3)})
+    print(f"Detected {len(faces)} face(s).")
+    for i, f in enumerate(faces):
+        print(f"  Face {i}: ({f['x']}, {f['y']}) {f['w']}x{f['h']} conf={f['confidence']}")
+    return faces
+
+def _img_blur_faces(img, radius: int = 20):
+    """Auto-detect and blur all faces in an image.
+    Usage: img = img_blur_faces(img, radius=25)"""
+    import numpy as _np
+    from PIL import Image as _Img, ImageFilter as _Filt
+    faces = _img_detect_faces(img)
+    if not faces:
+        print("No faces detected — image unchanged.")
+        return img
+    result = img.copy()
+    for f in faces:
+        # Expand bbox slightly for better coverage
+        margin = int(max(f['w'], f['h']) * 0.15)
+        x1 = max(0, f['x'] - margin)
+        y1 = max(0, f['y'] - margin)
+        x2 = min(img.size[0], f['x'] + f['w'] + margin)
+        y2 = min(img.size[1], f['y'] + f['h'] + margin)
+        face_region = result.crop((x1, y1, x2, y2))
+        blurred = face_region.filter(_Filt.GaussianBlur(radius=radius))
+        result.paste(blurred, (x1, y1))
+    print(f"Blurred {len(faces)} face(s).")
+    return result
+
+def _img_smooth_skin(img, strength: float = 0.5):
+    """Face-aware skin smoothing. Detects faces, applies bilateral-style smoothing.
+    strength: 0.0-1.0. Usage: img = img_smooth_skin(img, 0.7)"""
+    import numpy as _np
+    from PIL import Image as _Img, ImageFilter as _Filt
+    faces = _img_detect_faces(img)
+    if not faces:
+        print("No faces detected — image unchanged.")
+        return img
+    result = img.copy()
+    strength = max(0.0, min(1.0, strength))
+    blur_r = int(3 + strength * 7)  # 3-10 pixel radius
+    for f in faces:
+        margin = int(max(f['w'], f['h']) * 0.2)
+        x1 = max(0, f['x'] - margin)
+        y1 = max(0, f['y'] - margin)
+        x2 = min(img.size[0], f['x'] + f['w'] + margin)
+        y2 = min(img.size[1], f['y'] + f['h'] + margin)
+        region = result.crop((x1, y1, x2, y2))
+        # Smooth while preserving edges: blend original with blurred
+        smooth = region.filter(_Filt.GaussianBlur(radius=blur_r))
+        arr_orig = _np.array(region).astype(_np.float32)
+        arr_smooth = _np.array(smooth).astype(_np.float32)
+        blended = arr_orig * (1.0 - strength) + arr_smooth * strength
+        result.paste(_Img.fromarray(_np.clip(blended, 0, 255).astype(_np.uint8)), (x1, y1))
+    print(f"Smoothed skin on {len(faces)} face(s).")
+    return result
+
+def _img_depth_map(img):
+    """Estimate depth from a single image using MiDaS (local model).
+    Returns a grayscale depth image (white=close, black=far).
+    Requires: pip install timm torch torchvision
+    Usage: depth = img_depth_map(img)"""
+    try:
+        import torch
+    except ImportError:
+        raise RuntimeError("Depth estimation requires 'torch'. Install with: pip install torch torchvision")
+    import numpy as _np
+    from PIL import Image as _Img
+
+    print("Loading depth estimation model (first run downloads ~80 MB)...")
+    if 'midas' not in _AI_MODEL_CACHE:
+        model = torch.hub.load("intel-isl/MiDaS", "MiDaS_small", trust_repo=True)
+        model.eval()
+        transforms = torch.hub.load("intel-isl/MiDaS", "transforms", trust_repo=True)
+        transform = transforms.small_transform
+        # Use MPS if available (Apple Silicon)
+        device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
+        model = model.to(device)
+        _AI_MODEL_CACHE['midas'] = (model, transform, device)
+    else:
+        model, transform, device = _AI_MODEL_CACHE['midas']
+
+    input_img = _np.array(img.convert('RGB'))
+    input_batch = transform(input_img).to(device)
+
+    with torch.no_grad():
+        prediction = model(input_batch)
+        prediction = torch.nn.functional.interpolate(
+            prediction.unsqueeze(1),
+            size=input_img.shape[:2],
+            mode="bicubic",
+            align_corners=False,
+        ).squeeze()
+
+    depth = prediction.cpu().numpy()
+    # Normalize to 0-255
+    depth = (depth - depth.min()) / (depth.max() - depth.min() + 1e-8) * 255
+    depth_img = _Img.fromarray(depth.astype(_np.uint8), 'L')
+    print(f"Depth map generated: {depth_img.size[0]}x{depth_img.size[1]}")
+    return depth_img
+
+def _img_bokeh(img, focus_point=None, aperture: float = 2.0):
+    """Simulate depth-of-field bokeh using depth estimation.
+    focus_point: (x, y) tuple — the point to keep in focus. Defaults to center.
+    aperture: blur strength (1.0-5.0). Higher = more blur.
+    Usage: img = img_bokeh(img, focus_point=(300, 200), aperture=3.0)"""
+    import numpy as _np
+    from PIL import Image as _Img, ImageFilter as _Filt
+
+    w, h = img.size
+    if focus_point is None:
+        focus_point = (w // 2, h // 2)
+
+    depth = _img_depth_map(img)
+    depth_arr = _np.array(depth).astype(_np.float32) / 255.0
+
+    # Get depth at focus point
+    fx, fy = min(focus_point[0], w - 1), min(focus_point[1], h - 1)
+    focus_depth = depth_arr[fy, fx]
+
+    # Create blur mask: further from focus depth = more blur
+    blur_mask = _np.abs(depth_arr - focus_depth)
+    blur_mask = _np.clip(blur_mask * aperture * 3, 0, 1)
+
+    # Apply progressive blur
+    max_radius = int(aperture * 8)
+    blurred = img.filter(_Filt.GaussianBlur(radius=max_radius))
+
+    mask3 = _np.stack([blur_mask] * 3, axis=2)
+    orig_arr = _np.array(img.convert('RGB')).astype(_np.float32)
+    blur_arr = _np.array(blurred.convert('RGB')).astype(_np.float32)
+    result = orig_arr * (1.0 - mask3) + blur_arr * mask3
+
+    print(f"Bokeh applied. Focus point: {focus_point}, aperture: {aperture}")
+    return _Img.fromarray(_np.clip(result, 0, 255).astype(_np.uint8))
+
+def _img_depth_mask(img, near: float = 0.0, far: float = 0.5):
+    """Create a mask based on estimated depth. near/far: 0.0-1.0 (0=closest, 1=farthest).
+    Usage: mask = img_depth_mask(img, near=0.0, far=0.4)  — select foreground objects"""
+    import numpy as _np
+    from PIL import Image as _Img
+    depth = _img_depth_map(img)
+    depth_arr = _np.array(depth).astype(_np.float32) / 255.0
+    mask = ((depth_arr >= near) & (depth_arr <= far)).astype(_np.uint8) * 255
+    matched = int(_np.sum(mask > 0))
+    total = mask.shape[0] * mask.shape[1]
+    print(f"Depth mask: {matched:,} pixels in range [{near:.2f}, {far:.2f}] ({matched*100/total:.1f}%)")
+    return _Img.fromarray(mask, 'L')
+
+def _img_upscale(img, scale: int = 2):
+    """Upscale an image using high-quality Lanczos resampling with sharpening.
+    For ML-based upscaling, install realesrgan. Falls back to PIL Lanczos.
+    scale: 2 or 4. Usage: img = img_upscale(img, 2)"""
+    from PIL import Image as _Img
+    if scale not in (2, 4):
+        raise ValueError("Scale must be 2 or 4.")
+
+    # Try Real-ESRGAN first for best quality
+    try:
+        from realesrgan import RealESRGANer
+        from basicsr.archs.rrdbnet_arch import RRDBNet
+        import torch
+        import numpy as _np
+
+        if 'realesrgan' not in _AI_MODEL_CACHE:
+            print("Loading Real-ESRGAN model (first run downloads ~60 MB)...")
+            model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+            device = 'mps' if torch.backends.mps.is_available() else 'cpu'
+            upsampler = RealESRGANer(
+                scale=4, model_path=None, model=model, device=device,
+                half=False, tile=0, tile_pad=10, pre_pad=0
+            )
+            _AI_MODEL_CACHE['realesrgan'] = upsampler
+        else:
+            upsampler = _AI_MODEL_CACHE['realesrgan']
+
+        import cv2
+        arr = _np.array(img.convert('RGB'))[:, :, ::-1]  # RGB to BGR
+        output, _ = upsampler.enhance(arr, outscale=scale)
+        result = _Img.fromarray(output[:, :, ::-1])  # BGR to RGB
+        print(f"Upscaled {scale}x with Real-ESRGAN: {img.size[0]}x{img.size[1]} → {result.size[0]}x{result.size[1]}")
+        return result
+    except ImportError:
+        pass
+
+    # Fallback: high-quality Lanczos + sharpening
+    w, h = img.size
+    new_w, new_h = w * scale, h * scale
+    result = img.resize((new_w, new_h), _Img.LANCZOS)
+    # Apply mild sharpening to compensate for interpolation softness
+    from PIL import ImageFilter as _Filt
+    result = result.filter(_Filt.UnsharpMask(radius=2, percent=50, threshold=2))
+    print(f"Upscaled {scale}x with Lanczos+sharpen: {w}x{h} → {new_w}x{new_h}")
+    print("(Install 'realesrgan' + 'basicsr' for ML-based upscaling)")
+    return result
+
+def _img_inpaint(img, mask):
+    """Fill the masked region with context-aware content (inpainting).
+    Uses OpenCV's Navier-Stokes inpainting. For best results feather the mask edges.
+    Requires: pip install opencv-python-headless
+    Usage: img = img_inpaint(img, mask)"""
+    try:
+        import cv2
+    except ImportError:
+        raise RuntimeError(
+            "Inpainting requires OpenCV.\n"
+            "Install with: pip install opencv-python-headless"
+        )
+    import numpy as _np
+    from PIL import Image as _Img
+    src = _np.array(img.convert('RGB'))
+    mask_arr = _np.array(mask.convert('L'))
+    # OpenCV inpaint expects 0=keep, 255=inpaint — which matches our mask convention
+    result = cv2.inpaint(src, mask_arr, inpaintRadius=5, flags=cv2.INPAINT_NS)
+    print(f"Inpainted {int(_np.sum(mask_arr > 127)):,} pixels.")
+    return _Img.fromarray(result)
+
+def _img_remove_object(img, mask):
+    """Remove an object by inpainting the masked region.
+    Usage: mask = img_mask_from_color(img, 'red', tolerance=40)
+           img = img_remove_object(img, mask)"""
+    # Dilate mask slightly for cleaner removal
+    expanded = _img_mask_dilate(mask, radius=5)
+    feathered = _img_mask_feather(expanded, radius=3)
+    return _img_inpaint(img, feathered)
+
+def _img_auto_enhance(img):
+    """One-click auto-enhancement: auto contrast, vibrance boost, mild sharpening, and dehaze.
+    Usage: img = img_auto_enhance(img)"""
+    result = _img_auto_contrast(img, cutoff=0.5)
+    result = _img_vibrance(result, amount=1.15)
+    result = _img_clarity(result, amount=1.2)
+    result = _img_dehaze(result, strength=0.2)
+    from PIL import ImageFilter as _Filt
+    result = result.filter(_Filt.UnsharpMask(radius=1, percent=30, threshold=2))
+    print("Auto-enhanced: contrast, vibrance, clarity, dehaze, sharpen.")
+    return result
+
+_BASE_GLOBALS['img_remove_bg'] = _img_remove_bg
+_BASE_GLOBALS['img_replace_bg'] = _img_replace_bg
+_BASE_GLOBALS['img_detect_faces'] = _img_detect_faces
+_BASE_GLOBALS['img_blur_faces'] = _img_blur_faces
+_BASE_GLOBALS['img_smooth_skin'] = _img_smooth_skin
+_BASE_GLOBALS['img_depth_map'] = _img_depth_map
+_BASE_GLOBALS['img_bokeh'] = _img_bokeh
+_BASE_GLOBALS['img_depth_mask'] = _img_depth_mask
+_BASE_GLOBALS['img_upscale'] = _img_upscale
+_BASE_GLOBALS['img_inpaint'] = _img_inpaint
+_BASE_GLOBALS['img_remove_object'] = _img_remove_object
+_BASE_GLOBALS['img_auto_enhance'] = _img_auto_enhance
+
+
+# ──────────────────────────────────────────
+# PHASE 8 — BATCH PROCESSING
+# ──────────────────────────────────────────
+
+def _img_batch_load(directory: str, extensions=None):
+    """Load all images from a directory. Returns list of (path, PIL.Image) tuples.
+    extensions: list of extensions to include, e.g. ['.jpg', '.png']. Default: all image types.
+    Usage: images = img_batch_load('/path/to/folder')
+           images = img_batch_load('/path', extensions=['.jpg'])"""
+    from PIL import Image as _Img
+    import glob as _glob
+    if extensions is None:
+        extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.tif']
+    results = []
+    for ext in extensions:
+        pattern = os.path.join(directory, f'*{ext}')
+        results.extend(_glob.glob(pattern))
+        pattern_upper = os.path.join(directory, f'*{ext.upper()}')
+        results.extend(_glob.glob(pattern_upper))
+    results = sorted(set(results))
+    images = []
+    for p in results:
+        try:
+            img = _Img.open(p)
+            img.load()
+            images.append((p, img))
+        except Exception as e:
+            print(f"  Skipped {os.path.basename(p)}: {e}")
+    print(f"Loaded {len(images)} images from {directory}")
+    return images
+
+def _img_batch_apply(images, func, *args, **kwargs):
+    """Apply a function to a list of (path, image) tuples. Returns list of (path, result_image).
+    func: any img_* function that takes an image as first argument.
+    Usage: results = img_batch_apply(images, img_auto_enhance)
+           results = img_batch_apply(images, img_resize, 800, 600)"""
+    results = []
+    total = len(images)
+    for i, (path, img) in enumerate(images):
+        try:
+            result = func(img, *args, **kwargs)
+            results.append((path, result))
+            if (i + 1) % 5 == 0 or i == total - 1:
+                print(f"  Processed {i + 1}/{total}")
+        except Exception as e:
+            print(f"  Failed {os.path.basename(path)}: {e}")
+            results.append((path, img))  # keep original on failure
+    print(f"Batch processing complete: {len(results)}/{total} succeeded")
+    return results
+
+def _img_batch_save(images, output_dir: str, format: str = 'png', prefix: str = '', suffix: str = '', quality: int = 95):
+    """Save a list of (path, image) tuples to a directory.
+    Usage: img_batch_save(results, '/path/to/output')
+           img_batch_save(results, '/path/to/output', format='jpg', quality=85, prefix='edited_')"""
+    os.makedirs(output_dir, exist_ok=True)
+    saved = 0
+    for path, img in images:
+        basename = os.path.splitext(os.path.basename(path))[0]
+        out_name = f"{prefix}{basename}{suffix}.{format}"
+        out_path = os.path.join(output_dir, out_name)
+        try:
+            if format.lower() in ('jpg', 'jpeg'):
+                img.convert('RGB').save(out_path, format='JPEG', quality=quality)
+            else:
+                img.save(out_path, format=format.upper())
+            saved += 1
+        except Exception as e:
+            print(f"  Failed to save {out_name}: {e}")
+    print(f"Saved {saved}/{len(images)} images to {output_dir}")
+    return output_dir
+
+def _img_batch_resize(images, width: int, height: int = None):
+    """Batch resize all images. If height is None, maintains aspect ratio.
+    Usage: results = img_batch_resize(images, 800)
+           results = img_batch_resize(images, 1920, 1080)"""
+    from PIL import Image as _Img
+    results = []
+    for path, img in images:
+        w, h = img.size
+        if height is None:
+            ratio = width / w
+            new_h = int(h * ratio)
+            result = img.resize((width, new_h), _Img.LANCZOS)
+        else:
+            result = img.resize((width, height), _Img.LANCZOS)
+        results.append((path, result))
+    print(f"Resized {len(results)} images to {width}x{height or 'auto'}")
+    return results
+
+def _img_batch_convert(input_dir: str, output_dir: str, output_format: str = 'webp', quality: int = 85):
+    """Convert all images in a directory to a different format.
+    Usage: img_batch_convert('/path/input', '/path/output', 'webp', quality=80)"""
+    images = _img_batch_load(input_dir)
+    return _img_batch_save(images, output_dir, format=output_format, quality=quality)
+
+def _img_batch_watermark(images, text: str, opacity: float = 0.3, position: str = 'br', font_size: int = 24):
+    """Add watermark to a batch of images.
+    Usage: results = img_batch_watermark(images, 'Copyright 2024', opacity=0.4)"""
+    results = []
+    for path, img in images:
+        result = _img_watermark(img, text, opacity=opacity, position=position, font_size=font_size)
+        results.append((path, result))
+    print(f"Watermarked {len(results)} images with '{text}'")
+    return results
+
+def _img_contact_sheet(images, cols: int = 4, thumb_size: int = 200, padding: int = 10, bg_color='white'):
+    """Create a contact sheet / thumbnail grid from a batch of images.
+    Usage: sheet = img_contact_sheet(images, cols=5, thumb_size=150)"""
+    from PIL import Image as _Img
+    n = len(images)
+    rows = (n + cols - 1) // cols
+    sheet_w = cols * (thumb_size + padding) + padding
+    sheet_h = rows * (thumb_size + padding) + padding
+    c = _resolve_color_name(bg_color) if isinstance(bg_color, str) else bg_color
+    sheet = _Img.new('RGB', (sheet_w, sheet_h), c if c else (255, 255, 255))
+    for idx, (path, img) in enumerate(images):
+        row, col = divmod(idx, cols)
+        thumb = img.copy()
+        thumb.thumbnail((thumb_size, thumb_size), _Img.LANCZOS)
+        x = padding + col * (thumb_size + padding) + (thumb_size - thumb.size[0]) // 2
+        y = padding + row * (thumb_size + padding) + (thumb_size - thumb.size[1]) // 2
+        sheet.paste(thumb, (x, y))
+    print(f"Contact sheet: {cols}×{rows} grid, {sheet_w}×{sheet_h}px, {n} images")
+    return sheet
+
+_BASE_GLOBALS['img_batch_load'] = _img_batch_load
+_BASE_GLOBALS['img_batch_apply'] = _img_batch_apply
+_BASE_GLOBALS['img_batch_save'] = _img_batch_save
+_BASE_GLOBALS['img_batch_resize'] = _img_batch_resize
+_BASE_GLOBALS['img_batch_convert'] = _img_batch_convert
+_BASE_GLOBALS['img_batch_watermark'] = _img_batch_watermark
+_BASE_GLOBALS['img_contact_sheet'] = _img_contact_sheet
 
 
 # ──────────────────────────────────────────
@@ -864,7 +2561,69 @@ def _html_preview(html_string: str):
     _pending_html_artifact["html"] = html_string
     print(f"[HTML artifact queued — {len(html_string)} chars]")
 
-_SHARED_GLOBALS['html_preview'] = _html_preview
+_BASE_GLOBALS['html_preview'] = _html_preview
+
+# Also update legacy alias
+_SHARED_GLOBALS = _BASE_GLOBALS
+
+
+# ──────────────────────────────────────────
+# SESSION-SCOPED SANDBOX
+# ──────────────────────────────────────────
+import time as _time
+import threading as _threading
+
+class SandboxSession:
+    """Isolated sandbox environment for a single chat session."""
+    __slots__ = ('session_id', 'globals', 'created_at', 'last_used', 'pending_html')
+
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        self.globals = dict(_BASE_GLOBALS)  # shallow copy — libraries shared, user vars isolated
+        self.globals['__name__'] = '__main__'
+        self.created_at = _time.time()
+        self.last_used = _time.time()
+        self.pending_html = {"html": ""}
+
+    def touch(self):
+        self.last_used = _time.time()
+
+
+_SESSION_REGISTRY: dict[str, SandboxSession] = {}
+_SESSION_LOCK = _threading.Lock()
+_SESSION_MAX_AGE = 6 * 3600  # 6 hours
+_SESSION_MAX_COUNT = 50
+
+
+def get_session(session_id: str | None = None) -> SandboxSession:
+    """Get or create a sandbox session. None returns a default global session."""
+    if not session_id:
+        session_id = "__default__"
+    with _SESSION_LOCK:
+        if session_id in _SESSION_REGISTRY:
+            sess = _SESSION_REGISTRY[session_id]
+            sess.touch()
+            return sess
+        # Evict old sessions if at capacity
+        if len(_SESSION_REGISTRY) >= _SESSION_MAX_COUNT:
+            now = _time.time()
+            expired = [k for k, v in _SESSION_REGISTRY.items()
+                       if now - v.last_used > _SESSION_MAX_AGE]
+            for k in expired:
+                del _SESSION_REGISTRY[k]
+            # If still at capacity, evict oldest
+            if len(_SESSION_REGISTRY) >= _SESSION_MAX_COUNT:
+                oldest_key = min(_SESSION_REGISTRY, key=lambda k: _SESSION_REGISTRY[k].last_used)
+                del _SESSION_REGISTRY[oldest_key]
+        sess = SandboxSession(session_id)
+        _SESSION_REGISTRY[session_id] = sess
+        return sess
+
+
+def clear_session(session_id: str):
+    """Remove a session's sandbox state."""
+    with _SESSION_LOCK:
+        _SESSION_REGISTRY.pop(session_id, None)
 
 
 def apply_custom_matplotlib_style():
@@ -882,12 +2641,15 @@ def apply_custom_matplotlib_style():
             'axes.labelcolor': '#8b949e',
             'axes.titlecolor': '#e6edf3',
             'font.family': 'sans-serif',
+            'font.size': 11,
             'axes.titlesize': 14,
             'axes.titleweight': 'bold',
             'figure.dpi': 150,
+            'figure.figsize': (10, 6),
+            'figure.autolayout': True,
             'lines.linewidth': 2.5,
             'lines.color': '#58a6ff',
-            'axes.prop_cycle': plt.cycler('color', ['#58a6ff', '#3fb950', '#f85149', '#a371f7', '#d29922', '#e3b341'])
+            'axes.prop_cycle': plt.cycler('color', ['#58a6ff', '#3fb950', '#f85149', '#a371f7', '#d29922', '#e3b341']),
         })
     except Exception:
         pass
@@ -932,7 +2694,7 @@ _DANGEROUS_PATTERNS = [
     # Code generation / eval / exec
     (r'\beval\s*\(', 'eval() — not allowed in sandbox'),
     (r'\bexec\s*\(', 'exec() — not allowed in sandbox'),
-    (r'\bcompile\s*\(', 'compile() — not allowed in sandbox'),
+    (r'(?<!\.)\bcompile\s*\(', 'compile() — not allowed in sandbox (use re.compile() for regex)'),
     # Bypass tricks
     (r'\bgetattr\s*\(\s*__builtins__', 'getattr(__builtins__) — not allowed in sandbox'),
     (r'\bchr\s*\(.*\)\s*\+\s*chr\s*\(', 'chr() string building — not allowed in sandbox'),
@@ -960,12 +2722,12 @@ def _check_python_safety(code: str) -> list:
     return violations
 
 
-def execute_python_sandbox(code: str) -> dict:
+def execute_python_sandbox(code: str, session_id: str = None) -> dict:
     """
     Executes Python code safely, capturing stdout/stderr, matplotlib plots, and Plotly HTML.
     Returns a dict with 'output' (str), 'images' (list of base64 data URIs),
     and optionally 'html' (str) for interactive Plotly figures.
-    Uses a shared global environment so variables persist across executions.
+    Uses a session-scoped global environment so variables persist within a chat session.
     """
     # Pre-execution safety check
     violations = _check_python_safety(code)
@@ -982,12 +2744,28 @@ def execute_python_sandbox(code: str) -> dict:
             "images": [],
         }
 
+    # ast.parse() pre-check: catch syntax errors before exec()
+    import ast
+    try:
+        ast.parse(code)
+    except SyntaxError as e:
+        line_info = f" (line {e.lineno})" if e.lineno else ""
+        return {
+            "output": f"SyntaxError{line_info}: {e.msg}\nFix the syntax error and try again.",
+            "images": [],
+        }
+
     output_capture = io.StringIO()
     images = []
     html_artifact = ""
 
+    # Get session-scoped globals
+    session = get_session(session_id)
+    session_globals = session.globals
+
     # Clear pending html_preview artifact from previous execution
     _pending_html_artifact["html"] = ""
+    session.pending_html["html"] = ""
 
     # Run in workspace dir so saved files don't clutter the repo
     workspace = _get_workspace_dir()
@@ -1003,20 +2781,20 @@ def execute_python_sandbox(code: str) -> dict:
     safe_code = re.sub(r'matplotlib\.pyplot\.show\s*\([^)]*\)', '# pyplot.show() [auto-captured]', safe_code)
     
     # Re-inject plt.show as no-op in case code re-imports
-    _SHARED_GLOBALS['plt'] = plt
+    session_globals['plt'] = plt
     plt.show = lambda *args, **kwargs: None
 
     # Snapshot existing Plotly figures before execution so we only capture NEW ones
     _pre_plotly_ids = set()
     try:
         import plotly.graph_objects as _go
-        _pre_plotly_ids = {id(v) for v in _SHARED_GLOBALS.values() if isinstance(v, _go.Figure)}
+        _pre_plotly_ids = {id(v) for v in session_globals.values() if isinstance(v, _go.Figure)}
     except ImportError:
         pass
 
     try:
         with contextlib.redirect_stdout(output_capture), contextlib.redirect_stderr(output_capture):
-            exec(safe_code, _SHARED_GLOBALS)
+            exec(safe_code, session_globals)
 
             if len(plt.get_fignums()) > 0:
                 for i in plt.get_fignums():
@@ -1032,7 +2810,7 @@ def execute_python_sandbox(code: str) -> dict:
             # Capture only NEW Plotly figures created during this execution
             try:
                 import plotly.graph_objects as _go
-                new_figs = [v for v in _SHARED_GLOBALS.values()
+                new_figs = [v for v in session_globals.values()
                             if isinstance(v, _go.Figure) and id(v) not in _pre_plotly_ids]
                 if new_figs:
                     pfig = new_figs[-1]
@@ -1057,6 +2835,9 @@ def execute_python_sandbox(code: str) -> dict:
         if _pending_html_artifact["html"]:
             html_artifact = _pending_html_artifact["html"]
             _pending_html_artifact["html"] = ""
+        elif session.pending_html["html"]:
+            html_artifact = session.pending_html["html"]
+            session.pending_html["html"] = ""
 
         output = output_capture.getvalue()
         if not output and not images:

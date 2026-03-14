@@ -88,7 +88,7 @@ export const useCartridgeStore = create<CartridgeState>((set, get) => ({
       if (typeof window !== "undefined") localStorage.setItem("kasset-last-cartridge", cartridgeIds[0]);
       set({ activeConfig: data.config, lastActiveCartridgeId: cartridgeIds[0], isLoading: false });
     } catch (error: any) {
-      set({ error: error.message, isLoading: false });
+      set({ activeConfig: null, error: error.message, isLoading: false });
     }
   },
 

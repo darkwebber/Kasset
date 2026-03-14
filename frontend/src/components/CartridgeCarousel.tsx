@@ -311,7 +311,7 @@ export default function CartridgeCarousel({ onSelect, onOpenForge }: { onSelect:
                       }}
                       initial={{ opacity: 0, scale: 0.6 }}
                       animate={{
-                        x: offset * (typeof window !== 'undefined' && window.innerWidth < 640 ? 100 : 200),
+                        x: offset * (typeof window !== 'undefined' && window.innerWidth < 400 ? 75 : typeof window !== 'undefined' && window.innerWidth < 640 ? 110 : 200),
                         scale: isSelected ? (isInserting ? 0.85 : 1.0) : Math.max(0.55, 0.85 - absOffset * 0.12),
                         rotateY: offset * -12,
                         z: isSelected ? 100 : -absOffset * 80,
@@ -324,7 +324,7 @@ export default function CartridgeCarousel({ onSelect, onOpenForge }: { onSelect:
                       style={{ zIndex: 10 - absOffset, transformStyle: "preserve-3d" }}
                     >
                       <div
-                        className="w-32 h-44 sm:w-48 sm:h-64 rounded-t-2xl rounded-b-md flex flex-col overflow-hidden"
+                        className="w-28 h-40 xs:w-32 xs:h-44 sm:w-48 sm:h-64 rounded-t-2xl rounded-b-md flex flex-col overflow-hidden"
                         style={{
                           background: `linear-gradient(145deg, #1a1a2e 0%, #0f0f1a 100%)`,
                           border: `3px solid ${isSelected ? cartAccent : "rgba(255,255,255,0.08)"}`,

@@ -61,9 +61,11 @@ export function authFetch(url: string, init?: RequestInit): Promise<Response> {
  * Set by page.tsx to trigger the auth modal without a hard reload.
  */
 let _onSessionExpired: (() => void) | null = null;
+let _sessionExpiredFired = false;
 
 export function onSessionExpired(cb: () => void) {
   _onSessionExpired = cb;
+  _sessionExpiredFired = false; // Reset on new callback registration
 }
 
 /**
@@ -91,7 +93,8 @@ if (typeof window !== "undefined") {
     // Intercept 401s on API calls — session expired or revoked
     if (isApiCall && !url.includes("/api/auth/")) {
       fetchPromise = fetchPromise.then(response => {
-        if (response.status === 401 && _onSessionExpired) {
+        if (response.status === 401 && _onSessionExpired && !_sessionExpiredFired) {
+          _sessionExpiredFired = true;
           clearAuthToken();
           _onSessionExpired();
         }
