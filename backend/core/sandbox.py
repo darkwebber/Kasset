@@ -688,6 +688,76 @@ def _img_crop(img, left: int, top: int, right: int, bottom: int):
     """Crop image to box (left, top, right, bottom). Usage: img = img_crop(img, 100, 100, 500, 400)"""
     return img.crop((left, top, right, bottom))
 
+def _normalize_polygon_points(points, w: int, h: int):
+    """Normalize polygon points into in-bounds integer (x, y) tuples."""
+    norm = []
+    for p in points or []:
+        x = y = None
+        if isinstance(p, dict):
+            x = p.get('x')
+            y = p.get('y')
+        elif isinstance(p, (list, tuple)) and len(p) >= 2:
+            x, y = p[0], p[1]
+        if x is None or y is None:
+            continue
+        try:
+            xi = int(round(float(x)))
+            yi = int(round(float(y)))
+        except Exception:
+            continue
+        xi = max(0, min(w - 1, xi))
+        yi = max(0, min(h - 1, yi))
+        if not norm or (xi, yi) != norm[-1]:
+            norm.append((xi, yi))
+    if len(norm) >= 2 and norm[0] == norm[-1]:
+        norm = norm[:-1]
+    if len(norm) < 3:
+        raise ValueError("img_crop_polygon/img_mask_from_polygon needs at least 3 valid points")
+    return norm
+
+def _img_crop_polygon(img, points, feather: int = 0):
+    """Crop image to a freeform polygon shape. Returns RGBA with transparency outside the polygon.
+    points: list of (x, y) tuples defining the polygon in image coordinates.
+    feather: optional edge softening radius (0 = hard edge).
+    Usage: img = img_crop_polygon(img, [(100,50),(300,50),(350,200),(250,300),(80,250)])"""
+    from PIL import Image as _Img, ImageDraw as _Draw, ImageFilter as _Filt
+    w, h = img.size
+    poly = _normalize_polygon_points(points, w, h)
+    # Build polygon mask
+    mask = _Img.new('L', (w, h), 0)
+    draw = _Draw.Draw(mask)
+    draw.polygon(poly, fill=255)
+    if feather > 0:
+        mask = mask.filter(_Filt.GaussianBlur(radius=feather))
+    # Composite onto transparent background
+    rgba = img.convert('RGBA')
+    result = _Img.new('RGBA', (w, h), (0, 0, 0, 0))
+    result.paste(rgba, mask=mask)
+    # Crop to polygon bounding box
+    xs = [p[0] for p in poly]
+    ys = [p[1] for p in poly]
+    bbox = (max(0, min(xs)), max(0, min(ys)), min(w, max(xs) + 1), min(h, max(ys) + 1))
+    result = result.crop(bbox)
+    print(f"Polygon crop: {len(poly)} vertices, bbox {bbox[2]-bbox[0]}x{bbox[3]-bbox[1]}, feather={feather}")
+    return result
+
+def _img_mask_from_polygon(img, points, feather: int = 0):
+    """Create a mask image from a polygon. Returns a grayscale mask (white=inside, black=outside).
+    Same size as img. Use with img_apply_to_region, img_blur_region, img_fill_region, etc.
+    points: list of (x, y) tuples in image coordinates.
+    feather: optional edge softening radius.
+    Usage: mask = img_mask_from_polygon(img, [(100,50),(300,50),(250,300)])"""
+    from PIL import Image as _Img, ImageDraw as _Draw, ImageFilter as _Filt
+    w, h = img.size
+    poly = _normalize_polygon_points(points, w, h)
+    mask = _Img.new('L', (w, h), 0)
+    draw = _Draw.Draw(mask)
+    draw.polygon(poly, fill=255)
+    if feather > 0:
+        mask = mask.filter(_Filt.GaussianBlur(radius=feather))
+    print(f"Polygon mask: {len(poly)} vertices, {w}x{h}, feather={feather}")
+    return mask
+
 def _img_resize(img, width: int, height: int = None):
     """Resize image. If height is None, maintains aspect ratio. Usage: img = img_resize(img, 800)"""
     from PIL import Image as _Img
@@ -1198,6 +1268,8 @@ _BASE_GLOBALS['img_show'] = _img_show
 _BASE_GLOBALS['img_adjust'] = _img_adjust
 _BASE_GLOBALS['img_hue_shift'] = _img_hue_shift
 _BASE_GLOBALS['img_crop'] = _img_crop
+_BASE_GLOBALS['img_crop_polygon'] = _img_crop_polygon
+_BASE_GLOBALS['img_mask_from_polygon'] = _img_mask_from_polygon
 _BASE_GLOBALS['img_resize'] = _img_resize
 _BASE_GLOBALS['img_rotate'] = _img_rotate
 _BASE_GLOBALS['img_flip'] = _img_flip
@@ -2132,37 +2204,107 @@ def _img_replace_bg(img, new_bg):
     return bg.convert('RGB')
 
 def _img_detect_faces(img):
-    """Detect faces in an image using MediaPipe. Returns list of bounding box dicts.
+    """Detect faces in an image. Returns list of bounding box dicts.
     Each dict: {'x': int, 'y': int, 'w': int, 'h': int, 'confidence': float}
-    Requires: pip install mediapipe
+    Uses mediapipe Tasks API (new) → mediapipe Solutions (old) → OpenCV Haar cascade.
     Usage: faces = img_detect_faces(img)"""
-    try:
-        import mediapipe as _mp
-    except ImportError:
-        raise RuntimeError(
-            "Face detection requires the 'mediapipe' package.\n"
-            "Install it with: pip install mediapipe"
-        )
     import numpy as _np
-    mp_face = _mp.solutions.face_detection
     arr = _np.array(img.convert('RGB'))
     h, w = arr.shape[:2]
-    with mp_face.FaceDetection(model_selection=1, min_detection_confidence=0.5) as detector:
-        results = detector.process(arr)
-    faces = []
-    if results.detections:
-        for det in results.detections:
-            bbox = det.location_data.relative_bounding_box
-            fx = int(bbox.xmin * w)
-            fy = int(bbox.ymin * h)
-            fw = int(bbox.width * w)
-            fh = int(bbox.height * h)
-            conf = det.score[0] if det.score else 0.0
-            faces.append({'x': fx, 'y': fy, 'w': fw, 'h': fh, 'confidence': round(conf, 3)})
-    print(f"Detected {len(faces)} face(s).")
-    for i, f in enumerate(faces):
-        print(f"  Face {i}: ({f['x']}, {f['y']}) {f['w']}x{f['h']} conf={f['confidence']}")
-    return faces
+
+    # ── Tier 1: MediaPipe Tasks API (>= 0.10.18) ──
+    try:
+        import mediapipe as _mp
+        from mediapipe.tasks.python import vision as _mp_vision
+        from mediapipe.tasks.python import BaseOptions as _BaseOpts
+
+        # Auto-download the short-range face detection model to ~/.kasset/cache/
+        _model_dir = os.path.join(os.path.expanduser("~"), ".kasset", "cache", "models")
+        os.makedirs(_model_dir, exist_ok=True)
+        _model_path = os.path.join(_model_dir, "blaze_face_short_range.tflite")
+        if not os.path.exists(_model_path):
+            print("Downloading face detection model (first run only, ~200 KB)...")
+            import urllib.request
+            _model_url = (
+                "https://storage.googleapis.com/mediapipe-models/"
+                "face_detector/blaze_face_short_range/float16/latest/"
+                "blaze_face_short_range.tflite"
+            )
+            urllib.request.urlretrieve(_model_url, _model_path)
+            print("Model downloaded.")
+
+        _opts = _mp_vision.FaceDetectorOptions(
+            base_options=_BaseOpts(model_asset_path=_model_path),
+            min_detection_confidence=0.5,
+        )
+        _detector = _mp_vision.FaceDetector.create_from_options(_opts)
+        _mp_img = _mp.Image(image_format=_mp.ImageFormat.SRGB, data=arr)
+        _result = _detector.detect(_mp_img)
+
+        faces = []
+        if _result.detections:
+            for det in _result.detections:
+                bbox = det.bounding_box
+                fx, fy, fw, fh = bbox.origin_x, bbox.origin_y, bbox.width, bbox.height
+                conf = det.categories[0].score if det.categories else 0.0
+                faces.append({'x': fx, 'y': fy, 'w': fw, 'h': fh, 'confidence': round(conf, 3)})
+        _detector.close()
+        print(f"Detected {len(faces)} face(s) (mediapipe Tasks API).")
+        for i, f in enumerate(faces):
+            print(f"  Face {i}: ({f['x']}, {f['y']}) {f['w']}x{f['h']} conf={f['confidence']}")
+        return faces
+    except Exception as _e1:
+        _tier1_err = str(_e1)
+
+    # ── Tier 2: MediaPipe Solutions (legacy, < 0.10.18) ──
+    try:
+        import mediapipe as _mp
+        _mp_face = _mp.solutions.face_detection
+        with _mp_face.FaceDetection(model_selection=1, min_detection_confidence=0.5) as detector:
+            results = detector.process(arr)
+        faces = []
+        if results.detections:
+            for det in results.detections:
+                bbox = det.location_data.relative_bounding_box
+                fx = int(bbox.xmin * w)
+                fy = int(bbox.ymin * h)
+                fw = int(bbox.width * w)
+                fh = int(bbox.height * h)
+                conf = det.score[0] if det.score else 0.0
+                faces.append({'x': fx, 'y': fy, 'w': fw, 'h': fh, 'confidence': round(conf, 3)})
+        print(f"Detected {len(faces)} face(s) (mediapipe Solutions).")
+        for i, f in enumerate(faces):
+            print(f"  Face {i}: ({f['x']}, {f['y']}) {f['w']}x{f['h']} conf={f['confidence']}")
+        return faces
+    except Exception as _e2:
+        pass
+
+    # ── Tier 3: OpenCV Haar Cascade (always available) ──
+    try:
+        import cv2 as _cv2
+        _cascade_path = _cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+        _cascade = _cv2.CascadeClassifier(_cascade_path)
+        if _cascade.empty():
+            raise RuntimeError("Haar cascade file not found")
+        gray = _cv2.cvtColor(arr, _cv2.COLOR_RGB2GRAY)
+        _cv2_faces = _cascade.detectMultiScale(
+            gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
+        )
+        faces = []
+        for (fx, fy, fw, fh) in _cv2_faces:
+            faces.append({'x': int(fx), 'y': int(fy), 'w': int(fw), 'h': int(fh), 'confidence': 0.9})
+        print(f"Detected {len(faces)} face(s) (OpenCV Haar cascade).")
+        for i, f in enumerate(faces):
+            print(f"  Face {i}: ({f['x']}, {f['y']}) {f['w']}x{f['h']} conf={f['confidence']}")
+        return faces
+    except Exception as _e3:
+        pass
+
+    raise RuntimeError(
+        f"No face detection backend available.\n"
+        f"  MediaPipe Tasks: {_tier1_err}\n"
+        f"  Install mediapipe or opencv-python for face detection."
+    )
 
 def _img_blur_faces(img, radius: int = 20):
     """Auto-detect and blur all faces in an image.

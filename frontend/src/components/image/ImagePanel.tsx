@@ -24,8 +24,8 @@ function useCoords(
     const rx = cx - r.left - r.width / 2 - panOffset.x;
     const ry = cy - r.top - r.height / 2 - panOffset.y;
     return {
-      x: Math.round(rx / zoomLevel + imgW / 2),
-      y: Math.round(ry / zoomLevel + imgH / 2),
+      x: Math.max(0, Math.min(imgW, Math.round(rx / zoomLevel + imgW / 2))),
+      y: Math.max(0, Math.min(imgH, Math.round(ry / zoomLevel + imgH / 2))),
     };
   }, [containerRef, zoomLevel, panOffset, imgW, imgH]);
 
@@ -87,8 +87,9 @@ export default function ImagePanel({ standalone, onClose, onPopOut, showPopOut }
   const panStart = useRef({ x: 0, y: 0 });
   const panOffsetStart = useRef({ x: 0, y: 0 });
 
-  // Selection state (rect & lasso share screen-space coords)
+  // Selection state
   const [selRect, setSelRect] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
+  // Lasso path is stored in image-space coordinates to avoid viewport/zoom drift.
   const [lassoPath, setLassoPath] = useState<{ x: number; y: number }[]>([]);
   const isDrawing = useRef(false);
 
@@ -155,11 +156,8 @@ export default function ImagePanel({ standalone, onClose, onPopOut, showPopOut }
     }
 
     if (activeTool === "lasso") {
-      const r = containerRef.current?.getBoundingClientRect();
-      if (!r) return;
-      const sx = e.clientX - r.left;
-      const sy = e.clientY - r.top;
-      setLassoPath([{ x: sx, y: sy }]);
+      const pt = toImage(e.clientX, e.clientY);
+      setLassoPath([pt]);
       isDrawing.current = true;
       return;
     }
@@ -188,9 +186,16 @@ export default function ImagePanel({ standalone, onClose, onPopOut, showPopOut }
     if (activeTool === "select" || activeTool === "crop") {
       setSelRect((prev) => prev ? { ...prev, x2: sx, y2: sy } : null);
     } else if (activeTool === "lasso") {
-      setLassoPath((prev) => [...prev, { x: sx, y: sy }]);
+      const pt = toImage(e.clientX, e.clientY);
+      setLassoPath((prev) => {
+        if (prev.length === 0) return [pt];
+        const last = prev[prev.length - 1];
+        // Drop near-duplicate points to keep the polygon clean while preserving shape.
+        if (Math.hypot(pt.x - last.x, pt.y - last.y) < 1.5) return prev;
+        return [...prev, pt];
+      });
     }
-  }, [activeTool, setPanOffset]);
+  }, [activeTool, setPanOffset, toImage]);
 
   const onPointerUp = useCallback(() => {
     if (isPanning.current) {
@@ -222,10 +227,14 @@ export default function ImagePanel({ standalone, onClose, onPopOut, showPopOut }
     }
 
     if (activeTool === "lasso" && lassoPath.length > 4) {
-      const r = containerRef.current?.getBoundingClientRect();
-      if (!r) return;
-      const imgPoints = lassoPath.map((p) => toImage(p.x + r.left, p.y + r.top));
-      setSelection({ type: "lasso", data: { points: imgPoints } });
+      const points = [...lassoPath];
+      const first = points[0];
+      const last = points[points.length - 1];
+      // Ensure the polygon closes explicitly so there is no long implicit closing edge.
+      if (first && last && Math.hypot(first.x - last.x, first.y - last.y) > 2) {
+        points.push(first);
+      }
+      setSelection({ type: "lasso", data: { points } });
     }
   }, [activeTool, selRect, lassoPath, toImage, setSelection]);
 
@@ -250,6 +259,8 @@ export default function ImagePanel({ standalone, onClose, onPopOut, showPopOut }
     const t = TOOLS.find((t) => t.id === activeTool);
     return t?.cursor ?? "default";
   })();
+
+  const lassoScreenPath = lassoPath.map((p) => toScreen(p.x, p.y));
 
   if (!currentImageUrl) return null;
 
@@ -358,7 +369,7 @@ export default function ImagePanel({ standalone, onClose, onPopOut, showPopOut }
         {lassoPath.length > 2 && activeTool === "lasso" && (
           <svg className="absolute inset-0 w-full h-full pointer-events-none z-10">
             <polyline
-              points={lassoPath.map((p) => `${p.x},${p.y}`).join(" ")}
+              points={lassoScreenPath.map((p) => `${p.x},${p.y}`).join(" ")}
               fill="none"
               stroke="rgba(255,255,255,0.7)"
               strokeWidth="1.5"
@@ -366,7 +377,7 @@ export default function ImagePanel({ standalone, onClose, onPopOut, showPopOut }
             />
             {!isDrawing.current && lassoPath.length > 4 && (
               <polygon
-                points={lassoPath.map((p) => `${p.x},${p.y}`).join(" ")}
+                points={lassoScreenPath.map((p) => `${p.x},${p.y}`).join(" ")}
                 fill="rgba(var(--accent-rgb, 168,85,247),0.15)"
                 stroke="rgba(255,255,255,0.8)"
                 strokeWidth="1.5"

@@ -1224,10 +1224,13 @@ export default function Console({ onChangeCartridge, onOpenForge }: { onChangeCa
         const d = imgSelection.data;
         userContent += `\n[Selected region: rect x=${d.x} y=${d.y} w=${d.w} h=${d.h}${d.tool === "crop" ? " (crop)" : ""}]`;
       } else if (imgSelection.type === "lasso") {
-        const pts = imgSelection.data.points;
-        const xs = pts.map((p: {x:number}) => p.x);
-        const ys = pts.map((p: {y:number}) => p.y);
-        userContent += `\n[Selected region: freeform ${pts.length} points, bounds x=${Math.min(...xs)}-${Math.max(...xs)} y=${Math.min(...ys)}-${Math.max(...ys)}]`;
+        const pts: {x:number;y:number}[] = imgSelection.data.points;
+        const xs = pts.map((p) => p.x);
+        const ys = pts.map((p) => p.y);
+        const bx1 = Math.min(...xs), bx2 = Math.max(...xs);
+        const by1 = Math.min(...ys), by2 = Math.max(...ys);
+        const pointsJson = JSON.stringify(pts);
+        userContent += `\n[Selected region: freeform ${pts.length} points, bounds x=${bx1}-${bx2} y=${by1}-${by2}, polygon_json=${pointsJson}. Use EXACT polygon_json points with img_crop_polygon(img, points). Do NOT approximate or re-sample the polygon. Use img_crop(img, ${bx1}, ${by1}, ${bx2}, ${by2}) only if the user explicitly asks for rectangular bounding-box crop.]`;
       }
       useImageStore.getState().setSelection(null);
     }
